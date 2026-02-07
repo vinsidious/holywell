@@ -1,4 +1,5 @@
-import { parse } from './parser';
+import { parse, ParseError } from './parser';
+import type * as AST from './ast';
 import { formatStatements } from './formatter';
 
 const DEFAULT_MAX_INPUT_SIZE = 10_485_760; // 10MB
@@ -25,6 +26,25 @@ export interface FormatOptions {
    * @default 10_485_760 (10 MB)
    */
   maxInputSize?: number;
+
+  /**
+   * Whether to recover from parse errors by passing through raw SQL.
+   *
+   * When `true` (default), unparseable statements are preserved as raw text
+   * instead of throwing. When `false`, a {@link ParseError} is thrown on the
+   * first parse failure.
+   *
+   * @default true
+   */
+  recover?: boolean;
+
+  /**
+   * Callback invoked when parser recovery occurs.
+   *
+   * Only called when `recover` is `true` and the parser falls back to
+   * raw-passthrough for a statement.
+   */
+  onRecover?: (error: ParseError, raw: AST.RawExpression | null) => void;
 }
 
 /**
@@ -37,7 +57,8 @@ export interface FormatOptions {
  * @param options - Optional formatting options.
  * @returns Formatted SQL with a trailing newline, or empty string for blank input.
  * @throws {TokenizeError} When the input contains invalid tokens (e.g., unterminated strings).
- * @throws {ParseError} When parsing fails and recovery is not possible.
+ * @throws {ParseError} When `recover` is `false` and parsing fails. When `recover` is `true`
+ *   (the default), unparseable statements are silently passed through instead.
  * @throws {Error} When input exceeds maximum size.
  *
  * @example
@@ -62,7 +83,11 @@ export function formatSQL(input: string, options: FormatOptions = {}): string {
   const trimmed = input.trim();
   if (!trimmed) return '';
 
-  const statements = parse(trimmed, { recover: true, maxDepth: options.maxDepth });
+  const statements = parse(trimmed, {
+    recover: options.recover ?? true,
+    maxDepth: options.maxDepth,
+    onRecover: options.onRecover,
+  });
 
   if (statements.length === 0) return '';
 

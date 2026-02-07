@@ -1,7 +1,7 @@
 import * as AST from '../ast';
 import type { Token } from '../tokenizer';
 
-export interface DmlContext {
+export interface DmlParser {
   expect(value: string): Token;
   advance(): Token;
   check(value: string): boolean;
@@ -16,7 +16,7 @@ export interface DmlContext {
 }
 
 export function parseInsertStatement(
-  ctx: DmlContext,
+  ctx: DmlParser,
   comments: AST.CommentNode[]
 ): AST.InsertStatement {
   ctx.expect('INSERT');
@@ -43,6 +43,10 @@ export function parseInsertStatement(
     while (ctx.check(',')) {
       ctx.advance();
       values.push(parseValuesTuple(ctx));
+    }
+    // VALUES and SELECT are mutually exclusive — force a ParseError
+    if (ctx.peekUpper() === 'SELECT' || ctx.peekUpper() === 'WITH') {
+      ctx.expect(';');
     }
   } else if (ctx.peekUpper() === 'SELECT' || ctx.peekUpper() === 'WITH' || ctx.check('(')) {
     selectQuery = ctx.parseQueryExpression();
@@ -74,7 +78,7 @@ export function parseInsertStatement(
   };
 }
 
-export function parseInsertOnConflictClause(ctx: DmlContext): AST.InsertStatement['onConflict'] {
+export function parseInsertOnConflictClause(ctx: DmlParser): AST.InsertStatement['onConflict'] {
   let conflictColumns: string[] | undefined;
   let constraintName: string | undefined;
 
@@ -110,7 +114,7 @@ export function parseInsertOnConflictClause(ctx: DmlContext): AST.InsertStatemen
   return { columns: conflictColumns, constraintName, action: 'update', setItems, where };
 }
 
-export function parseValuesTuple(ctx: DmlContext): AST.ValuesList {
+export function parseValuesTuple(ctx: DmlParser): AST.ValuesList {
   ctx.expect('(');
   const values = ctx.parseExpressionList();
   ctx.expect(')');
@@ -118,7 +122,7 @@ export function parseValuesTuple(ctx: DmlContext): AST.ValuesList {
 }
 
 export function parseUpdateStatement(
-  ctx: DmlContext,
+  ctx: DmlParser,
   comments: AST.CommentNode[]
 ): AST.UpdateStatement {
   ctx.expect('UPDATE');
@@ -153,7 +157,7 @@ export function parseUpdateStatement(
   return { type: 'update', table, setItems, from, where, returning, leadingComments: comments };
 }
 
-export function parseSetItem(ctx: DmlContext): AST.SetItem {
+export function parseSetItem(ctx: DmlParser): AST.SetItem {
   const column = ctx.advance().value;
   ctx.expect('=');
   const value = ctx.parseExpression();
@@ -161,7 +165,7 @@ export function parseSetItem(ctx: DmlContext): AST.SetItem {
 }
 
 export function parseDeleteStatement(
-  ctx: DmlContext,
+  ctx: DmlParser,
   comments: AST.CommentNode[]
 ): AST.DeleteStatement {
   ctx.expect('DELETE');
@@ -193,7 +197,7 @@ export function parseDeleteStatement(
   return { type: 'delete', from: table, using, where, returning, leadingComments: comments };
 }
 
-function parseParenthesizedIdentifierList(ctx: DmlContext): string[] {
+function parseParenthesizedIdentifierList(ctx: DmlParser): string[] {
   ctx.expect('(');
   const items: string[] = [];
   while (!ctx.check(')') && !ctx.isAtEnd()) {

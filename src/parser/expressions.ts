@@ -1,7 +1,7 @@
 import * as AST from '../ast';
 import type { Token } from '../tokenizer';
 
-export interface ComparisonContext {
+export interface ComparisonParser {
   parseAddSub(): AST.Expression;
   peekUpper(): string;
   peekUpperAt(offset: number): string;
@@ -13,7 +13,7 @@ export interface ComparisonContext {
   checkComparisonOperator(): boolean;
 }
 
-export function parseComparisonExpression(ctx: ComparisonContext): AST.Expression {
+export function parseComparisonExpression(ctx: ComparisonParser): AST.Expression {
   const left = ctx.parseAddSub();
 
   const isExpr = tryParseIsComparison(ctx, left);
@@ -43,7 +43,7 @@ export function parseComparisonExpression(ctx: ComparisonContext): AST.Expressio
   return left;
 }
 
-function tryParseIsComparison(ctx: ComparisonContext, left: AST.Expression): AST.Expression | null {
+function tryParseIsComparison(ctx: ComparisonParser, left: AST.Expression): AST.Expression | null {
   if (ctx.peekUpper() !== 'IS') return null;
   ctx.advance();
 
@@ -92,7 +92,7 @@ function tryParseIsComparison(ctx: ComparisonContext, left: AST.Expression): AST
   return null;
 }
 
-function tryParseBetweenComparison(ctx: ComparisonContext, left: AST.Expression): AST.Expression | null {
+function tryParseBetweenComparison(ctx: ComparisonParser, left: AST.Expression): AST.Expression | null {
   let negated = false;
   if (ctx.peekUpper() === 'NOT' && ctx.peekUpperAt(1) === 'BETWEEN') {
     ctx.advance();
@@ -107,7 +107,7 @@ function tryParseBetweenComparison(ctx: ComparisonContext, left: AST.Expression)
   return { type: 'between', expr: left, low, high, negated };
 }
 
-function tryParseInComparison(ctx: ComparisonContext, left: AST.Expression): AST.Expression | null {
+function tryParseInComparison(ctx: ComparisonParser, left: AST.Expression): AST.Expression | null {
   let negated = false;
   if (ctx.peekUpper() === 'NOT' && ctx.peekUpperAt(1) === 'IN') {
     ctx.advance();
@@ -128,7 +128,7 @@ function tryParseInComparison(ctx: ComparisonContext, left: AST.Expression): AST
 }
 
 function tryParseLikeFamilyComparison(
-  ctx: ComparisonContext,
+  ctx: ComparisonParser,
   left: AST.Expression,
   keyword: 'LIKE' | 'ILIKE'
 ): AST.Expression | null {
@@ -153,7 +153,7 @@ function tryParseLikeFamilyComparison(
   return { type: 'ilike', expr: left, pattern, negated, escape };
 }
 
-function tryParseSimilarToComparison(ctx: ComparisonContext, left: AST.Expression): AST.Expression | null {
+function tryParseSimilarToComparison(ctx: ComparisonParser, left: AST.Expression): AST.Expression | null {
   let negated = false;
   if (ctx.peekUpper() === 'NOT' && ctx.peekUpperAt(1) === 'SIMILAR') {
     ctx.advance();
@@ -167,21 +167,21 @@ function tryParseSimilarToComparison(ctx: ComparisonContext, left: AST.Expressio
   return { type: 'similar_to', expr: left, pattern, negated };
 }
 
-function tryParseRegexComparison(ctx: ComparisonContext, left: AST.Expression): AST.Expression | null {
+function tryParseRegexComparison(ctx: ComparisonParser, left: AST.Expression): AST.Expression | null {
   if (!ctx.isRegexOperator()) return null;
   const op = ctx.advance().value;
   const right = ctx.parseAddSub();
   return { type: 'regex_match', left, operator: op, right } as AST.RegexExpr;
 }
 
-function tryParseBinaryComparison(ctx: ComparisonContext, left: AST.Expression): AST.Expression | null {
+function tryParseBinaryComparison(ctx: ComparisonParser, left: AST.Expression): AST.Expression | null {
   if (!ctx.checkComparisonOperator()) return null;
   const op = ctx.advance().value;
   const right = ctx.parseAddSub();
   return { type: 'binary', left, operator: op, right };
 }
 
-export interface PrimaryContext {
+export interface PrimaryExpressionParser {
   peek(): Token;
   peekUpperAt(offset: number): string;
   peekAt(offset: number): Token;
@@ -202,7 +202,7 @@ export interface PrimaryContext {
   parseIdentifierOrFunction(): AST.Expression;
 }
 
-export function parsePrimaryExpression(ctx: PrimaryContext): AST.Expression {
+export function parsePrimaryExpression(ctx: PrimaryExpressionParser): AST.Expression {
   const token = ctx.peek();
 
   return (
@@ -221,14 +221,14 @@ export function parsePrimaryExpression(ctx: PrimaryContext): AST.Expression {
   );
 }
 
-function tryParseExistsPrimary(ctx: PrimaryContext, token: Token): AST.Expression | null {
+function tryParseExistsPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (token.upper !== 'EXISTS') return null;
   ctx.advance();
   const subq = ctx.parseSubquery();
   return { type: 'exists', subquery: subq };
 }
 
-function tryParseNotExistsPrimary(ctx: PrimaryContext, token: Token): AST.Expression | null {
+function tryParseNotExistsPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (!(token.upper === 'NOT' && ctx.peekUpperAt(1) === 'EXISTS')) return null;
   ctx.advance();
   ctx.advance();
@@ -240,7 +240,7 @@ function tryParseNotExistsPrimary(ctx: PrimaryContext, token: Token): AST.Expres
   };
 }
 
-function tryParseSpecialKeywordPrimary(ctx: PrimaryContext, token: Token): AST.Expression | null {
+function tryParseSpecialKeywordPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (token.upper === 'CASE') return ctx.parseCaseExpr();
   if (token.upper === 'CAST') return ctx.parseCast();
   if (token.upper === 'EXTRACT' && ctx.peekAt(1)?.value === '(') return ctx.parseExtract();
@@ -251,14 +251,14 @@ function tryParseSpecialKeywordPrimary(ctx: PrimaryContext, token: Token): AST.E
   return null;
 }
 
-function tryParseIntervalPrimary(ctx: PrimaryContext, token: Token): AST.Expression | null {
+function tryParseIntervalPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (!(token.upper === 'INTERVAL' && ctx.peekTypeAt(1) === 'string')) return null;
   ctx.advance();
   const strToken = ctx.advance();
   return { type: 'interval', value: strToken.value };
 }
 
-function tryParseArrayConstructorPrimary(ctx: PrimaryContext, token: Token): AST.Expression | null {
+function tryParseArrayConstructorPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (!(token.upper === 'ARRAY' && ctx.peekAt(1)?.value === '[')) return null;
   ctx.advance(); // ARRAY
   ctx.advance(); // [
@@ -274,7 +274,7 @@ function tryParseArrayConstructorPrimary(ctx: PrimaryContext, token: Token): AST
   return { type: 'array_constructor', elements } as AST.ArrayConstructorExpr;
 }
 
-function tryParseRowConstructorPrimary(ctx: PrimaryContext, token: Token): AST.Expression | null {
+function tryParseRowConstructorPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (!(token.upper === 'ROW' && ctx.peekAt(1)?.value === '(')) return null;
   ctx.advance(); // ROW
   ctx.advance(); // (
@@ -290,7 +290,7 @@ function tryParseRowConstructorPrimary(ctx: PrimaryContext, token: Token): AST.E
   return { type: 'function_call', name: 'ROW', args, distinct: false } as AST.FunctionCallExpr;
 }
 
-function tryParseParenOrSubqueryPrimary(ctx: PrimaryContext, token: Token): AST.Expression | null {
+function tryParseParenOrSubqueryPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (token.value !== '(') return null;
   const subquery = ctx.tryParseSubqueryAtCurrent();
   if (subquery) return subquery;
@@ -300,7 +300,7 @@ function tryParseParenOrSubqueryPrimary(ctx: PrimaryContext, token: Token): AST.
   return { type: 'paren', expr };
 }
 
-function tryParseLiteralPrimary(ctx: PrimaryContext, token: Token): AST.Expression | null {
+function tryParseLiteralPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (token.value === '*') {
     ctx.advance();
     return { type: 'star' };
@@ -328,7 +328,7 @@ function tryParseLiteralPrimary(ctx: PrimaryContext, token: Token): AST.Expressi
   return null;
 }
 
-function tryParseTypedStringPrimary(ctx: PrimaryContext, token: Token): AST.Expression | null {
+function tryParseTypedStringPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (
     !(
       (token.upper === 'DATE' || token.upper === 'TIME' || token.upper === 'TIMESTAMP')
@@ -347,7 +347,7 @@ function tryParseTypedStringPrimary(ctx: PrimaryContext, token: Token): AST.Expr
   };
 }
 
-function tryParseCurrentDatetimePrimary(ctx: PrimaryContext, token: Token): AST.Expression | null {
+function tryParseCurrentDatetimePrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (
     token.upper === 'CURRENT_DATE'
     || token.upper === 'CURRENT_TIME'
@@ -359,14 +359,14 @@ function tryParseCurrentDatetimePrimary(ctx: PrimaryContext, token: Token): AST.
   return null;
 }
 
-function tryParseIdentifierPrimary(ctx: PrimaryContext, token: Token): AST.Expression | null {
+function tryParseIdentifierPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (token.type === 'identifier' || token.type === 'keyword') {
     return ctx.parseIdentifierOrFunction();
   }
   return null;
 }
 
-function parseFallbackPrimary(ctx: PrimaryContext, token: Token): AST.Expression {
+function parseFallbackPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression {
   ctx.advance();
   return { type: 'raw', text: token.value };
 }
