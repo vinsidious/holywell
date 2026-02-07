@@ -14,18 +14,18 @@
   }
 
   ::selection {
-    @apply bg-indigo-500/30 text-zinc-50;
+    @apply bg-indigo-500/20 text-zinc-50;
   }
 
-  /* Scrollbar — thin, dark, subtle */
+  /* Scrollbar — thin, near-invisible */
   * {
     scrollbar-width: thin;
     scrollbar-color: #27272a transparent;
   }
 
   *::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 4px;
+    height: 4px;
   }
 
   *::-webkit-scrollbar-track {
@@ -34,7 +34,7 @@
 
   *::-webkit-scrollbar-thumb {
     background-color: #27272a;
-    border-radius: 3px;
+    border-radius: 2px;
   }
 
   *::-webkit-scrollbar-thumb:hover {
@@ -48,15 +48,20 @@
   }
 
   pre {
-    @apply rounded-lg bg-zinc-900 border border-zinc-800 p-4 text-sm overflow-x-auto;
+    @apply rounded-lg bg-zinc-900/50 border border-zinc-800/60 p-4 text-sm overflow-x-auto;
   }
 
   code {
     @apply text-sm;
   }
 
-  /* Inline code (not inside pre) */
   :not(pre) > code {
-    @apply rounded bg-zinc-900 border border-zinc-800 px-1.5 py-0.5;
+    @apply rounded bg-zinc-900/50 border border-zinc-800/60 px-1.5 py-0.5;
+  }
+
+  /* CodeMirror placeholder styling */
+  .cm-placeholder {
+    color: #52525b !important;
+    font-style: italic;
   }
 }
