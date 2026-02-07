@@ -5,8 +5,40 @@
 [![license](https://img.shields.io/npm/l/@vcoppola/sqlfmt)](https://github.com/vinsidious/sqlfmt/blob/main/LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/vinsidious/sqlfmt/ci.yml?branch=main&label=CI)](https://github.com/vinsidious/sqlfmt/actions)
 
-An opinionated, zero-config SQL formatter that implements the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/) ([GitHub](https://github.com/treffynnon/sqlstyle.guide)).
-It is intentionally zero-config: no `.sqlfmtrc`, no `--init`, and no style toggles.
+An opinionated, zero-config SQL formatter that implements [river alignment](https://www.sqlstyle.guide/) — right-aligning keywords so content flows along a consistent vertical column. No `.sqlfmtrc`, no `--init`, no style toggles.
+
+## Try it now
+
+```bash
+echo "select id, email from users where active = true;" | npx @vcoppola/sqlfmt
+```
+
+## Table of Contents
+
+- [Key Features](#key-features)
+- [What it does](#what-it-does)
+- [When NOT to use sqlfmt](#when-not-to-use-sqlfmt)
+- [Install](#install)
+- [Usage](#usage)
+- [How the formatter works](#how-the-formatter-works)
+- [FAQ](#faq)
+- [Documentation](#documentation)
+- [Error Handling](#error-handling)
+- [Development](#development)
+- [Performance](#performance)
+- [Limitations](#limitations)
+- [License](#license)
+
+## Key Features
+
+- **Zero dependencies** — no runtime dependencies, single package install
+- **Zero config** — one deterministic style, same output everywhere
+- **Idempotent** — formatting already-formatted SQL produces the same output
+- **PostgreSQL-first** — first-class support for casts, JSON ops, dollar-quoting, arrays
+- **Works with other dialects** — ANSI SQL, MySQL, SQL Server, and SQLite queries that use standard syntax are formatted correctly
+- **CLI with `--check` / `--write` / glob patterns** — fits into any CI pipeline
+- **Pre-commit ready** — works with Husky, pre-commit framework, and lint-staged
+- **Typed errors** — `TokenizeError`, `ParseError`, `MaxDepthError` for programmatic handling
 
 ## What it does
 
@@ -110,6 +142,12 @@ SELECT name,
   FROM accounts;
 ```
 
+## When NOT to use sqlfmt
+
+- **You need configurable styles** — sqlfmt is zero-config by design. If you need adjustable indentation, keyword casing options, or line-width limits, use [sql-formatter](https://github.com/sql-formatter-org/sql-formatter) or [prettier-plugin-sql](https://github.com/JounQin/prettier-plugin-sql).
+- **You exclusively target MySQL or SQL Server** — sqlfmt is PostgreSQL-first. Standard ANSI SQL works fine, but vendor-specific syntax (stored procedures, MySQL-only functions) may not be fully parsed.
+- **You need a language server** — sqlfmt is a formatter, not a linter or LSP. It does not provide diagnostics, completions, or semantic analysis.
+
 ## Style Guide
 
 This formatter is inspired by and makes every attempt to conform to the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/). Key principles from the guide that `sqlfmt` enforces:
@@ -121,23 +159,6 @@ This formatter is inspired by and makes every attempt to conform to the [Simon H
 - **Consistent indentation** — Continuation lines and subexpressions are indented predictably
 
 For the full style guide, see [sqlstyle.guide](https://www.sqlstyle.guide/) or the [source on GitHub](https://github.com/treffynnon/sqlstyle.guide).
-
-## Features
-
-- Right-aligned keyword river for clause/logical structure (`SELECT`, `FROM`, `WHERE`, `AND`, `OR`, etc.)
-- Smart column wrapping (single-line when short, grouped continuation when long)
-- `JOIN` formatting with aligned `ON` / `USING`, including `LATERAL`
-- Subquery formatting with context-aware indentation
-- `CTE` / `WITH` support, including `RECURSIVE`, `MATERIALIZED` / `NOT MATERIALIZED`, `VALUES`, and `UNION` members
-- `CASE` expression formatting (simple, searched, and nested)
-- Window function support (`PARTITION BY`, `ORDER BY`, frames, `EXCLUDE`, named `WINDOW` clauses)
-- Aggregate extras: `FILTER (WHERE ...)` and `WITHIN GROUP (ORDER BY ...)`
-- Grouping extensions: `GROUPING SETS`, `ROLLUP`, `CUBE`
-- DML support: `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `RETURNING`, `ON CONFLICT`
-- DDL/admin support: `CREATE TABLE`, `ALTER TABLE`, `DROP TABLE`, `CREATE INDEX`, `CREATE VIEW`, `TRUNCATE`, `GRANT` / `REVOKE`
-- Postgres-heavy expression support (casts `::`, arrays, JSON/path operators, regex, `IS [NOT] DISTINCT FROM`, `TABLESAMPLE`, `FETCH FIRST`)
-- Comment-aware formatting for line and block comments
-- Idempotent — formatting already-formatted SQL produces the same output
 
 ## Why sqlfmt?
 
@@ -164,52 +185,53 @@ sqlfmt is the right choice when you want a formatter that produces consistent, r
 npm install @vcoppola/sqlfmt
 ```
 
-## Try it now
-
-```bash
-echo "select id, email from users where active = true;" | npx @vcoppola/sqlfmt
-```
-
 ## Usage
 
 ### As a CLI
 
 ```bash
-# Format a file
-npx sqlfmt query.sql
+# Format a file (prints to stdout by default)
+npx @vcoppola/sqlfmt query.sql
+
+# Format a file in place
+npx @vcoppola/sqlfmt --write query.sql
 
 # Format from stdin
-cat query.sql | npx sqlfmt
+cat query.sql | npx @vcoppola/sqlfmt
 
 # Check if a file is already formatted (exits non-zero if not)
-npx sqlfmt --check query.sql
+npx @vcoppola/sqlfmt --check query.sql
 
 # List files that would change (useful in CI)
-npx sqlfmt --list-different "src/**/*.sql"
-npx sqlfmt -l "migrations/*.sql"
+npx @vcoppola/sqlfmt --list-different "src/**/*.sql"
+npx @vcoppola/sqlfmt -l "migrations/*.sql"
 
 # Ignore files (can repeat --ignore)
-npx sqlfmt --check --ignore "migrations/**" "**/*.sql"
+npx @vcoppola/sqlfmt --check --ignore "migrations/**" "**/*.sql"
 
 # Or store ignore patterns in .sqlfmtignore (one pattern per line)
-npx sqlfmt --check "**/*.sql"
+npx @vcoppola/sqlfmt --check "**/*.sql"
 
 # Control color in CI/logs
-npx sqlfmt --color=always --check query.sql
+npx @vcoppola/sqlfmt --color=always --check query.sql
 
 # Pipe patterns
-pbpaste | npx sqlfmt | pbcopy          # Format clipboard (macOS)
-pg_dump mydb --schema-only | npx sqlfmt > schema.sql
-echo "select 1" | npx sqlfmt
+pbpaste | npx @vcoppola/sqlfmt | pbcopy          # Format clipboard (macOS)
+pg_dump mydb --schema-only | npx @vcoppola/sqlfmt > schema.sql
+echo "select 1" | npx @vcoppola/sqlfmt
 ```
+
+By default, `npx @vcoppola/sqlfmt query.sql` prints formatted output to **stdout**. Use `--write` to modify the file in place.
 
 When present, `.sqlfmtignore` is read from the current working directory and combined with any `--ignore` flags.
 
-CLI exit codes:
+**CLI exit codes:**
 
-- `0` Success (or all files already formatted with `--check`)
-- `1` Check failure, usage error, or I/O error
-- `2` Parse or tokenize error
+| Code | Meaning |
+|------|---------|
+| `0` | Success (or all files already formatted with `--check`) |
+| `1` | Check failure, usage error, or I/O error |
+| `2` | Parse or tokenize error |
 
 ### As a library
 
@@ -226,12 +248,49 @@ console.log(formatted);
 //  WHERE active = TRUE;
 ```
 
+## How the formatter works
+
+```mermaid
+graph LR
+    A[SQL Text] --> B[Tokenizer] --> C[Parser] --> D[AST] --> E[Formatter] --> F[Formatted SQL]
+```
+
+1. **Tokenizer** (`src/tokenizer.ts`) — Splits SQL text into tokens (keywords, identifiers, literals, operators, comments)
+2. **Parser** (`src/parser.ts`) — Builds an AST from the token stream
+3. **Formatter** (`src/formatter.ts`) — Walks the AST and produces formatted output
+
+The key formatting concept is the **river**. For each statement, `sqlfmt` derives a river width from the longest top-level aligned keyword in that statement (for example, `RETURNING` can widen DML alignment). Clause/logical keywords are then right-aligned to that width so content starts in a consistent column. Nested blocks may use their own derived widths. This approach comes directly from the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/).
+
+## FAQ
+
+**Does sqlfmt respect `.editorconfig`?**
+
+No. sqlfmt is zero-config — it does not read `.editorconfig`, `.sqlfmtrc`, or any configuration file. The output style is always the same.
+
+**Can I customize the river width?**
+
+No. The river width is automatically derived per statement from the longest top-level aligned keyword. This ensures consistent formatting without any manual tuning.
+
+**Does formatting change SQL semantics?**
+
+sqlfmt only changes whitespace and casing. Specifically:
+- SQL keywords are uppercased (`select` becomes `SELECT`)
+- Unquoted identifiers are lowercased (`MyTable` becomes `mytable`)
+- Quoted identifiers are preserved exactly (`"MyTable"` stays `"MyTable"`)
+
+If your database is case-sensitive for unquoted identifiers (rare, but possible), see the [Migration Guide](docs/migration-guide.md) for details.
+
+**Does sqlfmt work with MySQL / SQL Server / SQLite?**
+
+sqlfmt is PostgreSQL-first, but any query written in standard ANSI SQL will format correctly regardless of your target database. Vendor-specific extensions (stored procedures, MySQL-only syntax) may not be fully parsed.
+
 ## Documentation
 
 - [Integrations](docs/integrations.md) -- Pre-commit hooks, CI pipelines, and editor setup recipes
 - [Style Guide Mapping](docs/style-guide.md) -- How sqlfmt maps to each rule in the Simon Holywell SQL Style Guide
 - [Migration Guide](docs/migration-guide.md) -- Rolling out sqlfmt in existing codebases with minimal churn
 - [Contributing](CONTRIBUTING.md) -- Development setup, running tests, and submitting changes
+- [Changelog](CHANGELOG.md) -- Release history
 
 ## Error Handling
 
@@ -278,16 +337,6 @@ bun run check
 # Build dist (for npm publishing)
 bun run build
 ```
-
-## How the formatter works
-
-The pipeline is:
-
-1. **Tokenizer** (`src/tokenizer.ts`) — Splits SQL text into tokens (keywords, identifiers, literals, operators, comments)
-2. **Parser** (`src/parser.ts`) — Builds an AST from the token stream
-3. **Formatter** (`src/formatter.ts`) — Walks the AST and produces formatted output
-
-The key formatting concept is the **river**. For each statement, `sqlfmt` derives a river width from the longest top-level aligned keyword in that statement (for example, `RETURNING` can widen DML alignment). Clause/logical keywords are then right-aligned to that width so content starts in a consistent column. Nested blocks may use their own derived widths. This approach comes directly from the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/).
 
 ## Performance
 

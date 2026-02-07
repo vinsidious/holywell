@@ -1,6 +1,15 @@
 - id: sqlfmt
   name: sqlfmt
-  description: Format SQL files with sqlfmt (river-aligned, sqlstyle.guide)
-  entry: npx sqlfmt --check
+  description: Format SQL files with sqlfmt
+  entry: npx @vcoppola/sqlfmt --write
   language: node
   types: [sql]
+  pass_filenames: true
+
+- id: sqlfmt-check
+  name: sqlfmt (check only)
+  description: Check SQL formatting without modifying files
+  entry: npx @vcoppola/sqlfmt --check
+  language: node
+  types: [sql]
+  pass_filenames: true
