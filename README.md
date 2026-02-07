@@ -24,26 +24,29 @@ SELECT e.name, e.salary, d.department_name
 
 This formatter is inspired by and makes every attempt to conform to the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/). Key principles from the guide that `sqlfmt` enforces:
 
-- **River alignment** — Keywords are right-aligned so their last character falls at a consistent column, creating a vertical "river" of whitespace that makes SQL structure easy to scan
-- **Keyword uppercasing** — Reserved words like `SELECT`, `FROM`, `WHERE` are uppercased; identifiers are lowercased
-- **Right-aligned keywords** — `SELECT`, `FROM`, `WHERE`, `AND`, `OR`, `JOIN`, `ON`, `ORDER BY`, `GROUP BY`, etc. all align to form the river
+- **River alignment** — Clause/logical keywords are right-aligned to a per-statement river width derived from the longest top-level aligned keyword
+- **Keyword uppercasing** — Reserved words like `SELECT`, `FROM`, `WHERE` are uppercased
+- **Identifier normalization** — Most unquoted identifiers are lowercased; quoted identifiers are preserved
+- **Right-aligned clause/logical keywords** — `SELECT`, `FROM`, `WHERE`, `AND`, `OR`, `JOIN`, `ON`, `ORDER BY`, `GROUP BY`, etc. align within each formatted block
 - **Consistent indentation** — Continuation lines and subexpressions are indented predictably
 
 For the full style guide, see [sqlstyle.guide](https://www.sqlstyle.guide/) or the [source on GitHub](https://github.com/treffynnon/sqlstyle.guide).
 
 ## Features
 
-- Right-aligned keyword river (`SELECT`, `FROM`, `WHERE`, `AND`, `OR`, etc.)
+- Right-aligned keyword river for clause/logical structure (`SELECT`, `FROM`, `WHERE`, `AND`, `OR`, etc.)
 - Smart column wrapping (single-line when short, grouped continuation when long)
-- Proper `JOIN` formatting with `ON` condition alignment
-- Subquery formatting with correct indentation
-- `CTE` / `WITH` clause support (including nested CTEs, `VALUES`, `UNION`)
+- `JOIN` formatting with aligned `ON` / `USING`, including `LATERAL`
+- Subquery formatting with context-aware indentation
+- `CTE` / `WITH` support, including `RECURSIVE`, `MATERIALIZED` / `NOT MATERIALIZED`, `VALUES`, and `UNION` members
 - `CASE` expression formatting (simple, searched, and nested)
-- Window function formatting with `PARTITION BY` / `ORDER BY` alignment
-- `CREATE TABLE` with column alignment
-- `INSERT`, `UPDATE`, `DELETE` formatting
-- Comment preservation (line comments and block comments)
-- Keyword uppercasing, identifier lowercasing
+- Window function support (`PARTITION BY`, `ORDER BY`, frames, `EXCLUDE`, named `WINDOW` clauses)
+- Aggregate extras: `FILTER (WHERE ...)` and `WITHIN GROUP (ORDER BY ...)`
+- Grouping extensions: `GROUPING SETS`, `ROLLUP`, `CUBE`
+- DML support: `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `RETURNING`, `ON CONFLICT`
+- DDL/admin support: `CREATE TABLE`, `ALTER TABLE`, `DROP TABLE`, `CREATE INDEX`, `CREATE VIEW`, `TRUNCATE`, `GRANT` / `REVOKE`
+- Postgres-heavy expression support (casts `::`, arrays, JSON/path operators, regex, `IS [NOT] DISTINCT FROM`, `TABLESAMPLE`, `FETCH FIRST`)
+- Comment-aware formatting for line and block comments
 - Idempotent — formatting already-formatted SQL produces the same output
 
 ## Install
@@ -108,7 +111,7 @@ The pipeline is:
 2. **Parser** (`src/parser.ts`) — Builds an AST from the token stream
 3. **Formatter** (`src/formatter.ts`) — Walks the AST and produces formatted output
 
-The key formatting concept is the **river** — keywords like `SELECT`, `FROM`, `WHERE`, `AND`, `OR` are right-aligned so their last character falls at column 6 (the length of `SELECT`). This creates a vertical "river" of whitespace that makes the SQL structure easy to scan. This approach comes directly from the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/).
+The key formatting concept is the **river**. For each statement, `sqlfmt` derives a river width from the longest top-level aligned keyword in that statement (for example, `RETURNING` can widen DML alignment). Clause/logical keywords are then right-aligned to that width so content starts in a consistent column. Nested blocks may use their own derived widths. This approach comes directly from the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/).
 
 ## License
 
