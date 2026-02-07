@@ -274,3 +274,59 @@ describe('identifier length limit', () => {
     expect(tokens.some(t => t.value === 'my_table')).toBe(true);
   });
 });
+
+describe('formatter depth limit enforcement in formatting phase', () => {
+  it('handles 200+ nested AND conditions in formatting without stack overflow', () => {
+    const conditions: string[] = [];
+    for (let i = 0; i < 300; i++) {
+      conditions.push(`col${i} = ${i}`);
+    }
+    const sql = 'SELECT 1 FROM t WHERE ' + conditions.join(' AND ') + ';';
+    const result = formatSQL(sql);
+    expect(result).toContain('SELECT');
+    expect(result).toContain('WHERE');
+  });
+
+  it('handles 200+ nested OR conditions in formatting without stack overflow', () => {
+    const conditions: string[] = [];
+    for (let i = 0; i < 300; i++) {
+      conditions.push(`col${i} = ${i}`);
+    }
+    const sql = 'SELECT 1 FROM t WHERE ' + conditions.join(' OR ') + ';';
+    const result = formatSQL(sql);
+    expect(result).toContain('SELECT');
+    expect(result).toContain('WHERE');
+  });
+});
+
+describe('memory and consistency checks', () => {
+  it('formatting the same SQL twice produces identical results', () => {
+    const sql = `SELECT e.name, d.dept_name, CASE WHEN e.salary > 100000 THEN 'high' ELSE 'normal' END AS tier FROM employees AS e INNER JOIN departments AS d ON e.dept_id = d.id WHERE e.active = true AND d.country = 'US' ORDER BY e.name;`;
+    const result1 = formatSQL(sql);
+    const result2 = formatSQL(sql);
+    expect(result1).toBe(result2);
+  });
+
+  it('formatting produces identical results across multiple invocations', () => {
+    const sql = `WITH stats AS (SELECT dept, AVG(salary) AS avg_sal FROM emp GROUP BY dept) SELECT s.dept, s.avg_sal FROM stats AS s WHERE s.avg_sal > 50000 ORDER BY s.avg_sal DESC;`;
+    const results = [];
+    for (let i = 0; i < 5; i++) {
+      results.push(formatSQL(sql));
+    }
+    for (let i = 1; i < results.length; i++) {
+      expect(results[i]).toBe(results[0]);
+    }
+  });
+
+  it('does not produce excessively large output for moderately sized inputs', () => {
+    // A moderately complex query should not produce output that is orders of magnitude larger
+    const conditions: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      conditions.push(`col_${i} = ${i}`);
+    }
+    const sql = 'SELECT * FROM t WHERE ' + conditions.join(' AND ') + ';';
+    const result = formatSQL(sql);
+    // Output should be roughly similar in size to input (within 5x for formatting additions)
+    expect(result.length).toBeLessThan(sql.length * 5);
+  });
+});

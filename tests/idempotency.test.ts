@@ -104,3 +104,62 @@ describe('idempotency', () => {
     }
   });
 });
+
+describe('idempotency with comments', () => {
+  it('SQL with line comment after keyword', () => {
+    const sql = "SELECT -- comment\n id FROM t;";
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+  });
+
+  it('SQL with block comment in SELECT list', () => {
+    const sql = "SELECT /* pick columns */ a, b FROM t;";
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+  });
+
+  it('SQL with block comment before FROM', () => {
+    const sql = "SELECT a /* all columns */ FROM t WHERE x = 1;";
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+  });
+
+  it('multiple statements with comments between them', () => {
+    const sql = "SELECT 1;\n-- between statements\nSELECT 2;";
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+  });
+
+  it('block comment between statements', () => {
+    const sql = "SELECT 1;\n/* divider */\nSELECT 2;";
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+  });
+
+  it('already-formatted SQL with river alignment is preserved', () => {
+    const formatted = `SELECT file_hash
+  FROM file_system
+ WHERE file_name = '.vimrc';`;
+    const once = formatSQL(formatted);
+    const twice = formatSQL(once);
+    expect(once.trimEnd()).toBe(formatted);
+    expect(twice).toBe(once);
+  });
+
+  it('already-formatted SQL with JOIN alignment is preserved', () => {
+    const formatted = `SELECT r.last_name
+  FROM riders AS r
+       INNER JOIN bikes AS b
+       ON r.bike_vin_num = b.vin_num
+          AND b.engine_tally > 2;`;
+    const once = formatSQL(formatted);
+    const twice = formatSQL(once);
+    expect(once.trimEnd()).toBe(formatted);
+    expect(twice).toBe(once);
+  });
+});

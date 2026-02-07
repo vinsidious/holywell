@@ -94,3 +94,86 @@ describe('error line/column tracking', () => {
     expect(numTok!.column).toBe(3);
   });
 });
+
+describe('unterminated dollar-quoted string error details', () => {
+  it('error message includes expected closing delimiter for $$', () => {
+    try {
+      tokenize('SELECT $$no close');
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TokenizeError);
+      expect((err as TokenizeError).message).toContain('$$');
+    }
+  });
+
+  it('error message includes expected closing delimiter for $tag$', () => {
+    try {
+      tokenize('SELECT $custom_tag$no close');
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TokenizeError);
+      expect((err as TokenizeError).message).toContain('$custom_tag$');
+    }
+  });
+
+  it('TokenizeError for unterminated dollar string has correct line', () => {
+    try {
+      tokenize('SELECT 1;\n$$no close');
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TokenizeError);
+      const te = err as TokenizeError;
+      expect(te.line).toBe(2);
+    }
+  });
+});
+
+describe('error line/column accuracy for multi-line SQL', () => {
+  it('reports correct position for unterminated string on line 3', () => {
+    try {
+      tokenize("SELECT 1\nFROM t\nWHERE x = 'bad");
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TokenizeError);
+      const te = err as TokenizeError;
+      expect(te.line).toBe(3);
+      expect(te.column).toBe(11);
+    }
+  });
+
+  it('reports correct position for unterminated block comment on line 2', () => {
+    try {
+      tokenize('SELECT 1\n/* open');
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TokenizeError);
+      const te = err as TokenizeError;
+      expect(te.line).toBe(2);
+      expect(te.column).toBe(1);
+    }
+  });
+
+  it('ParseError reports correct line for missing paren in multi-line SQL', () => {
+    try {
+      parse('SELECT\n  a,\n  (b + c\nFROM t;', { recover: false });
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ParseError);
+      const pe = err as ParseError;
+      // The error should be on line 4 where FROM is found instead of ')'
+      expect(pe.line).toBe(4);
+    }
+  });
+
+  it('ParseError has informative message text', () => {
+    try {
+      parse('INSERT INTO t VALUES (1, 2;', { recover: false });
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ParseError);
+      const pe = err as ParseError;
+      expect(pe.message).toBeTruthy();
+      expect(pe.message.length).toBeGreaterThan(5);
+    }
+  });
+});
