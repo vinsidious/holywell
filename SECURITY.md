@@ -36,6 +36,15 @@ To prevent resource exhaustion when processing untrusted input, sqlfmt enforces:
 
 These limits are set to values that accommodate any reasonable SQL while guarding against adversarial input.
 
+## Deployment Guidance
+
+When running `sqlfmt` in CI/CD or multi-tenant automation:
+
+- Prefer `--strict` to fail on parse errors instead of recovery passthrough.
+- Use `--check` (or `--dry-run`) in validation steps; reserve `--write` for trusted repos/worktrees.
+- Keep formatting jobs inside an isolated workspace with least-privilege filesystem access.
+- Disable colorized output in machine logs unless explicitly needed (`--color=never`).
+
 ## Dependencies
 
 sqlfmt has **zero runtime dependencies**. The only dependencies are build-time dev dependencies (TypeScript, tsup, Bun test types). This minimizes supply chain risk.
