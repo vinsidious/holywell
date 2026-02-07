@@ -50,10 +50,18 @@ describe('cli flags and UX', () => {
     expect(res.out.trim()).toBe(pkg.version);
   });
 
+  it('supports -V shorthand for version', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version: string };
+    const res = runCli(['-V']);
+    expect(res.code).toBe(0);
+    expect(res.out.trim()).toBe(pkg.version);
+  });
+
   it('rejects unknown flags', () => {
     const res = runCli(['--definitely-not-a-real-flag']);
     expect(res.code).toBe(1);
     expect(res.err).toContain('Unknown option');
+    expect(res.err).toContain('--help');
   });
 
   it('returns parse exit code 2 with a clean message', () => {
@@ -89,11 +97,22 @@ describe('cli flags and UX', () => {
     const file = join(dir, 'q.sql');
     writeFileSync(file, 'select 1;', 'utf8');
 
-    const res = runCli(['--write', file]);
+    const res = runCli(['--write', 'q.sql'], dir);
     expect(res.code).toBe(0);
 
     const after = readFileSync(file, 'utf8');
     expect(after).toBe('SELECT 1;\n');
+  });
+
+  it('supports --dry-run preview without writing changes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-cli-'));
+    const file = join(dir, 'preview.sql');
+    writeFileSync(file, 'select 1;', 'utf8');
+
+    const res = runCli(['--dry-run', 'preview.sql'], dir);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('--- input');
+    expect(readFileSync(file, 'utf8')).toBe('select 1;');
   });
 
   it('handles multiple file arguments', () => {
@@ -103,10 +122,10 @@ describe('cli flags and UX', () => {
     writeFileSync(fileA, 'select 1;', 'utf8');
     writeFileSync(fileB, 'select 2;', 'utf8');
 
-    const checkRes = runCli(['--check', fileA, fileB]);
+    const checkRes = runCli(['--check', 'a.sql', 'b.sql'], dir);
     expect(checkRes.code).toBe(1);
 
-    const writeRes = runCli(['--write', fileA, fileB]);
+    const writeRes = runCli(['--write', 'a.sql', 'b.sql'], dir);
     expect(writeRes.code).toBe(0);
     expect(readFileSync(fileA, 'utf8')).toBe('SELECT 1;\n');
     expect(readFileSync(fileB, 'utf8')).toBe('SELECT 2;\n');
@@ -120,7 +139,7 @@ describe('glob pattern expansion', () => {
     writeFileSync(join(dir, 'b.sql'), 'select 2;', 'utf8');
     writeFileSync(join(dir, 'c.txt'), 'not sql', 'utf8');
 
-    const res = runCli(['--write', join(dir, '*.sql')]);
+    const res = runCli(['--write', '*.sql'], dir);
     expect(res.code).toBe(0);
 
     expect(readFileSync(join(dir, 'a.sql'), 'utf8')).toBe('SELECT 1;\n');
@@ -241,6 +260,16 @@ describe('--color flag', () => {
 });
 
 describe('--verbose flag', () => {
+  it('supports -v shorthand for verbose', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-verbose-'));
+    const file = join(dir, 'a.sql');
+    writeFileSync(file, 'SELECT 1;\n', 'utf8');
+
+    const res = runCli(['-v', '--check', 'a.sql'], dir);
+    expect(res.code).toBe(0);
+    expect(res.err).toContain('Formatting 1 file...');
+  });
+
   it('prints file progress to stderr', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-verbose-'));
     const fileA = join(dir, 'a.sql');
@@ -248,13 +277,13 @@ describe('--verbose flag', () => {
     writeFileSync(fileA, 'select 1;', 'utf8');
     writeFileSync(fileB, 'SELECT 2;\n', 'utf8');
 
-    const res = runCli(['--verbose', '--write', fileA, fileB]);
+    const res = runCli(['--verbose', '--write', 'a.sql', 'b.sql'], dir);
     expect(res.code).toBe(0);
     // Should print "Formatting N files..." header
     expect(res.err).toContain('Formatting 2 files...');
     // Should print each filename
-    expect(res.err).toContain(fileA);
-    expect(res.err).toContain(fileB);
+    expect(res.err).toContain('a.sql');
+    expect(res.err).toContain('b.sql');
     // Should print summary with changed count
     expect(res.err).toContain('Formatted 2 files (1 changed)');
   });
@@ -264,7 +293,7 @@ describe('--verbose flag', () => {
     const file = join(dir, 'a.sql');
     writeFileSync(file, 'SELECT 1;\n', 'utf8');
 
-    const res = runCli(['--verbose', '--write', file]);
+    const res = runCli(['--verbose', '--write', 'a.sql'], dir);
     expect(res.code).toBe(0);
     expect(res.err).toContain('Formatting 1 file...');
     expect(res.err).toContain('Formatted 1 file (0 changed)');
@@ -311,8 +340,8 @@ describe('--ignore flag', () => {
     const res = runCli([
       '--write',
       '--ignore', 'migrations/**',
-      join(dir, '**/*.sql'),
-    ]);
+      '**/*.sql',
+    ], dir);
     expect(res.code).toBe(0);
     // query.sql should be formatted
     expect(readFileSync(join(dir, 'query.sql'), 'utf8')).toBe('SELECT 1;\n');
@@ -334,8 +363,8 @@ describe('--ignore flag', () => {
       '--write',
       '--ignore', 'vendor/**',
       '--ignore', 'migrations/**',
-      join(dir, '**/*.sql'),
-    ]);
+      '**/*.sql',
+    ], dir);
     expect(res.code).toBe(0);
     expect(readFileSync(join(dir, 'app.sql'), 'utf8')).toBe('SELECT 1;\n');
     expect(readFileSync(join(vendor, 'lib.sql'), 'utf8')).toBe('select 2;');
@@ -354,8 +383,8 @@ describe('--ignore flag', () => {
     const res = runCli([
       '--write',
       '--ignore', 'skip?.sql',
-      join(dir, '*.sql'),
-    ]);
+      '*.sql',
+    ], dir);
     expect(res.code).toBe(0);
     expect(readFileSync(keep, 'utf8')).toBe('SELECT 1;\n');
     expect(readFileSync(skipSingle, 'utf8')).toBe('select 2;');
