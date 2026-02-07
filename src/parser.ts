@@ -58,7 +58,7 @@ export interface ParseOptions {
    * Not called when `recover` is `false` or when parsing fails with
    * `MaxDepthError` (which always throws).
    */
-  onRecover?: (error: ParseError, raw: AST.RawExpression | null) => void;
+  onRecover?: (error: ParseError, raw: AST.RawExpression | null, context: ParseRecoveryContext) => void;
 
   /**
    * Optional callback invoked when recovery cannot produce raw text for a
@@ -66,7 +66,12 @@ export interface ParseOptions {
    *
    * This makes statement drops explicit to callers in recovery mode.
    */
-  onDropStatement?: (error: ParseError) => void;
+  onDropStatement?: (error: ParseError, context: ParseRecoveryContext) => void;
+}
+
+export interface ParseRecoveryContext {
+  statementIndex: number;
+  totalStatements: number;
 }
 
 /**
@@ -154,8 +159,10 @@ export class Parser {
   private blankLinesBeforeToken = new Map<number, number>();
   private readonly recover: boolean;
   private readonly maxDepth: number;
-  private readonly onRecover?: (error: ParseError, raw: AST.RawExpression | null) => void;
-  private readonly onDropStatement?: (error: ParseError) => void;
+  private readonly onRecover?: (error: ParseError, raw: AST.RawExpression | null, context: ParseRecoveryContext) => void;
+  private readonly onDropStatement?: (error: ParseError, context: ParseRecoveryContext) => void;
+  private readonly totalStatements: number;
+  private currentStatementIndex: number = 0;
   private depth: number = 0;
 
   constructor(tokens: Token[], options: ParseOptions = {}) {
@@ -177,6 +184,25 @@ export class Parser {
     this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
     this.onRecover = options.onRecover;
     this.onDropStatement = options.onDropStatement;
+    this.totalStatements = this.estimateTotalStatements();
+  }
+
+  private estimateTotalStatements(): number {
+    let total = 0;
+    let hasContent = false;
+    for (const token of this.tokens) {
+      if (token.type === 'eof') break;
+      if (token.value === ';') {
+        if (hasContent) {
+          total++;
+          hasContent = false;
+        }
+        continue;
+      }
+      hasContent = true;
+    }
+    if (hasContent) total++;
+    return total;
   }
 
   /**
@@ -207,7 +233,12 @@ export class Parser {
     while (!this.isAtEnd()) {
       this.skipSemicolons();
       if (this.isAtEnd()) break;
+      this.currentStatementIndex++;
       const stmtStart = this.pos;
+      const recoveryContext: ParseRecoveryContext = {
+        statementIndex: this.currentStatementIndex,
+        totalStatements: this.totalStatements,
+      };
       try {
         const stmt = this.parseStatement();
         if (stmt) stmts.push(stmt);
@@ -217,12 +248,18 @@ export class Parser {
         if (err instanceof MaxDepthError) throw err;
         // Recovery: rewind and consume as raw text until next semicolon
         this.pos = stmtStart;
-        const raw = this.parseRawStatement();
-        this.onRecover?.(err, raw);
+        const raw = this.parseRawStatement('parse_error');
+        this.onRecover?.(err, raw, recoveryContext);
         if (raw) {
           stmts.push(raw);
         } else {
-          this.onDropStatement?.(err);
+          if (this.onDropStatement) {
+            this.onDropStatement(err, recoveryContext);
+          } else {
+            console.error(
+              `Warning: dropped statement ${recoveryContext.statementIndex}/${recoveryContext.totalStatements} after parse failure at line ${err.line}, column ${err.column}`
+            );
+          }
         }
       }
       this.skipSemicolons();
@@ -252,6 +289,7 @@ export class Parser {
 
     if (kw === 'WITH') return this.parseCTE(comments);
     if (kw === 'SELECT') return this.parseUnionOrSelect(comments);
+    if (kw === 'EXPLAIN') return this.parseExplain(comments);
     if (kw === 'INSERT') return this.parseInsert(comments);
     if (kw === 'UPDATE') return this.parseUpdate(comments);
     if (kw === 'DELETE') return this.parseDelete(comments);
@@ -264,7 +302,7 @@ export class Parser {
     if (kw === 'VALUES') return this.parseStandaloneValues(comments);
 
     // Unknown statement — consume until semicolon
-    const raw = this.parseRawStatement();
+    const raw = this.parseRawStatement('unsupported');
     if (!raw) {
       if (comments.length === 0) return null;
       return this.commentsToRaw(comments);
@@ -273,6 +311,7 @@ export class Parser {
     return {
       type: 'raw',
       text: `${this.commentsToRaw(comments).text}\n${raw.text}`.trim(),
+      reason: 'unsupported',
     };
   }
 
@@ -280,10 +319,11 @@ export class Parser {
     return {
       type: 'raw',
       text: comments.map(c => c.text).join('\n'),
+      reason: 'comment_only',
     };
   }
 
-  private parseRawStatement(): AST.RawExpression | null {
+  private parseRawStatement(reason: AST.RawReason = 'unsupported'): AST.RawExpression | null {
     const start = this.pos;
     while (!this.isAtEnd() && !this.check(';')) {
       this.advance();
@@ -305,13 +345,11 @@ export class Parser {
     }
 
     if (!text) return null;
-    return { type: 'raw', text };
+    return { type: 'raw', text, reason };
   }
 
   private parseUnionOrSelect(comments: AST.CommentNode[]): AST.Node {
     const first = this.parseSelectOrParenSelect();
-    // Parser constructs AST nodes incrementally; type-assert to assign readonly field
-    (first as any).leadingComments = comments;
 
     if (this.checkUnionKeyword()) {
       const members: { statement: AST.SelectStatement; parenthesized: boolean }[] = [
@@ -334,7 +372,7 @@ export class Parser {
       } as AST.UnionStatement;
     }
 
-    return first;
+    return { ...first, leadingComments: comments };
   }
 
   private parseQueryExpression(comments: AST.CommentNode[] = []): AST.QueryExpression {
@@ -397,9 +435,19 @@ export class Parser {
     this.expect('SELECT');
 
     let distinct = false;
+    let distinctOn: AST.Expression[] | undefined;
     if (this.peekUpper() === 'DISTINCT') {
       this.advance();
       distinct = true;
+      if (this.peekUpper() === 'ON') {
+        this.advance();
+        this.expect('(');
+        distinctOn = this.parseExpressionList();
+        this.expect(')');
+      }
+    } else if (this.peekUpper() === 'ALL') {
+      // Explicit ALL is semantically equivalent to the default.
+      this.advance();
     }
 
     const columns = this.parseColumnList();
@@ -491,6 +539,7 @@ export class Parser {
     return {
       type: 'select',
       distinct,
+      distinctOn,
       columns,
       from,
       additionalFromItems,
@@ -762,7 +811,7 @@ export class Parser {
   private parseWindowSpec(): AST.WindowSpec {
     let partitionBy: AST.Expression[] | undefined;
     let orderBy: AST.OrderByItem[] | undefined;
-    let frame: string | undefined;
+    let frame: AST.FrameSpec | undefined;
     let exclude: string | undefined;
 
     if (this.peekUpper() === 'PARTITION' && this.peekUpperAt(1) === 'BY') {
@@ -777,25 +826,16 @@ export class Parser {
 
     // Frame clause
     if (this.peekUpper() === 'ROWS' || this.peekUpper() === 'RANGE' || this.peekUpper() === 'GROUPS') {
-      let frameStr = this.advance().upper;
+      const unit = this.advance().upper as AST.FrameSpec['unit'];
       if (this.peekUpper() === 'BETWEEN') {
-        frameStr += ' ' + this.advance().upper;
-        // Consume frame bound before AND
-        while (this.peekUpper() !== 'AND') {
-          frameStr += ' ' + this.advance().upper;
-        }
-        frameStr += ' ' + this.advance().upper; // AND
-        // Consume rest of frame until ) or EXCLUDE
-        while (!this.check(')') && this.peekUpper() !== 'EXCLUDE') {
-          frameStr += ' ' + this.advance().upper;
-        }
+        this.advance();
+        const start = this.parseFrameBound();
+        this.expect('AND');
+        const end = this.parseFrameBound();
+        frame = { unit, start, end };
       } else {
-        // e.g., ROWS UNBOUNDED PRECEDING
-        while (!this.check(')') && this.peekUpper() !== 'EXCLUDE' && !this.isAtEnd()) {
-          frameStr += ' ' + this.advance().upper;
-        }
+        frame = { unit, start: this.parseFrameBound() };
       }
-      frame = frameStr;
 
       // EXCLUDE clause
       if (this.peekUpper() === 'EXCLUDE') {
@@ -811,6 +851,37 @@ export class Parser {
     }
 
     return { partitionBy, orderBy, frame, exclude };
+  }
+
+  private parseFrameBound(): AST.FrameBound {
+    if (this.peekUpper() === 'UNBOUNDED') {
+      this.advance();
+      if (this.peekUpper() === 'PRECEDING') {
+        this.advance();
+        return { kind: 'UNBOUNDED PRECEDING' };
+      }
+      if (this.peekUpper() === 'FOLLOWING') {
+        this.advance();
+        return { kind: 'UNBOUNDED FOLLOWING' };
+      }
+      throw new ParseError('PRECEDING or FOLLOWING', this.peek());
+    }
+    if (this.peekUpper() === 'CURRENT' && this.peekUpperAt(1) === 'ROW') {
+      this.advance();
+      this.advance();
+      return { kind: 'CURRENT ROW' };
+    }
+
+    const value = this.parseExpression();
+    if (this.peekUpper() === 'PRECEDING') {
+      this.advance();
+      return { kind: 'PRECEDING', value };
+    }
+    if (this.peekUpper() === 'FOLLOWING') {
+      this.advance();
+      return { kind: 'FOLLOWING', value };
+    }
+    throw new ParseError('PRECEDING or FOLLOWING', this.peek());
   }
 
   private parseFetchClause(): { count: AST.Expression; withTies?: boolean } {
@@ -1069,27 +1140,31 @@ export class Parser {
   private parsePrimaryWithPostfix(): AST.Expression {
     let expr = this.parsePrimary();
 
-    // Handle :: casts (can be chained)
-    while (this.peek().type === 'operator' && this.peek().value === '::') {
-      this.advance();
-      const targetType = this.consumeTypeSpecifier();
-      expr = { type: 'pg_cast', expr, targetType } as AST.PgCastExpr;
-    }
-
-    // Handle array subscript: expr[idx] or expr[lo:hi]
-    while (this.check('[')) {
-      this.advance(); // consume [
-      if (this.check(':')) {
+    while (true) {
+      // Handle :: casts (can be chained)
+      if (this.peek().type === 'operator' && this.peek().value === '::') {
         this.advance();
-        const upper = this.check(']') ? undefined : this.parseExpression();
-        this.expect(']');
-        expr = {
-          type: 'array_subscript',
-          array: expr,
-          isSlice: true,
-          upper,
-        } as AST.ArraySubscriptExpr;
-      } else {
+        const targetType = this.consumeTypeSpecifier();
+        expr = { type: 'pg_cast', expr, targetType } as AST.PgCastExpr;
+        continue;
+      }
+
+      // Handle array subscript: expr[idx] or expr[lo:hi]
+      if (this.check('[')) {
+        this.advance(); // consume [
+        if (this.check(':')) {
+          this.advance();
+          const upper = this.check(']') ? undefined : this.parseExpression();
+          this.expect(']');
+          expr = {
+            type: 'array_subscript',
+            array: expr,
+            isSlice: true,
+            upper,
+          } as AST.ArraySubscriptExpr;
+          continue;
+        }
+
         const lower = this.parseExpression();
         if (this.check(':')) {
           this.advance();
@@ -1111,10 +1186,42 @@ export class Parser {
           isSlice: false,
           lower,
         } as AST.ArraySubscriptExpr;
+        continue;
       }
+
+      // PostgreSQL collation operator: <expr> COLLATE <collation_name>
+      if (this.peekUpper() === 'COLLATE') {
+        this.advance();
+        const collation = this.parseQualifiedName();
+        expr = { type: 'collate', expr, collation } as AST.CollateExpr;
+        continue;
+      }
+
+      break;
     }
 
     return expr;
+  }
+
+  private parseQualifiedName(): string {
+    const first = this.peek();
+    if (
+      first.type !== 'identifier'
+      && first.type !== 'keyword'
+      && first.type !== 'string'
+    ) {
+      throw new ParseError('identifier', first);
+    }
+    let name = this.advance().value;
+    while (this.check('.')) {
+      this.advance();
+      const next = this.peek();
+      if (next.type !== 'identifier' && next.type !== 'keyword') {
+        throw new ParseError('identifier', next);
+      }
+      name += '.' + this.advance().value;
+    }
+    return name;
   }
 
   private parsePrimary(): AST.Expression {
@@ -1450,6 +1557,118 @@ export class Parser {
     return { expr, alias, trailingComment };
   }
 
+  private parseExplain(comments: AST.CommentNode[]): AST.ExplainStatement {
+    this.expect('EXPLAIN');
+
+    let analyze = false;
+    let verbose = false;
+    let costs: boolean | undefined;
+    let buffers: boolean | undefined;
+    let timing: boolean | undefined;
+    let summary: boolean | undefined;
+    let settings: boolean | undefined;
+    let wal: boolean | undefined;
+    let format: AST.ExplainStatement['format'];
+
+    const parseExplainBoolean = (): boolean => {
+      const value = this.peekUpper();
+      if (value === 'TRUE' || value === 'ON') {
+        this.advance();
+        return true;
+      }
+      if (value === 'FALSE' || value === 'OFF') {
+        this.advance();
+        return false;
+      }
+      throw new ParseError('TRUE/FALSE or ON/OFF', this.peek());
+    };
+
+    const parseOption = (): boolean => {
+      const kw = this.peekUpper();
+      if (kw === 'ANALYZE') {
+        this.advance();
+        analyze = true;
+        return true;
+      }
+      if (kw === 'VERBOSE') {
+        this.advance();
+        verbose = true;
+        return true;
+      }
+      if (kw === 'COSTS') {
+        this.advance();
+        costs = parseExplainBoolean();
+        return true;
+      }
+      if (kw === 'BUFFERS') {
+        this.advance();
+        buffers = parseExplainBoolean();
+        return true;
+      }
+      if (kw === 'TIMING') {
+        this.advance();
+        timing = parseExplainBoolean();
+        return true;
+      }
+      if (kw === 'SUMMARY') {
+        this.advance();
+        summary = parseExplainBoolean();
+        return true;
+      }
+      if (kw === 'SETTINGS') {
+        this.advance();
+        settings = parseExplainBoolean();
+        return true;
+      }
+      if (kw === 'WAL') {
+        this.advance();
+        wal = parseExplainBoolean();
+        return true;
+      }
+      if (kw === 'FORMAT') {
+        this.advance();
+        const fmt = this.advance().upper;
+        if (fmt !== 'TEXT' && fmt !== 'XML' && fmt !== 'JSON' && fmt !== 'YAML') {
+          throw new ParseError('TEXT, XML, JSON, or YAML', this.peekAt(-1));
+        }
+        format = fmt;
+        return true;
+      }
+      return false;
+    };
+
+    if (this.check('(')) {
+      this.advance();
+      while (!this.check(')') && !this.isAtEnd()) {
+        if (!parseOption()) {
+          throw new ParseError('EXPLAIN option', this.peek());
+        }
+        if (this.check(',')) this.advance();
+      }
+      this.expect(')');
+    }
+
+    while (parseOption()) {
+      if (this.check(',')) this.advance();
+    }
+
+    const statement = this.parseQueryExpression();
+    return {
+      type: 'explain',
+      analyze,
+      verbose,
+      costs,
+      buffers,
+      timing,
+      summary,
+      settings,
+      wal,
+      format,
+      statement,
+      leadingComments: comments,
+    };
+  }
+
   private createDmlContext(): DmlParser {
     return {
       expect: (value: string) => this.expect(value),
@@ -1532,7 +1751,7 @@ export class Parser {
     while (!this.isAtEnd() && !this.check(';')) {
       raw += ' ' + this.advance().value;
     }
-    return { type: 'raw', text: raw } as AST.RawExpression;
+    return { type: 'raw', text: raw, reason: 'unsupported' };
   }
 
   private parseCreateTable(comments: AST.CommentNode[]): AST.CreateTableStatement {
@@ -1961,35 +2180,241 @@ export class Parser {
     }
 
     const colName = this.advance().value;
-    let dataType = this.advance().upper;
-    if (this.check('(')) {
-      dataType += this.advance().value;
-      while (!this.check(')')) {
-        const t = this.advance();
-        dataType += t.value;
-        if (this.check(',')) {
-          dataType += this.advance().value;
-          dataType += ' ';
-        }
-      }
-      dataType += this.advance().value; // )
-    }
-
-    let constraints = '';
-    while (!this.check(',') && !this.check(')') && !this.isAtEnd()) {
-      const kw = this.peekUpper();
-      if (kw === 'CONSTRAINT') break;
-      constraints += (constraints ? ' ' : '') + this.advance().upper;
-    }
+    const dataType = this.consumeTypeSpecifier();
+    const constraintsStart = this.pos;
+    const columnConstraints = this.parseColumnConstraints();
+    const constraintTokens = this.tokens.slice(constraintsStart, this.pos);
+    const constraints = constraintTokens.length > 0 ? this.tokensToSql(constraintTokens) : undefined;
 
     return {
       elementType: 'column',
       raw: `${colName} ${dataType}${constraints ? ' ' + constraints : ''}`,
       name: colName,
       dataType,
-      constraints: constraints || undefined,
+      constraints,
+      columnConstraints: columnConstraints.length > 0 ? columnConstraints : undefined,
     };
   }
+
+  private parseColumnConstraints(): AST.ColumnConstraint[] {
+    const constraints: AST.ColumnConstraint[] = [];
+    while (!this.check(',') && !this.check(')') && !this.isAtEnd()) {
+      let name: string | undefined;
+      if (this.peekUpper() === 'CONSTRAINT') {
+        this.advance();
+        name = this.advance().value;
+      }
+
+      const kw = this.peekUpper();
+      if (kw === 'NOT' && this.peekUpperAt(1) === 'NULL') {
+        this.advance();
+        this.advance();
+        constraints.push({ type: 'not_null', name });
+        continue;
+      }
+      if (kw === 'NULL') {
+        this.advance();
+        constraints.push({ type: 'null', name });
+        continue;
+      }
+      if (kw === 'DEFAULT') {
+        this.advance();
+        constraints.push({ type: 'default', name, expr: this.parseExpression() });
+        continue;
+      }
+      if (kw === 'CHECK') {
+        this.advance();
+        this.expect('(');
+        const expr = this.parseExpression();
+        this.expect(')');
+        constraints.push({ type: 'check', name, expr });
+        continue;
+      }
+      if (kw === 'REFERENCES') {
+        constraints.push(this.parseReferencesConstraint(name));
+        continue;
+      }
+      if (kw === 'GENERATED') {
+        constraints.push(this.parseGeneratedIdentityConstraint(name));
+        continue;
+      }
+      if (kw === 'PRIMARY' && this.peekUpperAt(1) === 'KEY') {
+        this.advance();
+        this.advance();
+        constraints.push({ type: 'primary_key', name });
+        continue;
+      }
+      if (kw === 'UNIQUE') {
+        this.advance();
+        constraints.push({ type: 'unique', name });
+        continue;
+      }
+
+      const rawTokens: Token[] = [];
+      if (name) {
+        rawTokens.push({
+          type: 'keyword',
+          value: 'CONSTRAINT',
+          upper: 'CONSTRAINT',
+          position: -1,
+          line: 0,
+          column: 0,
+        });
+        rawTokens.push({
+          type: 'identifier',
+          value: name,
+          upper: name.toUpperCase(),
+          position: -1,
+          line: 0,
+          column: 0,
+        });
+      }
+      rawTokens.push(...this.consumeTokensUntilColumnConstraintBoundary());
+      constraints.push({
+        type: 'raw',
+        name,
+        text: this.tokensToSql(rawTokens),
+      });
+    }
+    return constraints;
+  }
+
+  private parseReferencesConstraint(name?: string): AST.ColumnConstraintReferences {
+    this.expect('REFERENCES');
+    const table = this.parseQualifiedName();
+    let columns: string[] | undefined;
+    if (this.check('(')) {
+      this.advance();
+      columns = [];
+      while (!this.check(')') && !this.isAtEnd()) {
+        columns.push(this.advance().value);
+        if (this.check(',')) this.advance();
+      }
+      this.expect(')');
+    }
+
+    const actions: AST.ReferentialAction[] = [];
+    let deferrable: AST.ColumnConstraintReferences['deferrable'];
+    let initially: AST.ColumnConstraintReferences['initially'];
+
+    while (!this.check(',') && !this.check(')') && !this.isAtEnd()) {
+      if (this.peekUpper() === 'ON' && (this.peekUpperAt(1) === 'DELETE' || this.peekUpperAt(1) === 'UPDATE')) {
+        this.advance();
+        const event = this.advance().upper as AST.ReferentialAction['event'];
+        let action: AST.ReferentialAction['action'];
+        if (this.peekUpper() === 'NO' && this.peekUpperAt(1) === 'ACTION') {
+          this.advance();
+          this.advance();
+          action = 'NO ACTION';
+        } else if (this.peekUpper() === 'SET' && this.peekUpperAt(1) === 'NULL') {
+          this.advance();
+          this.advance();
+          action = 'SET NULL';
+        } else if (this.peekUpper() === 'SET' && this.peekUpperAt(1) === 'DEFAULT') {
+          this.advance();
+          this.advance();
+          action = 'SET DEFAULT';
+        } else if (this.peekUpper() === 'RESTRICT' || this.peekUpper() === 'CASCADE') {
+          action = this.advance().upper as AST.ReferentialAction['action'];
+        } else {
+          throw new ParseError('referential action', this.peek());
+        }
+        actions.push({ event, action });
+        continue;
+      }
+      if (this.peekUpper() === 'NOT' && this.peekUpperAt(1) === 'DEFERRABLE') {
+        this.advance();
+        this.advance();
+        deferrable = 'NOT DEFERRABLE';
+        continue;
+      }
+      if (this.peekUpper() === 'DEFERRABLE') {
+        this.advance();
+        deferrable = 'DEFERRABLE';
+        continue;
+      }
+      if (this.peekUpper() === 'INITIALLY') {
+        this.advance();
+        if (this.peekUpper() === 'DEFERRED') {
+          this.advance();
+          initially = 'DEFERRED';
+        } else if (this.peekUpper() === 'IMMEDIATE') {
+          this.advance();
+          initially = 'IMMEDIATE';
+        } else {
+          throw new ParseError('DEFERRED or IMMEDIATE', this.peek());
+        }
+        continue;
+      }
+      break;
+    }
+
+    return {
+      type: 'references',
+      name,
+      table,
+      columns,
+      actions: actions.length > 0 ? actions : undefined,
+      deferrable,
+      initially,
+    };
+  }
+
+  private parseGeneratedIdentityConstraint(name?: string): AST.ColumnConstraintGeneratedIdentity {
+    this.expect('GENERATED');
+    let always = true;
+    if (this.peekUpper() === 'ALWAYS') {
+      this.advance();
+      always = true;
+    } else if (this.peekUpper() === 'BY' && this.peekUpperAt(1) === 'DEFAULT') {
+      this.advance();
+      this.advance();
+      always = false;
+    } else {
+      throw new ParseError('ALWAYS or BY DEFAULT', this.peek());
+    }
+    this.expect('AS');
+    this.expect('IDENTITY');
+
+    let options: string | undefined;
+    if (this.check('(')) {
+      const tokens: Token[] = [];
+      let depth = 0;
+      do {
+        const t = this.advance();
+        tokens.push(t);
+        if (t.value === '(') depth++;
+        if (t.value === ')') depth--;
+      } while (!this.isAtEnd() && depth > 0);
+      options = this.tokensToSql(tokens);
+    }
+
+    return { type: 'generated_identity', name, always, options };
+  }
+
+  private consumeTokensUntilColumnConstraintBoundary(): Token[] {
+    const tokens: Token[] = [];
+    let depth = 0;
+    while (!this.isAtEnd() && !this.check(',') && !this.check(')')) {
+      if (depth === 0 && this.isAtColumnConstraintBoundary()) break;
+      const t = this.advance();
+      tokens.push(t);
+      if (this.isOpenGroupToken(t)) depth++;
+      else if (this.isCloseGroupToken(t)) depth = Math.max(0, depth - 1);
+    }
+    return tokens;
+  }
+
+  private isAtColumnConstraintBoundary(): boolean {
+    const kw = this.peekUpper();
+    if (kw === 'CONSTRAINT' || kw === 'DEFAULT' || kw === 'CHECK' || kw === 'REFERENCES' || kw === 'GENERATED' || kw === 'UNIQUE' || kw === 'NULL') {
+      return true;
+    }
+    if (kw === 'NOT' && this.peekUpperAt(1) === 'NULL') return true;
+    if (kw === 'PRIMARY' && this.peekUpperAt(1) === 'KEY') return true;
+    return false;
+  }
+
 
   // ALTER TABLE
   private parseAlter(comments: AST.CommentNode[]): AST.AlterTableStatement {
@@ -2184,40 +2609,29 @@ export class Parser {
       ctes.push(this.parseCTEDefinition());
     }
 
+    let search: AST.CTESearchClause | undefined;
+    let cycle: AST.CTECycleClause | undefined;
+    if (this.peekUpper() === 'SEARCH') {
+      search = this.parseCTESearchClause();
+    }
+    if (this.peekUpper() === 'CYCLE') {
+      cycle = this.parseCTECycleClause();
+    }
+
     // Parse the main query
     let mainQuery: AST.SelectStatement | AST.UnionStatement;
     const mainComments = this.consumeComments();
 
-    if (this.check('(')) {
-      const result = this.tryParseQueryExpressionAtCurrent(mainComments);
-      if (result && (result.type === 'select' || result.type === 'union')) {
-        mainQuery = result;
-      } else {
-        const first = this.parseSelect();
-        (first as any).leadingComments = mainComments;
-
-        if (this.checkUnionKeyword()) {
-          const members: { statement: AST.SelectStatement; parenthesized: boolean }[] = [
-            { statement: first, parenthesized: false }
-          ];
-          const operators: string[] = [];
-          while (this.checkUnionKeyword()) {
-            operators.push(this.consumeUnionKeyword());
-            const next = this.parseSelectOrParenSelect();
-            members.push({ statement: next, parenthesized: next.parenthesized || false });
-          }
-          mainQuery = { type: 'union', members, operators, leadingComments: mainComments };
-        } else {
-          mainQuery = first;
-        }
-      }
+    const result = this.tryParseQueryExpressionAtCurrent(mainComments);
+    if (result && (result.type === 'select' || result.type === 'union')) {
+      mainQuery = result;
     } else {
       const first = this.parseSelect();
-      (first as any).leadingComments = mainComments;
+      const firstWithComments = { ...first, leadingComments: mainComments };
 
       if (this.checkUnionKeyword()) {
         const members: { statement: AST.SelectStatement; parenthesized: boolean }[] = [
-          { statement: first, parenthesized: false }
+          { statement: firstWithComments, parenthesized: false }
         ];
         const operators: string[] = [];
         while (this.checkUnionKeyword()) {
@@ -2227,11 +2641,69 @@ export class Parser {
         }
         mainQuery = { type: 'union', members, operators, leadingComments: mainComments };
       } else {
-        mainQuery = first;
+        mainQuery = firstWithComments;
       }
     }
 
-    return { type: 'cte', recursive, ctes, mainQuery, leadingComments: comments };
+    return { type: 'cte', recursive, ctes, search, cycle, mainQuery, leadingComments: comments };
+  }
+
+  private parseCTESearchClause(): AST.CTESearchClause {
+    this.expect('SEARCH');
+    let mode: 'DEPTH FIRST' | 'BREADTH FIRST';
+    if (this.peekUpper() === 'DEPTH') {
+      this.advance();
+      this.expect('FIRST');
+      mode = 'DEPTH FIRST';
+    } else if (this.peekUpper() === 'BREADTH') {
+      this.advance();
+      this.expect('FIRST');
+      mode = 'BREADTH FIRST';
+    } else {
+      throw new ParseError('DEPTH or BREADTH', this.peek());
+    }
+    this.expect('BY');
+    const by: string[] = [];
+    by.push(this.advance().value);
+    while (this.check(',')) {
+      this.advance();
+      by.push(this.advance().value);
+    }
+    this.expect('SET');
+    const set = this.advance().value;
+    return { mode, by, set };
+  }
+
+  private parseCTECycleClause(): AST.CTECycleClause {
+    this.expect('CYCLE');
+    const columns: string[] = [];
+    columns.push(this.advance().value);
+    while (this.check(',')) {
+      this.advance();
+      columns.push(this.advance().value);
+    }
+
+    this.expect('SET');
+    const set = this.advance().value;
+
+    let to: AST.Expression | undefined;
+    let defaultExpr: AST.Expression | undefined;
+    if (this.peekUpper() === 'TO') {
+      this.advance();
+      to = this.parseExpression();
+    }
+    if (this.peekUpper() === 'DEFAULT') {
+      this.advance();
+      defaultExpr = this.parseExpression();
+    }
+
+    let using: string | undefined;
+    if (this.peekUpper() === 'USING') {
+      this.advance();
+      using = this.advance().value;
+    }
+
+    return { columns, set, to, default: defaultExpr, using };
   }
 
   private parseCTEDefinition(): AST.CTEDefinition {
