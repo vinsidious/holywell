@@ -6,6 +6,17 @@ import { isKeyword } from './keywords';
 // starts at a consistent column position.
 
 const DEFAULT_RIVER = 6; // length of SELECT keyword
+const LAYOUT_POLICY = {
+  topLevelInlineColumnMax: 66,
+  nestedInlineColumnMax: 80,
+  nestedInlineWithShortAliasesMax: 66,
+  topLevelAliasBreakMin: 50,
+  nestedConcatTailBreakMin: 66,
+  groupPackColumnMax: 66,
+  nestedGroupPackColumnMax: 80,
+  expressionWrapColumnMax: 80,
+  createTableTypeAlignMax: 13,
+} as const;
 
 interface FormatContext {
   indentOffset: number;  // extra left-margin offset for nested contexts
@@ -275,12 +286,22 @@ function formatColumnList(columns: AST.ColumnExpr[], firstColStartCol: number, c
   // Account for outer nesting (subqueries are shifted in the final output)
   const effectiveLen = totalLen + (ctx.outerColumnOffset || 0);
   const maxInlineLen = ctx.indentOffset > 0
-    ? (columns.length <= 2 && hasAliases ? 66 : 80)
-    : 66;
+    ? (columns.length <= 2 && hasAliases
+      ? LAYOUT_POLICY.nestedInlineWithShortAliasesMax
+      : LAYOUT_POLICY.nestedInlineColumnMax)
+    : LAYOUT_POLICY.topLevelInlineColumnMax;
 
   // Single-line if fits, no comments, no multi-line expressions
-  const aliasBreak = ctx.indentOffset === 0 && aliasCount >= 2 && columns.length >= 3 && effectiveLen > 50;
-  const concatTailBreak = ctx.indentOffset > 0 && columns.length >= 4 && parts.slice(3).some(p => p.text.includes('||')) && effectiveLen > 66;
+  const aliasBreak =
+    ctx.indentOffset === 0 &&
+    aliasCount >= 2 &&
+    columns.length >= 3 &&
+    effectiveLen > LAYOUT_POLICY.topLevelAliasBreakMin;
+  const concatTailBreak =
+    ctx.indentOffset > 0 &&
+    columns.length >= 4 &&
+    parts.slice(3).some(p => p.text.includes('||')) &&
+    effectiveLen > LAYOUT_POLICY.nestedConcatTailBreakMin;
   if (effectiveLen <= maxInlineLen && !hasComments && !hasMultiLine && !aliasBreak && !concatTailBreak) {
     return singleLine;
   }
@@ -350,8 +371,14 @@ function formatColumnList(columns: AST.ColumnExpr[], firstColStartCol: number, c
     const groupComma = isLastGroup ? '' : ',';
 
     const effectiveGroupLen = groupLen + (ctx.outerColumnOffset || 0);
-    if ((group.length >= 3 && groupLen <= 66) ||
-        (group.length >= 2 && (ctx.outerColumnOffset || 0) > 0 && effectiveGroupLen <= 80)) {
+    if (
+      (group.length >= 3 && groupLen <= LAYOUT_POLICY.groupPackColumnMax) ||
+      (
+        group.length >= 2 &&
+        (ctx.outerColumnOffset || 0) > 0 &&
+        effectiveGroupLen <= LAYOUT_POLICY.nestedGroupPackColumnMax
+      )
+    ) {
       // Pack onto one continuation line (3+ similar columns that fit)
       lines.push(indent + groupLine + groupComma + groupComment);
     } else {
@@ -411,7 +438,7 @@ function fmtExprInSelect(expr: AST.Expr, colStart: number, outerOffset: number =
   const effectiveLen = colStart + outerOffset + simple.length;
 
   // Function call with CASE argument that's too long — wrap compactly
-  if (expr.type === 'function_call' && effectiveLen > 80) {
+  if (expr.type === 'function_call' && effectiveLen > LAYOUT_POLICY.expressionWrapColumnMax) {
     const wrapped = fmtFunctionCallWrapped(expr, colStart, outerOffset);
     if (wrapped !== null) return wrapped;
     const multiline = fmtFunctionCallMultiline(expr, colStart);
@@ -419,7 +446,7 @@ function fmtExprInSelect(expr: AST.Expr, colStart: number, outerOffset: number =
   }
 
   // Binary expression that's too long — wrap at outermost operator
-  if (expr.type === 'binary' && effectiveLen > 80) {
+  if (expr.type === 'binary' && effectiveLen > LAYOUT_POLICY.expressionWrapColumnMax) {
     return fmtBinaryWrapped(expr, colStart);
   }
 
@@ -542,7 +569,7 @@ function fmtCaseCompact(expr: AST.CaseExpr, col: number, outerOffset: number): s
 function fmtExprColumnAware(expr: AST.Expr, col: number, outerOffset: number): string {
   if (expr.type === 'in') {
     const simple = fmtExpr(expr);
-    if (col + outerOffset + simple.length > 80) {
+    if (col + outerOffset + simple.length > LAYOUT_POLICY.expressionWrapColumnMax) {
       return fmtInExprWrapped(expr as AST.InExpr, col);
     }
   }
@@ -1336,7 +1363,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
     if (col.name) maxNameLen = Math.max(maxNameLen, col.name.length);
     if (col.dataType) maxTypeLen = Math.max(maxTypeLen, col.dataType.replace(/\s+/g, ' ').length);
   }
-  maxTypeLen = Math.min(maxTypeLen, 13);
+  maxTypeLen = Math.min(maxTypeLen, LAYOUT_POLICY.createTableTypeAlignMax);
 
   for (let i = 0; i < node.elements.length; i++) {
     const elem = node.elements[i];
