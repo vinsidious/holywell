@@ -229,3 +229,60 @@ describe('tokenizer edge cases', () => {
     expect(tokens).toHaveLength(1_000_000);
   });
 });
+
+describe('tokenizer quoted identifier length limit', () => {
+  it('throws TokenizeError for quoted identifiers exceeding 10000 characters', () => {
+    const longIdent = '"' + 'a'.repeat(10_001) + '"';
+    const sql = `SELECT ${longIdent};`;
+    expect(() => tokenize(sql)).toThrow(TokenizeError);
+  });
+
+  it('allows quoted identifiers at exactly 10000 characters', () => {
+    const longIdent = '"' + 'b'.repeat(9_998) + '"'; // 9998 chars inside quotes, total token length is 10000
+    const sql = `SELECT ${longIdent};`;
+    const tokens = tokenize(sql);
+    const identTokens = tokens.filter(t => t.type === 'identifier');
+    expect(identTokens).toHaveLength(1);
+  });
+
+  it('error message mentions maximum length for quoted identifiers', () => {
+    const longIdent = '"' + 'x'.repeat(10_001) + '"';
+    try {
+      tokenize(`SELECT ${longIdent};`);
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TokenizeError);
+      expect((err as TokenizeError).message).toContain('maximum length');
+    }
+  });
+});
+
+describe('tokenizer unterminated dollar-quoted string details', () => {
+  it('throws TokenizeError for unterminated $$ string', () => {
+    expect(() => tokenize('SELECT $$unterminated')).toThrow(TokenizeError);
+  });
+
+  it('throws TokenizeError for unterminated $tag$ string', () => {
+    expect(() => tokenize('SELECT $tag$unterminated')).toThrow(TokenizeError);
+  });
+
+  it('error message for unterminated $$ includes the delimiter', () => {
+    try {
+      tokenize('SELECT $$no close');
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TokenizeError);
+      expect((err as TokenizeError).message).toContain('$$');
+    }
+  });
+
+  it('error message for unterminated $tag$ includes the tag', () => {
+    try {
+      tokenize('SELECT $abc$no close');
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TokenizeError);
+      expect((err as TokenizeError).message).toContain('$abc$');
+    }
+  });
+});

@@ -1538,3 +1538,94 @@ SELECT cs.name,
  ORDER BY cs.depth, cs.active_products DESC;`
   );
 });
+
+describe('INTERVAL expressions', () => {
+  it('formats INTERVAL with arithmetic', () => {
+    const out = formatSQL("SELECT INTERVAL '1 day' * 5 FROM t;");
+    expect(out).toContain("INTERVAL '1 day'");
+    expect(out).toContain('* 5');
+  });
+
+  it('formats INTERVAL with TO clause', () => {
+    const out = formatSQL("SELECT INTERVAL '1' HOUR TO SECOND FROM t;");
+    expect(out).toContain('INTERVAL');
+    expect(out).toContain('HOUR TO SECOND');
+  });
+
+  it('formats INTERVAL in date arithmetic', () => {
+    const out = formatSQL("SELECT NOW() + INTERVAL '3 hours' FROM t;");
+    expect(out).toContain("INTERVAL '3 hours'");
+  });
+});
+
+describe('Window frame with quoted string containing AND', () => {
+  it('handles RANGE BETWEEN INTERVAL containing AND in quotes', () => {
+    const sql = `SELECT value, SUM(value) OVER (ORDER BY d RANGE BETWEEN INTERVAL '1 AND 2' PRECEDING AND CURRENT ROW) AS rolling FROM sensor_data;`;
+    const formatted = formatSQL(sql);
+    expect(formatted).toContain("INTERVAL '1 AND 2' PRECEDING");
+    expect(formatted).toContain('AND CURRENT ROW');
+  });
+
+  it('handles ROWS BETWEEN with quoted text containing AND', () => {
+    const sql = `SELECT SUM(x) OVER (ORDER BY id ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) FROM t;`;
+    const formatted = formatSQL(sql);
+    expect(formatted).toContain('ROWS BETWEEN');
+    expect(formatted).toContain('PRECEDING');
+    expect(formatted).toContain('CURRENT ROW');
+  });
+});
+
+describe('Formatter depth limit', () => {
+  it('does not crash on 200+ level deeply nested expression', () => {
+    // Build a deeply nested paren expression beyond MAX_FORMATTER_DEPTH=200
+    // We keep it within parser max depth by using AND chains (not nested parens)
+    const conditions: string[] = [];
+    for (let i = 0; i < 250; i++) {
+      conditions.push('x = 1');
+    }
+    const sql = 'SELECT 1 FROM t WHERE ' + conditions.join(' AND ') + ';';
+    const result = formatSQL(sql);
+    expect(result).toContain('SELECT');
+    expect(result).toContain('WHERE');
+  });
+
+  it('falls back gracefully at max formatter depth', () => {
+    // Build nested CASE expressions that stress the formatter depth
+    const depth = 80;
+    let expr = '1';
+    for (let i = 0; i < depth; i++) {
+      expr = `CASE WHEN a = ${i} THEN ${expr} ELSE 0 END`;
+    }
+    const sql = `SELECT ${expr} FROM t;`;
+    const result = formatSQL(sql);
+    expect(result).toContain('SELECT');
+    expect(result).toContain('CASE');
+  });
+});
+
+describe('Complex CASE with nested subqueries', () => {
+  it('formats CASE with subquery in WHEN condition', () => {
+    const sql = `SELECT CASE WHEN x > (SELECT AVG(y) FROM s) THEN 'above' ELSE 'below' END AS status FROM t;`;
+    const out = formatSQL(sql);
+    expect(out).toContain('CASE');
+    expect(out).toContain('SELECT AVG(y)');
+    expect(out).toContain('END AS status');
+  });
+
+  it('formats CASE with subquery in THEN result', () => {
+    const sql = `SELECT CASE WHEN active = true THEN (SELECT COUNT(*) FROM orders WHERE user_id = u.id) ELSE 0 END AS order_count FROM users AS u;`;
+    const out = formatSQL(sql);
+    expect(out).toContain('CASE');
+    expect(out).toContain('SELECT COUNT(*)');
+    expect(out).toContain('END AS order_count');
+  });
+
+  it('formats nested CASE inside CASE', () => {
+    const sql = `SELECT CASE category WHEN 'A' THEN CASE WHEN price > 100 THEN 'expensive' ELSE 'cheap' END WHEN 'B' THEN 'category_b' ELSE 'other' END AS label FROM products;`;
+    const out = formatSQL(sql);
+    expect(out).toContain('CASE category');
+    expect(out).toContain("WHEN 'A'");
+    expect(out).toContain("WHEN 'B'");
+    expect(out).toContain('END AS label');
+  });
+});

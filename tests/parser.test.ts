@@ -236,3 +236,76 @@ describe('parser recovery callback', () => {
     expect(called).toBe(false);
   });
 });
+
+describe('parser grouping sets', () => {
+  it('parses empty grouping sets: GROUP BY GROUPING SETS ((), (a))', () => {
+    const stmt = parseFirst('SELECT a, COUNT(*) FROM t GROUP BY GROUPING SETS ((), (a));');
+    expect(stmt.type).toBe('select');
+    expect(stmt.groupBy).toBeDefined();
+  });
+
+  it('formats GROUP BY GROUPING SETS correctly', () => {
+    const out = formatSQL('SELECT a FROM t GROUP BY GROUPING SETS ((), (a));');
+    expect(out).toContain('GROUP BY');
+    expect(out).toContain('GROUPING SETS');
+  });
+});
+
+describe('parser MERGE with multiple WHEN MATCHED', () => {
+  it('parses MERGE with multiple WHEN MATCHED clauses and AND conditions', () => {
+    const sql = `MERGE INTO target AS t
+      USING source AS s ON t.id = s.id
+      WHEN MATCHED AND s.status = 'active' THEN UPDATE SET name = s.name
+      WHEN MATCHED AND s.status = 'deleted' THEN DELETE
+      WHEN NOT MATCHED THEN INSERT (id, name) VALUES (s.id, s.name);`;
+    const stmt = parseFirst(sql);
+    expect(stmt.type).toBe('merge');
+    expect(stmt.whenClauses.length).toBe(3);
+    expect(stmt.whenClauses[0].matched).toBe(true);
+    expect(stmt.whenClauses[0].action).toBe('update');
+    expect(stmt.whenClauses[0].condition).toBeDefined();
+    expect(stmt.whenClauses[1].matched).toBe(true);
+    expect(stmt.whenClauses[1].action).toBe('delete');
+    expect(stmt.whenClauses[1].condition).toBeDefined();
+    expect(stmt.whenClauses[2].matched).toBe(false);
+    expect(stmt.whenClauses[2].action).toBe('insert');
+  });
+});
+
+describe('parser INSERT mutual exclusion (VALUES then SELECT)', () => {
+  it('throws ParseError when INSERT VALUES is followed by SELECT', () => {
+    expect(() => {
+      const parser = new Parser(tokenize('INSERT INTO t VALUES (1) SELECT 2;'), { recover: false });
+      parser.parseStatements();
+    }).toThrow(ParseError);
+  });
+
+  it('throws ParseError when INSERT VALUES is followed by WITH', () => {
+    expect(() => {
+      const parser = new Parser(tokenize('INSERT INTO t VALUES (1) WITH x AS (SELECT 2) SELECT * FROM x;'), { recover: false });
+      parser.parseStatements();
+    }).toThrow(ParseError);
+  });
+});
+
+describe('parser type cast with missing closing paren', () => {
+  it('throws ParseError for CAST(x AS NUMERIC(10, 2 without closing paren', () => {
+    expect(() => {
+      const parser = new Parser(tokenize('SELECT CAST(x AS NUMERIC(10, 2;'), { recover: false });
+      parser.parseStatements();
+    }).toThrow(ParseError);
+  });
+
+  it('throws ParseError for incomplete CAST missing outer paren', () => {
+    expect(() => {
+      const parser = new Parser(tokenize('SELECT CAST(x AS INT;'), { recover: false });
+      parser.parseStatements();
+    }).toThrow(ParseError);
+  });
+
+  it('valid CAST with type params parses successfully', () => {
+    const stmt = parseFirst('SELECT CAST(x AS NUMERIC(10, 2)) FROM t;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.type).toBe('cast');
+  });
+});
