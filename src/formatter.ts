@@ -94,6 +94,27 @@ function deriveRiverWidth(node: AST.Node): number {
       width = Math.max(width, deriveRiverWidth(node.mainQuery));
       return width;
     }
+    case 'merge': {
+      let width = Math.max('MERGE'.length, 'USING'.length);
+      // ON is short but always present
+      width = Math.max(width, 'ON'.length);
+      for (const wc of node.whenClauses) {
+        width = Math.max(width, 'WHEN'.length);
+        if (wc.action === 'update' && wc.setItems && wc.setItems.length > 0) {
+          width = Math.max(width, 'SET'.length);
+        }
+        if (wc.action === 'insert') {
+          width = Math.max(width, 'VALUES'.length);
+        }
+      }
+      return width;
+    }
+    case 'create_index': {
+      let width = 'ON'.length;
+      if (node.using) width = Math.max(width, 'USING'.length);
+      if (node.where) width = Math.max(width, 'WHERE'.length);
+      return width;
+    }
     case 'create_view':
       return deriveRiverWidth(node.query as AST.Node);
     default:
@@ -1226,6 +1247,10 @@ function formatStandaloneValues(node: AST.StandaloneValuesStatement, ctx: Format
 }
 
 function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): string {
+  const idxCtx: FormatContext = {
+    ...ctx,
+    riverWidth: deriveRiverWidth(node),
+  };
   const lines: string[] = [];
   for (const c of node.leadingComments) lines.push(c.text);
 
@@ -1239,19 +1264,14 @@ function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): 
 
   const cols = node.columns.map(c => fmtExpr(c as AST.Expression)).join(', ');
   if (node.using) {
-    lines.push('    ON ' + node.table);
-    lines.push(' USING ' + node.using + ' (' + cols + ')');
+    lines.push(rightAlign('ON', idxCtx) + ' ' + node.table);
+    lines.push(rightAlign('USING', idxCtx) + ' ' + node.using + ' (' + cols + ')');
   } else {
-    lines.push('    ON ' + node.table + ' (' + cols + ')');
+    lines.push(rightAlign('ON', idxCtx) + ' ' + node.table + ' (' + cols + ')');
   }
 
   if (node.where) {
-    lines.push(' WHERE ' + formatCondition(node.where as AST.Expression, {
-      ...ctx,
-      indentOffset: 0,
-      riverWidth: DEFAULT_RIVER,
-      isSubquery: false,
-    }) + ';');
+    lines.push(rightAlign('WHERE', idxCtx) + ' ' + formatCondition(node.where as AST.Expression, idxCtx) + ';');
   } else {
     lines[lines.length - 1] += ';';
   }
@@ -1344,35 +1364,46 @@ function formatTruncate(node: AST.TruncateStatement, ctx: FormatContext): string
 }
 
 function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
+  const mergeCtx: FormatContext = {
+    ...ctx,
+    riverWidth: deriveRiverWidth(node),
+  };
   const lines: string[] = [];
   for (const c of node.leadingComments) lines.push(c.text);
 
   const target = node.target.table + (node.target.alias ? ' AS ' + node.target.alias : '');
   const source = node.source.table + (node.source.alias ? ' AS ' + node.source.alias : '');
 
-  lines.push(' MERGE INTO ' + target);
-  lines.push('       USING ' + source);
-  lines.push('          ON ' + formatJoinOn(node.on as AST.Expression, 9));
+  lines.push(rightAlign('MERGE', mergeCtx) + ' INTO ' + target);
+  lines.push(rightAlign('USING', mergeCtx) + ' ' + source);
+  const cCol = contentCol(mergeCtx);
+  lines.push(rightAlign('ON', mergeCtx) + ' ' + formatCondition(node.on as AST.Expression, mergeCtx));
+
+  // Action body: content is indented at content column
+  const actionPad = contentPad(mergeCtx);
 
   for (const wc of node.whenClauses) {
     const branch = wc.matched ? 'MATCHED' : 'NOT MATCHED';
     const cond = wc.condition ? ' AND ' + fmtExpr(wc.condition as AST.Expression) : '';
-    lines.push('  WHEN ' + branch + cond + ' THEN');
+    lines.push(rightAlign('WHEN', mergeCtx) + ' ' + branch + cond + ' THEN');
 
     if (wc.action === 'delete') {
-      lines.push('       DELETE');
+      lines.push(actionPad + 'DELETE');
       continue;
     }
 
     if (wc.action === 'update') {
-      lines.push('       UPDATE');
+      lines.push(actionPad + 'UPDATE');
+      // SET is indented inside the action body, with its own sub-alignment
+      const setOffset = cCol + 3; // 3 more spaces inside action body for SET block
+      const setContinuePad = ' '.repeat(setOffset + 'SET '.length);
       for (let i = 0; i < (wc.setItems || []).length; i++) {
         const item = wc.setItems![i];
         const comma = i < wc.setItems!.length - 1 ? ',' : '';
         if (i === 0) {
-          lines.push('          SET ' + item.column + ' = ' + fmtExpr(item.value as AST.Expression) + comma);
+          lines.push(' '.repeat(setOffset) + 'SET ' + item.column + ' = ' + fmtExpr(item.value as AST.Expression) + comma);
         } else {
-          lines.push('              ' + item.column + ' = ' + fmtExpr(item.value as AST.Expression) + comma);
+          lines.push(setContinuePad + item.column + ' = ' + fmtExpr(item.value as AST.Expression) + comma);
         }
       }
       continue;
@@ -1380,8 +1411,8 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
 
     if (wc.action === 'insert') {
       const cols = wc.columns ? ' (' + wc.columns.join(', ') + ')' : '';
-      lines.push('       INSERT' + cols);
-      lines.push('       VALUES (' + (wc.values || []).map(v => fmtExpr(v as AST.Expression)).join(', ') + ')');
+      lines.push(actionPad + 'INSERT' + cols);
+      lines.push(actionPad + 'VALUES (' + (wc.values || []).map(v => fmtExpr(v as AST.Expression)).join(', ') + ')');
     }
   }
 
