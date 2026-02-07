@@ -14,4 +14,9 @@ describe('public API surface', () => {
     const deep = 'SELECT ' + '('.repeat(40) + '1' + ')'.repeat(40) + ';';
     expect(() => api.formatSQL(deep, { maxDepth: 20 })).toThrow();
   });
+
+  it('exports version as a non-empty string', () => {
+    expect(typeof api.version).toBe('string');
+    expect(api.version.length).toBeGreaterThan(0);
+  });
 });
