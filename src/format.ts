@@ -1,4 +1,4 @@
-import { parse, ParseError } from './parser';
+import { parse, ParseError, type ParseRecoveryContext } from './parser';
 import type * as AST from './ast';
 import { formatStatements } from './formatter';
 
@@ -28,6 +28,13 @@ export interface FormatOptions {
   maxInputSize?: number;
 
   /**
+   * Preferred maximum output line length (in display columns).
+   *
+   * @default 80
+   */
+  maxLineLength?: number;
+
+  /**
    * Whether to recover from parse errors by passing through raw SQL.
    *
    * When `true` (default), unparseable statements are preserved as raw text
@@ -49,7 +56,7 @@ export interface FormatOptions {
    * @param raw - The raw expression node containing the original SQL text, or
    *   null if recovery could not extract any text (rare end-of-input cases)
    */
-  onRecover?: (error: ParseError, raw: AST.RawExpression | null) => void;
+  onRecover?: (error: ParseError, raw: AST.RawExpression | null, context: ParseRecoveryContext) => void;
 
   /**
    * Callback invoked when recovery cannot preserve a failed statement as raw SQL.
@@ -57,7 +64,7 @@ export interface FormatOptions {
    * This is rare (typically end-of-input failures), but allows callers to
    * surface potential statement drops explicitly.
    */
-  onDropStatement?: (error: ParseError) => void;
+  onDropStatement?: (error: ParseError, context: ParseRecoveryContext) => void;
 }
 
 /**
@@ -105,7 +112,9 @@ export function formatSQL(input: string, options: FormatOptions = {}): string {
 
   if (statements.length === 0) return '';
 
-  const formatted = formatStatements(statements)
+  const formatted = formatStatements(statements, {
+    maxLineLength: options.maxLineLength,
+  })
     .split('\n')
     .map(line => line.replace(/[ \t]+$/g, ''))
     .join('\n');

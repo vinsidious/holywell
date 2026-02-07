@@ -4,24 +4,15 @@ import { MaxDepthError } from './parser';
 import type { Token } from './tokenizer';
 import { DEFAULT_MAX_DEPTH, TERMINAL_WIDTH } from './constants';
 
-// Discriminated union helpers for InExpr.
-// The AST may have a `subquery` boolean field (new shape) or the old shape
-// where `values` is either SubqueryExpr | Expression[]. These helpers handle both.
-function isInExprSubquery(expr: AST.InExpr): boolean {
-  // New discriminated union shape: explicit boolean field
-  const exprAny = expr as unknown as Record<string, unknown>;
-  if ('subquery' in expr && typeof exprAny.subquery === 'boolean') {
-    return exprAny.subquery as boolean;
-  }
-  // Old shape: check if values is a SubqueryExpr object
-  return !Array.isArray(expr.values) && typeof expr.values === 'object' && 'type' in expr.values && expr.values.type === 'subquery';
+function isInExprSubquery(expr: AST.InExpr): expr is AST.InExprSubquery {
+  return expr.subquery;
 }
 
-function getInExprSubquery(expr: AST.InExpr): AST.SubqueryExpr {
-  return expr.values as AST.SubqueryExpr;
+function getInExprSubquery(expr: AST.InExprSubquery): AST.SubqueryExpr {
+  return expr.values;
 }
 
-function getInExprList(expr: AST.InExpr): AST.Expression[] {
+function getInExprList(expr: AST.InExprList): AST.Expression[] {
   return expr.values as AST.Expression[];
 }
 
@@ -111,19 +102,35 @@ function isWideCodePoint(cp: number): boolean {
 //   createTableTypeAlignMax (13)
 //     Maximum data-type-name length (e.g. "VARCHAR(255)") for column-type
 //     alignment in CREATE TABLE. 13 covers common types like TIMESTAMP(6).
-const LAYOUT_POLICY = {
-  // 66 = 80 (terminal) - 6 (river keyword) - 8 (indentation headroom)
-  topLevelInlineColumnMax: TERMINAL_WIDTH - DEFAULT_RIVER - 8,
-  // Nested expressions use the full terminal width baseline.
-  nestedInlineColumnMax: TERMINAL_WIDTH,
-  nestedInlineWithShortAliasesMax: TERMINAL_WIDTH - DEFAULT_RIVER - 8,
-  topLevelAliasBreakMin: Math.floor(TERMINAL_WIDTH * 0.625), // 50 on 80-col terminals
-  nestedConcatTailBreakMin: TERMINAL_WIDTH - DEFAULT_RIVER - 8,
-  groupPackColumnMax: TERMINAL_WIDTH - DEFAULT_RIVER - 8,
-  nestedGroupPackColumnMax: TERMINAL_WIDTH,
-  expressionWrapColumnMax: TERMINAL_WIDTH,
-  createTableTypeAlignMax: 13,
-} as const;
+interface LayoutPolicy {
+  topLevelInlineColumnMax: number;
+  nestedInlineColumnMax: number;
+  nestedInlineWithShortAliasesMax: number;
+  topLevelAliasBreakMin: number;
+  nestedConcatTailBreakMin: number;
+  groupPackColumnMax: number;
+  nestedGroupPackColumnMax: number;
+  expressionWrapColumnMax: number;
+  createTableTypeAlignMax: number;
+}
+
+function buildLayoutPolicy(maxLineLength: number): LayoutPolicy {
+  return {
+    // maxWidth - river keyword - indentation headroom
+    topLevelInlineColumnMax: maxLineLength - DEFAULT_RIVER - 8,
+    nestedInlineColumnMax: maxLineLength,
+    nestedInlineWithShortAliasesMax: maxLineLength - DEFAULT_RIVER - 8,
+    topLevelAliasBreakMin: Math.floor(maxLineLength * 0.625),
+    nestedConcatTailBreakMin: maxLineLength - DEFAULT_RIVER - 8,
+    groupPackColumnMax: maxLineLength - DEFAULT_RIVER - 8,
+    nestedGroupPackColumnMax: maxLineLength,
+    expressionWrapColumnMax: maxLineLength,
+    createTableTypeAlignMax: 13,
+  };
+}
+
+let ACTIVE_MAX_LINE_LENGTH = TERMINAL_WIDTH;
+let ACTIVE_LAYOUT_POLICY = buildLayoutPolicy(TERMINAL_WIDTH);
 
 interface FormatContext {
   indentOffset: number;  // extra left-margin offset for nested contexts
@@ -133,15 +140,29 @@ interface FormatContext {
   depth: number;  // current recursion depth for stack overflow prevention
 }
 
-export function formatStatements(nodes: AST.Node[]): string {
+export interface FormatterOptions {
+  maxLineLength?: number;
+}
+
+export function formatStatements(nodes: AST.Node[], options: FormatterOptions = {}): string {
+  const previousWidth = ACTIVE_MAX_LINE_LENGTH;
+  const previousPolicy = ACTIVE_LAYOUT_POLICY;
+  ACTIVE_MAX_LINE_LENGTH = Math.max(40, options.maxLineLength ?? TERMINAL_WIDTH);
+  ACTIVE_LAYOUT_POLICY = buildLayoutPolicy(ACTIVE_MAX_LINE_LENGTH);
+
   const parts: string[] = [];
-  for (const node of nodes) {
-    parts.push(formatNode(node, {
-      indentOffset: 0,
-      riverWidth: deriveRiverWidth(node),
-      isSubquery: false,
-      depth: 0,
-    }));
+  try {
+    for (const node of nodes) {
+      parts.push(formatNode(node, {
+        indentOffset: 0,
+        riverWidth: deriveRiverWidth(node),
+        isSubquery: false,
+        depth: 0,
+      }));
+    }
+  } finally {
+    ACTIVE_MAX_LINE_LENGTH = previousWidth;
+    ACTIVE_LAYOUT_POLICY = previousPolicy;
   }
   return parts.join('\n\n') + '\n';
 }
@@ -150,6 +171,8 @@ function deriveRiverWidth(node: AST.Node): number {
   switch (node.type) {
     case 'select':
       return deriveSelectRiverWidth(node);
+    case 'explain':
+      return Math.max('EXPLAIN'.length, deriveRiverWidth(node.statement));
     case 'insert': {
       let width = 'INSERT'.length;
       if (node.values) width = Math.max(width, 'VALUES'.length);
@@ -268,6 +291,7 @@ function formatNode(node: AST.Node, ctx: FormatContext): string {
     case 'grant': return formatGrant(node, ctx);
     case 'truncate': return formatTruncate(node, ctx);
     case 'standalone_values': return formatStandaloneValues(node, ctx);
+    case 'explain': return formatExplain(node, ctx);
     case 'raw': return node.text;
     case 'comment': return node.text;
     default: {
@@ -294,6 +318,38 @@ function contentPad(ctx: FormatContext): string {
   return ' '.repeat(contentCol(ctx));
 }
 
+function formatExplain(node: AST.ExplainStatement, ctx: FormatContext): string {
+  const lines: string[] = [];
+  for (const c of node.leadingComments) lines.push(c.text);
+
+  const options: string[] = [];
+  if (node.analyze) options.push('ANALYZE');
+  if (node.verbose) options.push('VERBOSE');
+  if (node.costs !== undefined) options.push(`COSTS ${node.costs ? 'ON' : 'OFF'}`);
+  if (node.buffers !== undefined) options.push(`BUFFERS ${node.buffers ? 'ON' : 'OFF'}`);
+  if (node.timing !== undefined) options.push(`TIMING ${node.timing ? 'ON' : 'OFF'}`);
+  if (node.summary !== undefined) options.push(`SUMMARY ${node.summary ? 'ON' : 'OFF'}`);
+  if (node.settings !== undefined) options.push(`SETTINGS ${node.settings ? 'ON' : 'OFF'}`);
+  if (node.wal !== undefined) options.push(`WAL ${node.wal ? 'ON' : 'OFF'}`);
+  if (node.format) options.push(`FORMAT ${node.format}`);
+
+  let header = 'EXPLAIN';
+  if (options.length > 0) header += ' (' + options.join(', ') + ')';
+  lines.push(header);
+
+  const inner = formatNode(node.statement, {
+    ...ctx,
+    riverWidth: deriveRiverWidth(node.statement),
+    isSubquery: true,
+    depth: ctx.depth + 1,
+  });
+  lines.push(inner);
+
+  let result = lines.join('\n');
+  if (!ctx.isSubquery) result += ';';
+  return result;
+}
+
 // ─── SELECT ──────────────────────────────────────────────────────────
 
 function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
@@ -303,8 +359,12 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
 
   // SELECT [DISTINCT] columns
   const selectKw = rightAlign('SELECT', ctx);
-  const distinctStr = node.distinct ? ' DISTINCT' : '';
-  const colStartCol = contentCol(ctx) + (node.distinct ? ' DISTINCT'.length : 0);
+  const distinctStr = node.distinctOn
+    ? ` DISTINCT ON (${node.distinctOn.map(e => formatExpr(e)).join(', ')})`
+    : node.distinct
+      ? ' DISTINCT'
+      : '';
+  const colStartCol = contentCol(ctx) + stringDisplayWidth(distinctStr);
   const colStr = formatColumnList(node.columns, colStartCol, ctx);
   lines.push(selectKw + distinctStr + ' ' + colStr);
 
@@ -448,10 +508,10 @@ function hasEffectiveAlias(column: AST.ColumnExpr): boolean {
 }
 
 function getMaxInlineColumnLength(columns: readonly AST.ColumnExpr[], ctx: FormatContext): number {
-  if (ctx.indentOffset === 0) return LAYOUT_POLICY.topLevelInlineColumnMax;
+  if (ctx.indentOffset === 0) return ACTIVE_LAYOUT_POLICY.topLevelInlineColumnMax;
   const hasAliases = columns.some(hasEffectiveAlias);
-  if (columns.length <= 2 && hasAliases) return LAYOUT_POLICY.nestedInlineWithShortAliasesMax;
-  return LAYOUT_POLICY.nestedInlineColumnMax;
+  if (columns.length <= 2 && hasAliases) return ACTIVE_LAYOUT_POLICY.nestedInlineWithShortAliasesMax;
+  return ACTIVE_LAYOUT_POLICY.nestedInlineColumnMax;
 }
 
 function hasTopLevelAliasBreak(columns: readonly AST.ColumnExpr[], effectiveLen: number, ctx: FormatContext): boolean {
@@ -459,7 +519,7 @@ function hasTopLevelAliasBreak(columns: readonly AST.ColumnExpr[], effectiveLen:
   const aliasCount = columns.filter(hasEffectiveAlias).length;
   return aliasCount >= 2
     && columns.length >= 3
-    && effectiveLen > LAYOUT_POLICY.topLevelAliasBreakMin;
+    && effectiveLen > ACTIVE_LAYOUT_POLICY.topLevelAliasBreakMin;
 }
 
 function shouldBreakNestedConcatTail(
@@ -475,7 +535,7 @@ function shouldBreakNestedConcatTail(
   const singleLine = parts.map(p => p.text).join(', ');
   const totalLen = firstColStartCol + stringDisplayWidth(singleLine);
   const effectiveLen = totalLen + (ctx.outerColumnOffset || 0);
-  return effectiveLen > LAYOUT_POLICY.nestedConcatTailBreakMin;
+  return effectiveLen > ACTIVE_LAYOUT_POLICY.nestedConcatTailBreakMin;
 }
 
 function tryFormatInlineColumnList(
@@ -580,12 +640,12 @@ function shouldPackColumnGroup(
   effectiveGroupLen: number,
   ctx: FormatContext
 ): boolean {
-  if (groupLength >= 3 && groupLen <= LAYOUT_POLICY.groupPackColumnMax) {
+  if (groupLength >= 3 && groupLen <= ACTIVE_LAYOUT_POLICY.groupPackColumnMax) {
     return true;
   }
   return groupLength >= 2
     && (ctx.outerColumnOffset || 0) > 0
-    && effectiveGroupLen <= LAYOUT_POLICY.nestedGroupPackColumnMax;
+    && effectiveGroupLen <= ACTIVE_LAYOUT_POLICY.nestedGroupPackColumnMax;
 }
 
 function formatColumnsOnePerLine(parts: FormattedColumnPart[], indent: string): string {
@@ -621,16 +681,16 @@ function formatExprInSelect(expr: AST.Expression, colStart: number, outerOffset:
   if (expr.type === 'binary' && expr.right.type === 'subquery') {
     const left = formatExpr(expr.left);
     const op = ' ' + expr.operator + ' ';
-    const subq = formatSubqueryAtColumn(expr.right, colStart + left.length + op.length + 1, depth + 1);
+    const subq = formatSubqueryAtColumn(expr.right, colStart + stringDisplayWidth(left) + stringDisplayWidth(op) + 1, depth + 1);
     return left + op + subq;
   }
 
   // Check if single-line would be too long
   const simple = formatExpr(expr);
-  const effectiveLen = colStart + outerOffset + simple.length;
+  const effectiveLen = colStart + outerOffset + stringDisplayWidth(simple);
 
   // Function call with CASE argument that's too long — wrap compactly
-  if (expr.type === 'function_call' && effectiveLen > LAYOUT_POLICY.expressionWrapColumnMax) {
+  if (expr.type === 'function_call' && effectiveLen > ACTIVE_LAYOUT_POLICY.expressionWrapColumnMax) {
     const wrapped = formatFunctionCallWrapped(expr, colStart, outerOffset);
     if (wrapped !== null) return wrapped;
     const multiline = formatFunctionCallMultiline(expr, colStart);
@@ -638,12 +698,12 @@ function formatExprInSelect(expr: AST.Expression, colStart: number, outerOffset:
   }
 
   // Binary expression that's too long — wrap at outermost operator
-  if (expr.type === 'binary' && effectiveLen > LAYOUT_POLICY.expressionWrapColumnMax) {
+  if (expr.type === 'binary' && effectiveLen > ACTIVE_LAYOUT_POLICY.expressionWrapColumnMax) {
     return formatBinaryWrapped(expr, colStart);
   }
 
   // Array constructor that's too long — wrap elements
-  if (expr.type === 'array_constructor' && effectiveLen > LAYOUT_POLICY.expressionWrapColumnMax) {
+  if (expr.type === 'array_constructor' && effectiveLen > ACTIVE_LAYOUT_POLICY.expressionWrapColumnMax) {
     return formatArrayConstructorWrapped(expr, colStart);
   }
 
@@ -789,7 +849,7 @@ function formatCaseCompact(expr: AST.CaseExpr, col: number, outerOffset: number)
 function formatExprColumnAware(expr: AST.Expression, col: number, outerOffset: number): string {
   if (expr.type === 'in') {
     const simple = formatExpr(expr);
-    if (col + outerOffset + simple.length > LAYOUT_POLICY.expressionWrapColumnMax) {
+    if (col + outerOffset + stringDisplayWidth(simple) > ACTIVE_LAYOUT_POLICY.expressionWrapColumnMax) {
       return formatInExprWrapped(expr, col);
     }
   }
@@ -801,11 +861,25 @@ function formatExprColumnAware(expr: AST.Expression, col: number, outerOffset: n
 function formatInExprWrapped(expr: AST.InExpr, col: number): string {
   const neg = expr.negated ? 'NOT ' : '';
   const prefix = formatExpr(expr.expr) + ' ' + neg + 'IN (';
-  if (isInExprSubquery(expr)) return formatExpr(expr);
+  if (isInExprSubquery(expr)) {
+    const left = formatExpr(expr.expr);
+    const inPrefix = `${left} ${neg}IN `;
+    const subquery = getInExprSubquery(expr);
+    const inner = formatQueryExpressionForSubquery(subquery.query);
+    const lineCount = inner.split('\n').length;
+    if (lineCount <= 2) {
+      const wrapped = wrapSubqueryLines(inner, col + stringDisplayWidth(inPrefix));
+      const inline = inPrefix + wrapped;
+      if (col + stringDisplayWidth(inline) <= ACTIVE_MAX_LINE_LENGTH) {
+        return inline;
+      }
+    }
+    return inPrefix.trimEnd() + '\n' + ' '.repeat(col) + wrapSubqueryLines(inner, col);
+  }
   const vals = getInExprList(expr).map(v => formatExpr(v));
-  const valStartCol = col + prefix.length;
+  const valStartCol = col + stringDisplayWidth(prefix);
   const valPad = ' '.repeat(valStartCol);
-  const maxWidth = TERMINAL_WIDTH;
+  const maxWidth = ACTIVE_MAX_LINE_LENGTH;
 
   // Pack items onto lines, wrapping when exceeding maxWidth
   const lines: string[] = [];
@@ -837,9 +911,9 @@ function formatInExprWrapped(expr: AST.InExpr, col: number): string {
 function formatArrayConstructorWrapped(expr: AST.ArrayConstructorExpr, col: number): string {
   const prefix = 'ARRAY[';
   const vals = expr.elements.map(e => formatExpr(e));
-  const elemStartCol = col + prefix.length;
+  const elemStartCol = col + stringDisplayWidth(prefix);
   const elemPad = ' '.repeat(elemStartCol);
-  const maxWidth = TERMINAL_WIDTH;
+  const maxWidth = ACTIVE_MAX_LINE_LENGTH;
 
   const lines: string[] = [];
   let currentLine = prefix;
@@ -1001,12 +1075,19 @@ function formatJoinOn(expr: AST.Expression, baseCol: number, depth: number = 0):
   if (depth >= MAX_FORMATTER_DEPTH) {
     return formatExpr(expr);
   }
-  if (expr.type === 'binary' && expr.operator === 'AND') {
+  if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
     const left = formatJoinOn(expr.left, baseCol, depth + 1);
     const indent = ' '.repeat(baseCol);
-    return left + '\n' + indent + 'AND ' + formatJoinOn(expr.right, baseCol, depth + 1);
+    return left + '\n' + indent + expr.operator + ' ' + formatJoinOn(expr.right, baseCol, depth + 1);
   }
-  return formatExpr(expr);
+  const inline = formatExpr(expr);
+  if (baseCol + stringDisplayWidth(inline) <= ACTIVE_MAX_LINE_LENGTH) return inline;
+  if (expr.type === 'binary') {
+    const left = formatJoinOn(expr.left, baseCol, depth + 1);
+    const indent = ' '.repeat(baseCol);
+    return left + '\n' + indent + expr.operator + ' ' + formatJoinOn(expr.right, baseCol, depth + 1);
+  }
+  return inline;
 }
 
 // ─── WHERE/HAVING condition ──────────────────────────────────────────
@@ -1123,7 +1204,7 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
   if (expr.type === 'in' && !isInExprSubquery(expr)) {
     const simple = formatExpr(expr);
     const cCol = contentCol(ctx);
-    if (cCol + stringDisplayWidth(simple) > TERMINAL_WIDTH) {
+    if (cCol + stringDisplayWidth(simple) > ACTIVE_MAX_LINE_LENGTH) {
       return formatInExprWrapped(expr, cCol);
     }
     return simple;
@@ -1151,6 +1232,22 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
       const subq = wrapSubqueryLines(inner, contentCol(ctx));
       return left + ' ' + expr.operator + '\n' + contentPad(ctx) + subq;
     }
+  }
+
+  if (expr.type === 'between') {
+    const simple = formatExpr(expr);
+    const cCol = contentCol(ctx);
+    if (cCol + stringDisplayWidth(simple) <= ACTIVE_MAX_LINE_LENGTH) {
+      return simple;
+    }
+    const left = formatExpr(expr.expr);
+    const low = formatExpr(expr.low);
+    const high = formatExpr(expr.high);
+    const neg = expr.negated ? 'NOT ' : '';
+    const head = `${left} ${neg}BETWEEN ${low}`;
+    const betweenPrefix = `${left} ${neg}BETWEEN `;
+    const andPad = ' '.repeat(cCol + stringDisplayWidth(betweenPrefix) - stringDisplayWidth('AND '));
+    return head + '\n' + andPad + 'AND ' + high;
   }
 
   return formatExpr(expr);
@@ -1286,7 +1383,7 @@ function formatWindowFunctionAtColumn(expr: AST.WindowFunctionExpr, col: number)
   if (overParts.length <= 1 && !expr.frame) {
     const inline = func + ' OVER (' + overParts.map(p => p.text).join('') + ')';
     // Keep inline if it fits within terminal width
-    if (col + stringDisplayWidth(inline) <= TERMINAL_WIDTH) {
+    if (col + stringDisplayWidth(inline) <= ACTIVE_MAX_LINE_LENGTH) {
       return inline;
     }
     // Otherwise fall through to multi-line formatting
@@ -1314,104 +1411,39 @@ function formatWindowFunctionAtColumn(expr: AST.WindowFunctionExpr, col: number)
   return result;
 }
 
-type ParsedFrameClause =
-  | { kind: 'between'; unit: string; low: string; high: string }
-  | { kind: 'simple'; text: string };
-
-function findTopLevelAnd(frameTail: string): number {
-  let depth = 0;
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
-
-  for (let i = 0; i < frameTail.length; i++) {
-    const ch = frameTail[i];
-
-    if (inSingleQuote) {
-      if (ch === '\\') {
-        i++;
-        continue;
-      }
-      if (ch === "'" && frameTail[i + 1] === "'") {
-        i++;
-        continue;
-      }
-      if (ch === "'") inSingleQuote = false;
-      continue;
-    }
-
-    if (inDoubleQuote) {
-      if (ch === '"' && frameTail[i + 1] === '"') {
-        i++;
-        continue;
-      }
-      if (ch === '"') inDoubleQuote = false;
-      continue;
-    }
-
-    if (ch === "'") {
-      inSingleQuote = true;
-      continue;
-    }
-    if (ch === '"') {
-      inDoubleQuote = true;
-      continue;
-    }
-    if (ch === '(') {
-      depth++;
-      continue;
-    }
-    if (ch === ')' && depth > 0) {
-      depth--;
-      continue;
-    }
-
-    if (depth === 0 && frameTail.startsWith(' AND ', i)) {
-      return i;
-    }
-  }
-
-  return -1;
+function formatFrameBound(bound: AST.FrameBound): string {
+  if (bound.kind === 'UNBOUNDED PRECEDING') return 'UNBOUNDED PRECEDING';
+  if (bound.kind === 'UNBOUNDED FOLLOWING') return 'UNBOUNDED FOLLOWING';
+  if (bound.kind === 'CURRENT ROW') return 'CURRENT ROW';
+  return `${formatExpr(bound.value!)} ${bound.kind}`;
 }
 
-function parseFrameClause(frame: string): ParsedFrameClause {
-  const betweenIdx = frame.indexOf(' BETWEEN ');
-  if (betweenIdx <= 0) {
-    return { kind: 'simple', text: frame };
+function formatFrameInline(frame: AST.FrameSpec, exclude?: string): string {
+  let text = '';
+  if (frame.end) {
+    text = `${frame.unit} BETWEEN ${formatFrameBound(frame.start)} AND ${formatFrameBound(frame.end)}`;
+  } else {
+    text = `${frame.unit} ${formatFrameBound(frame.start)}`;
   }
-
-  const unit = frame.slice(0, betweenIdx).trim();
-  if (!/^[A-Z]+$/.test(unit)) {
-    return { kind: 'simple', text: frame };
-  }
-
-  const tail = frame.slice(betweenIdx + ' BETWEEN '.length);
-  const andIdx = findTopLevelAnd(tail);
-  if (andIdx <= 0) {
-    return { kind: 'simple', text: frame };
-  }
-
-  const low = tail.slice(0, andIdx).trim();
-  const high = tail.slice(andIdx + ' AND '.length).trim();
-  if (low && high) {
-    return { kind: 'between', unit, low, high };
-  }
-
-  return { kind: 'simple', text: frame };
+  if (exclude) text += ' EXCLUDE ' + exclude;
+  return text;
 }
 
-function formatFrameClause(frame: string, startCol: number, exclude?: string): string {
-  const parsed = parseFrameClause(frame);
-  if (parsed.kind === 'simple') {
+function formatFrameClause(frame: AST.FrameSpec, startCol: number, exclude?: string): string {
+  if (!frame.end) {
+    const head = `${frame.unit} ${formatFrameBound(frame.start)}`;
     return exclude
-      ? parsed.text + '\n' + ' '.repeat(startCol) + 'EXCLUDE ' + exclude
-      : parsed.text;
+      ? `${head}\n${' '.repeat(startCol)}EXCLUDE ${exclude}`
+      : head;
   }
 
-  const offsetAdjust = /^(INTERVAL|\d+)/.test(parsed.low) ? 1 : 0;
-  const head = `${parsed.unit} BETWEEN ${parsed.low}`;
+  const low = formatFrameBound(frame.start);
+  const high = formatFrameBound(frame.end);
+  const offsetAdjust = /^(INTERVAL|\d+)/.test(low) ? 1 : 0;
+  const head = `${frame.unit} BETWEEN ${low}`;
   const betweenIdx = head.indexOf('BETWEEN');
   const andPad = ' '.repeat(startCol + offsetAdjust + betweenIdx + 'BETWEEN '.length - 'AND '.length);
-  let out = (offsetAdjust ? ' ' : '') + head + '\n' + andPad + 'AND ' + parsed.high;
+  let out = (offsetAdjust ? ' ' : '') + head + '\n' + andPad + 'AND ' + high;
   if (exclude) out += '\n' + ' '.repeat(startCol + offsetAdjust) + 'EXCLUDE ' + exclude;
   return out;
 }
@@ -1425,8 +1457,7 @@ function formatWindowSpec(spec: AST.WindowSpec): string {
     parts.push('ORDER BY ' + spec.orderBy.map(formatOrderByItem).join(', '));
   }
   if (spec.frame) {
-    const exclude = spec.exclude ? ' EXCLUDE ' + spec.exclude : '';
-    parts.push(spec.frame + exclude);
+    parts.push(formatFrameInline(spec.frame, spec.exclude));
   }
   return parts.join(' ');
 }
@@ -1779,6 +1810,47 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
 
 // ─── CREATE TABLE ────────────────────────────────────────────────────
 
+function formatColumnConstraint(constraint: AST.ColumnConstraint): string {
+  const prefix = constraint.name ? `CONSTRAINT ${constraint.name} ` : '';
+  switch (constraint.type) {
+    case 'not_null':
+      return prefix + 'NOT NULL';
+    case 'null':
+      return prefix + 'NULL';
+    case 'default':
+      return prefix + 'DEFAULT ' + formatExpr(constraint.expr);
+    case 'check':
+      return prefix + 'CHECK(' + formatExpr(constraint.expr) + ')';
+    case 'references': {
+      let out = prefix + 'REFERENCES ' + constraint.table;
+      if (constraint.columns && constraint.columns.length > 0) {
+        out += ' (' + constraint.columns.join(', ') + ')';
+      }
+      if (constraint.actions) {
+        for (const action of constraint.actions) {
+          out += ` ON ${action.event} ${action.action}`;
+        }
+      }
+      if (constraint.deferrable) out += ' ' + constraint.deferrable;
+      if (constraint.initially) out += ' INITIALLY ' + constraint.initially;
+      return out;
+    }
+    case 'generated_identity':
+      return `${prefix}GENERATED ${constraint.always ? 'ALWAYS' : 'BY DEFAULT'} AS IDENTITY${constraint.options ? ' ' + constraint.options : ''}`;
+    case 'primary_key':
+      return prefix + 'PRIMARY KEY';
+    case 'unique':
+      return prefix + 'UNIQUE';
+    case 'raw':
+      return constraint.text;
+  }
+}
+
+function formatColumnConstraints(constraints: readonly AST.ColumnConstraint[] | undefined): string | undefined {
+  if (!constraints || constraints.length === 0) return undefined;
+  return constraints.map(formatColumnConstraint).join(' ');
+}
+
 function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   for (const c of node.leadingComments) lines.push(c.text);
@@ -1793,7 +1865,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
     if (col.name) maxNameLen = Math.max(maxNameLen, col.name.length);
     if (col.dataType) maxTypeLen = Math.max(maxTypeLen, col.dataType.replace(/\s+/g, ' ').length);
   }
-  maxTypeLen = Math.min(maxTypeLen, LAYOUT_POLICY.createTableTypeAlignMax);
+  maxTypeLen = Math.min(maxTypeLen, ACTIVE_LAYOUT_POLICY.createTableTypeAlignMax);
 
   for (let i = 0; i < node.elements.length; i++) {
     const elem = node.elements[i];
@@ -1807,12 +1879,13 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       const typeNorm = (elem.dataType || '').replace(/\s+/g, ' ');
       const type = typeNorm.padEnd(maxTypeLen);
       let line = '    ' + name + ' ' + type;
-      if (elem.constraints) {
+      const constraints = formatColumnConstraints(elem.columnConstraints) || elem.constraints;
+      if (constraints) {
         const isLongestType = typeNorm.length >= maxTypeLen;
         if (maxTypeLen >= 13 && !isLongestType) {
-          line += elem.constraints;
+          line += constraints;
         } else {
-          line += ' ' + elem.constraints;
+          line += ' ' + constraints;
         }
       }
       lines.push(line.trimEnd() + comma);
@@ -2045,6 +2118,19 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
     lines.push(closeIndent + ')' + (isLast ? '' : ','));
   }
 
+  if (node.search) {
+    const kw = rightAlign('SEARCH', ctx);
+    lines.push(`${kw} ${node.search.mode} BY ${node.search.by.join(', ')} SET ${node.search.set}`);
+  }
+  if (node.cycle) {
+    const kw = rightAlign('CYCLE', ctx);
+    let cycle = `${kw} ${node.cycle.columns.join(', ')} SET ${node.cycle.set}`;
+    if (node.cycle.to) cycle += ` TO ${formatExpr(node.cycle.to)}`;
+    if (node.cycle.default) cycle += ` DEFAULT ${formatExpr(node.cycle.default)}`;
+    if (node.cycle.using) cycle += ` USING ${node.cycle.using}`;
+    lines.push(cycle);
+  }
+
   // Main query
   const mainCtx: FormatContext = {
     indentOffset: 0,
@@ -2258,6 +2344,8 @@ function formatExpr(expr: AST.Expression, depth: number = 0): string {
     }
     case 'regex_match':
       return formatExpr(expr.left, d) + ' ' + expr.operator + ' ' + formatExpr(expr.right, d);
+    case 'collate':
+      return formatExpr(expr.expr, d) + ' COLLATE ' + expr.collation;
   }
 
   return assertNeverExpr(expr);
@@ -2313,11 +2401,13 @@ function formatWindowFunctionSimple(expr: AST.WindowFunctionExpr, depth: number 
   }
   if (expr.frame) {
     if (over) over += ' ';
-    over += expr.frame;
+    over += formatFrameInline(expr.frame);
   }
   if (expr.exclude) {
-    if (over) over += ' ';
-    over += 'EXCLUDE ' + expr.exclude;
+    if (!expr.frame) {
+      if (over) over += ' ';
+      over += 'EXCLUDE ' + expr.exclude;
+    }
   }
   return func + ' OVER (' + over + ')';
 }
