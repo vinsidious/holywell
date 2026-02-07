@@ -14,7 +14,7 @@ npx husky init
 Add to `.husky/pre-commit`:
 
 ```bash
-npx sqlfmt --check $(git diff --cached --name-only --diff-filter=ACM -- '*.sql')
+npx @vcoppola/sqlfmt --check $(git diff --cached --name-only --diff-filter=ACM -- '*.sql')
 ```
 
 ### pre-commit framework
@@ -27,6 +27,15 @@ repos:
     rev: v1.1.1  # use the latest tag
     hooks:
       - id: sqlfmt
+        name: sqlfmt (format)
+        entry: npx @vcoppola/sqlfmt --write
+        language: node
+        types: [sql]
+      - id: sqlfmt-check
+        name: sqlfmt (check only)
+        entry: npx @vcoppola/sqlfmt --check
+        language: node
+        types: [sql]
 ```
 
 Then run:
@@ -34,6 +43,8 @@ Then run:
 ```bash
 pre-commit install
 ```
+
+Use `sqlfmt` to auto-fix files on commit, or `sqlfmt-check` to fail without modifying files (useful in CI).
 
 ## GitHub Actions
 
@@ -50,7 +61,23 @@ jobs:
         with:
           node-version: 20
       - run: npm install -g @vcoppola/sqlfmt
-      - run: sqlfmt --check **/*.sql
+      - run: sqlfmt --check "**/*.sql"
+```
+
+> **Note:** Quote the glob pattern (`"**/*.sql"`) to prevent shell expansion. Without quotes, your shell may expand the glob before sqlfmt sees it, which can miss files in subdirectories or fail if no `.sql` files exist in the current directory.
+
+## GitLab CI
+
+```yaml
+sqlfmt:
+  image: node:20
+  stage: lint
+  script:
+    - npm install -g @vcoppola/sqlfmt
+    - sqlfmt --check "**/*.sql"
+  rules:
+    - changes:
+        - "**/*.sql"
 ```
 
 ## VS Code
@@ -78,7 +105,7 @@ If you prefer not to use the extension, you can use the [Run on Save](https://ma
     "commands": [
       {
         "match": "\\.sql$",
-        "cmd": "npx sqlfmt ${file}"
+        "cmd": "npx @vcoppola/sqlfmt ${file}"
       }
     ]
   }
@@ -91,7 +118,7 @@ If you prefer not to use the extension, you can use the [Run on Save](https://ma
 
 ```vim
 " In .vimrc or init.vim
-autocmd FileType sql setlocal formatprg=npx\ sqlfmt
+autocmd FileType sql setlocal formatprg=npx\ @vcoppola/sqlfmt
 ```
 
 Then use `gq` to format a selection, or `gggqG` to format the entire file.
@@ -107,7 +134,7 @@ let g:ale_fix_on_save = 1
 
 " Define the sqlfmt fixer
 let g:ale_sql_sqlfmt_executable = 'npx'
-let g:ale_sql_sqlfmt_options = 'sqlfmt'
+let g:ale_sql_sqlfmt_options = '@vcoppola/sqlfmt'
 ```
 
 ### Neovim (conform.nvim)
@@ -120,7 +147,7 @@ require("conform").setup({
   formatters = {
     sqlfmt = {
       command = "npx",
-      args = { "sqlfmt" },
+      args = { "@vcoppola/sqlfmt" },
       stdin = true,
     },
   },
@@ -135,13 +162,13 @@ Configure as an External Tool:
 2. Click **+** to add a new tool:
    - **Name**: sqlfmt
    - **Program**: `npx`
-   - **Arguments**: `sqlfmt $FilePath$`
+   - **Arguments**: `@vcoppola/sqlfmt $FilePath$`
    - **Working directory**: `$ProjectFileDir$`
 3. Optionally assign a keyboard shortcut under **Settings > Keymap > External Tools > sqlfmt**
 
 To check formatting without modifying files:
 
-- **Arguments**: `sqlfmt --check $FilePath$`
+- **Arguments**: `@vcoppola/sqlfmt --check $FilePath$`
 
 ## npm Scripts
 
@@ -150,15 +177,17 @@ Add these to your project's `package.json`:
 ```json
 {
   "scripts": {
-    "sql:format": "sqlfmt **/*.sql",
-    "sql:check": "sqlfmt --check **/*.sql"
+    "sql:format": "sqlfmt --write \"**/*.sql\"",
+    "sql:check": "sqlfmt --check \"**/*.sql\""
   }
 }
 ```
 
+> **Note:** Quote glob patterns inside npm scripts to prevent shell expansion on Linux/macOS. The escaped double quotes (`\"**/*.sql\"`) ensure the pattern is passed to sqlfmt as-is.
+
 Then run:
 
 ```bash
-npm run sql:format   # format all SQL files
+npm run sql:format   # format all SQL files in place
 npm run sql:check    # check formatting (CI-friendly, exits non-zero if unformatted)
 ```

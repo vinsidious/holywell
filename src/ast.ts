@@ -61,9 +61,6 @@ export type Expression =
   | OrderedExpr
   | RawExpression;
 
-// Keep Expr as an alias for backward compatibility.
-export type Expr = Expression;
-
 export interface SelectStatement {
   type: 'select';
   distinct: boolean;
@@ -132,8 +129,6 @@ export interface AlterTableStatement {
   type: 'alter_table';
   objectType: string;
   objectName: string;
-  // Backward compatibility for existing code paths/tests
-  tableName: string;
   action: string; // raw text like "ADD COLUMN email VARCHAR(255) NOT NULL DEFAULT ''"
   actions: AlterAction[];
   leadingComments: CommentNode[];
@@ -193,8 +188,6 @@ export interface DropTableStatement {
   objectType: string;
   ifExists: boolean;
   objectName: string;
-  // Backward compatibility for existing code paths/tests
-  tableName: string;
   leadingComments: CommentNode[];
 }
 

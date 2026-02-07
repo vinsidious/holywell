@@ -1,7 +1,8 @@
 {
   "name": "@vcoppola/sqlfmt",
   "version": "1.1.1",
-  "description": "An opinionated SQL formatter implementing the Simon Holywell SQL Style Guide (sqlstyle.guide)",
+  "description": "Zero-config SQL formatter with river alignment (sqlstyle.guide). Zero dependencies.",
+  "sideEffects": false,
   "type": "module",
   "main": "dist/index.cjs",
   "types": "dist/index.d.cts",

@@ -12,18 +12,56 @@ Use this guide to roll out `sqlfmt` across an existing codebase with minimal chu
 
 Plan for one-time diffs when first applying formatting.
 
-## 2) Start in check-only mode
+## 2) Known behavior changes
+
+Before you run `sqlfmt` on existing SQL, understand what will change:
+
+### Keywords become uppercase
+
+All SQL keywords are uppercased. `select` becomes `SELECT`, `inner join` becomes `INNER JOIN`, etc.
+
+### Unquoted identifiers become lowercase
+
+Unquoted table and column names are lowercased. `MyTable` becomes `mytable`, `UserID` becomes `userid`.
+
+**Quoted identifiers are preserved exactly.** `"MyTable"` stays `"MyTable"`.
+
+### Whitespace is normalized
+
+- Leading and trailing whitespace is stripped from every line
+- Indentation is replaced with river-aligned formatting
+- Blank lines inside statements are removed
+- A trailing newline is added at the end of each statement
+
+### Warning: case-sensitive databases
+
+Most databases (PostgreSQL, MySQL, SQL Server) treat unquoted identifiers as case-insensitive, so lowercasing them has no effect on query behavior.
+
+However, if your database or collation is configured to treat unquoted identifiers as case-sensitive (uncommon, but possible in some configurations), lowercasing could change which table or column is referenced. In this case:
+
+1. Use quoted identifiers (`"MyTable"`) for any names that depend on specific casing
+2. Or run `sqlfmt --check` first to preview changes before applying `--write`
+
+### What does NOT change
+
+- String literals are preserved exactly (`'Hello World'` stays `'Hello World'`)
+- Numeric literals are preserved
+- Quoted identifiers are preserved
+- Comments are preserved (though their position may shift with reformatting)
+- SQL semantics are not altered -- only whitespace and casing change
+
+## 3) Start in check-only mode
 
 Run in CI without writing changes:
 
 ```bash
-npx sqlfmt --check "**/*.sql"
+npx @vcoppola/sqlfmt --check "**/*.sql"
 ```
 
 If your repo has generated/vendor SQL, exclude it first:
 
 ```bash
-npx sqlfmt --check --ignore "vendor/**" --ignore "generated/**" "**/*.sql"
+npx @vcoppola/sqlfmt --check --ignore "vendor/**" --ignore "generated/**" "**/*.sql"
 ```
 
 Or define ignores once in `.sqlfmtignore`:
@@ -33,48 +71,48 @@ vendor/**
 generated/**
 ```
 
-## 3) Batch-format in one commit
+## 4) Batch-format in one commit
 
 Create a dedicated formatting commit:
 
 ```bash
-npx sqlfmt --write "**/*.sql"
+npx @vcoppola/sqlfmt --write "**/*.sql"
 git add -A
 git commit -m "style: apply sqlfmt"
 ```
 
 Keeping formatting separate from feature changes makes review and rollback easier.
 
-## 4) Enforce in CI
+## 5) Enforce in CI
 
 After baseline formatting, enforce check mode in CI:
 
 ```bash
-npx sqlfmt --check "**/*.sql"
+npx @vcoppola/sqlfmt --check "**/*.sql"
 ```
 
 Useful companion flag for PR logs:
 
 ```bash
-npx sqlfmt --check --list-different "**/*.sql"
+npx @vcoppola/sqlfmt --check --list-different "**/*.sql"
 ```
 
-## 5) Add pre-commit guard
+## 6) Add pre-commit guard
 
 Run only on staged SQL files:
 
 ```bash
-sqlfmt --check $(git diff --cached --name-only -- '*.sql')
+npx @vcoppola/sqlfmt --check $(git diff --cached --name-only -- '*.sql')
 ```
 
 Or auto-fix staged files before commit:
 
 ```bash
-sqlfmt --write $(git diff --cached --name-only -- '*.sql')
+npx @vcoppola/sqlfmt --write $(git diff --cached --name-only -- '*.sql')
 git add $(git diff --cached --name-only -- '*.sql')
 ```
 
-## 6) Monorepo rollout strategy
+## 7) Monorepo rollout strategy
 
 For large repos, migrate package-by-package:
 
@@ -83,7 +121,6 @@ For large repos, migrate package-by-package:
 3. Enable CI check for that scope.
 4. Repeat until full coverage.
 
-## 7) Handling unsupported syntax
+## 8) Handling unsupported syntax
 
 In recovery mode (default), unknown constructs are preserved as raw SQL where possible. If you need strict parse failures, use API parse options with `recover: false` in custom tooling.
-
