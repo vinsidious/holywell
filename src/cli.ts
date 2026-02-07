@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync, globSync } from 'fs';
-import { dirname, join } from 'path';
+import { randomBytes } from 'crypto';
+import { readFileSync, writeFileSync, renameSync, unlinkSync, globSync } from 'fs';
+import { dirname, join, resolve } from 'path';
 import { formatSQL } from './format';
 import { ParseError } from './parser';
 import { TokenizeError } from './tokenizer';
@@ -19,6 +20,10 @@ interface CLIOptions {
   version: boolean;
   listDifferent: boolean;
   noColor: boolean;
+  verbose: boolean;
+  quiet: boolean;
+  ignore: string[];
+  stdinFilepath: string | null;
   files: string[];
 }
 
@@ -49,10 +54,14 @@ function bold(s: string): string {
 }
 
 function readVersion(): string {
-  const scriptPath = process.argv[1] || process.cwd();
-  const pkgPath = join(dirname(scriptPath), '..', 'package.json');
-  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string };
-  return pkg.version ?? '0.0.0';
+  try {
+    const scriptPath = process.argv[1] || process.cwd();
+    const pkgPath = join(dirname(scriptPath), '..', 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
 }
 
 function printHelp(): void {
@@ -70,17 +79,29 @@ Usage: sqlfmt [options] [file ...]
 Options:
   -h, --help            Show this help text
   -v, --version         Show version
+
+Formatting:
   --check               Exit 1 when input is not formatted
   --diff                Show unified diff when --check fails
   -w, --write           Write formatted output back to input file(s)
   -l, --list-different  Print only filenames that need formatting
+
+File selection:
+  --ignore <pattern>    Exclude files matching glob pattern (repeatable)
+  --stdin-filepath <p>  Path shown in error messages when reading stdin
+
+Output:
+  --verbose             Print progress details to stderr
+  --quiet               Suppress all output except errors
   --no-color            Disable colored output
 
 Examples:
   sqlfmt query.sql
   sqlfmt --check --diff "db/**/*.sql"
   sqlfmt -w one.sql two.sql
+  sqlfmt --write --ignore "migrations/**" "**/*.sql"
   cat query.sql | sqlfmt
+  cat query.sql | sqlfmt --stdin-filepath query.sql
   echo "SELECT 1;" | sqlfmt
 
   # Pipe from another command
@@ -106,10 +127,16 @@ function parseArgs(args: string[]): CLIOptions {
     version: false,
     listDifferent: false,
     noColor: false,
+    verbose: false,
+    quiet: false,
+    ignore: [],
+    stdinFilepath: null,
     files: [],
   };
 
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
     if (arg === '--check') {
       opts.check = true;
       continue;
@@ -138,12 +165,42 @@ function parseArgs(args: string[]): CLIOptions {
       opts.noColor = true;
       continue;
     }
+    if (arg === '--verbose') {
+      opts.verbose = true;
+      continue;
+    }
+    if (arg === '--quiet') {
+      opts.quiet = true;
+      continue;
+    }
+    if (arg === '--ignore') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('-')) {
+        throw new CLIUsageError('--ignore requires a glob pattern argument');
+      }
+      opts.ignore.push(next);
+      i++;
+      continue;
+    }
+    if (arg === '--stdin-filepath') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('-')) {
+        throw new CLIUsageError('--stdin-filepath requires a path argument');
+      }
+      opts.stdinFilepath = next;
+      i++;
+      continue;
+    }
 
     if (arg.startsWith('-')) {
       throw new CLIUsageError(`Unknown option: ${arg}`);
     }
 
     opts.files.push(arg);
+  }
+
+  if (opts.verbose && opts.quiet) {
+    throw new CLIUsageError('--verbose and --quiet cannot be used together');
   }
 
   if (opts.diff && !opts.check) {
@@ -175,6 +232,26 @@ function isGlobPattern(arg: string): boolean {
   return GLOB_CHARS.test(arg);
 }
 
+class NoFilesMatchedError extends Error {
+  readonly pattern: string;
+  constructor(pattern: string) {
+    super(`No files matched pattern: '${pattern}'`);
+    this.name = 'NoFilesMatchedError';
+    this.pattern = pattern;
+  }
+}
+
+// Filter out files in .git/, node_modules/, and dotfiles/dotdirs from glob results
+const EXCLUDED_PATH_RE = /(?:^|[/\\])(?:\.git|node_modules)(?:[/\\]|$)/;
+const DOTFILE_SEGMENT_RE = /(?:^|[/\\])\.[^./\\]/;
+
+function shouldExcludeFromGlob(filepath: string): boolean {
+  return EXCLUDED_PATH_RE.test(filepath) || DOTFILE_SEGMENT_RE.test(filepath);
+}
+
+// Cap total file count from glob expansion to prevent runaway matches
+const MAX_GLOB_FILES = 10_000;
+
 function expandGlobs(files: string[]): string[] {
   const result: string[] = [];
   for (const f of files) {
@@ -183,19 +260,74 @@ function expandGlobs(files: string[]): string[] {
       continue;
     }
     try {
-      const matches = globSync(f);
+      const matches = globSync(f).filter(m => !shouldExcludeFromGlob(m));
       if (matches.length === 0) {
-        // No matches — treat as literal path (will error on read)
-        result.push(f);
-      } else {
-        result.push(...matches.sort());
+        throw new NoFilesMatchedError(f);
       }
-    } catch {
+      result.push(...matches.sort());
+      if (result.length > MAX_GLOB_FILES) {
+        throw new CLIUsageError(
+          `Too many files matched (${result.length} > ${MAX_GLOB_FILES}). Narrow your glob pattern.`
+        );
+      }
+    } catch (err) {
+      if (err instanceof NoFilesMatchedError) throw err;
+      if (err instanceof CLIUsageError) throw err;
       // globSync not available or failed — treat as literal path
       result.push(f);
     }
   }
   return result;
+}
+
+function matchesAnyIgnorePattern(filepath: string, patterns: string[]): boolean {
+  for (const pattern of patterns) {
+    // Simple glob matching: convert glob pattern to regex.
+    // Supports *, **, and ?. Uses non-greedy .*? for ** to avoid catastrophic backtracking.
+    const regexStr = pattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')  // escape regex special chars (except * and ?)
+      .replace(/\*\*/g, '\0DOUBLESTAR\0')       // placeholder for **
+      .replace(/\*/g, '[^/]*?')                  // * matches anything except / (non-greedy)
+      .replace(/\0DOUBLESTAR\0/g, '.*?')         // ** matches anything including / (non-greedy)
+      .replace(/\?/g, '[^/]');                    // ? matches single non-/ char
+    const regex = new RegExp(`^${regexStr}$`);
+    // Test against the full path and also against each suffix of path segments
+    const segments = filepath.replace(/^\.\//, '').split('/');
+    for (let i = 0; i < segments.length; i++) {
+      const subpath = segments.slice(i).join('/');
+      if (regex.test(subpath)) return true;
+    }
+  }
+  return false;
+}
+
+// Validate that a relative file path doesn't escape the current working directory via traversal.
+// Returns the resolved absolute path, or null if a relative path resolves outside CWD.
+function validateWritePath(file: string): string | null {
+  const resolved = resolve(file);
+  // Only enforce CWD containment for relative paths, where ".." traversal is a concern.
+  // Absolute paths (from glob expansion or explicit user input) are trusted as-is.
+  if (!file.startsWith('/')) {
+    const cwd = process.cwd();
+    if (!resolved.startsWith(cwd + '/') && resolved !== cwd) {
+      return null;
+    }
+  }
+  return resolved;
+}
+
+// Write a file atomically: write to a temp file first, then rename.
+// This prevents partial writes from corrupting the original file.
+function atomicWriteFileSync(file: string, content: string): void {
+  const suffix = randomBytes(8).toString('hex');
+  const tmpFile = `${file}.sqlfmt.${suffix}.tmp`;
+  try {
+    writeFileSync(tmpFile, content, 'utf-8');
+    renameSync(tmpFile, file);
+  } catch (err) {
+    try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
+    throw err;
+  }
 }
 
 function normalizeForComparison(input: string): string {
@@ -268,16 +400,25 @@ function getSourceLine(input: string, line: number): string {
   return '';
 }
 
-function formatErrorExcerpt(input: string, line: number, column: number, message: string): string {
+function formatErrorExcerpt(
+  input: string,
+  line: number,
+  column: number,
+  message: string,
+  filepath?: string | null,
+): string {
   const sourceLine = getSourceLine(input, line);
   const caret = ' '.repeat(Math.max(0, column - 1)) + '^';
-  return red(`Parse error at line ${line}, column ${column}:`) + `\n\n  ${sourceLine}\n  ${caret}\n  ${message}`;
+  const location = filepath
+    ? `${filepath}:${line}:${column}:`
+    : `Parse error at line ${line}, column ${column}:`;
+  return red(location) + `\n\n  ${sourceLine}\n  ${caret}\n  ${message}`;
 }
 
-function handleParseError(err: unknown, input?: string): never {
+function handleParseError(err: unknown, input?: string, filepath?: string | null): never {
   if (err instanceof ParseError) {
     if (input) {
-      console.error(formatErrorExcerpt(input, err.line, err.column, err.message));
+      console.error(formatErrorExcerpt(input, err.line, err.column, err.message, filepath));
     } else {
       console.error(red(`Parse error at line ${err.line}, column ${err.column}: ${err.message}`));
     }
@@ -285,7 +426,7 @@ function handleParseError(err: unknown, input?: string): never {
   }
   if (err instanceof TokenizeError) {
     if (input) {
-      console.error(formatErrorExcerpt(input, err.line, err.column, err.message));
+      console.error(formatErrorExcerpt(input, err.line, err.column, err.message, filepath));
     } else {
       console.error(red(`Parse error at line ${err.line}, column ${err.column}: ${err.message}`));
     }
@@ -310,32 +451,50 @@ function main(): void {
 
     initColor(opts);
 
-    const expandedFiles = expandGlobs(opts.files);
+    let expandedFiles = expandGlobs(opts.files);
+
+    // Apply --ignore patterns
+    if (opts.ignore.length > 0 && expandedFiles.length > 0) {
+      expandedFiles = expandedFiles.filter(f => !matchesAnyIgnorePattern(f, opts.ignore));
+    }
+
     let checkFailures = 0;
+    let changedCount = 0;
 
     if (expandedFiles.length === 0 && opts.files.length === 0) {
+      // stdin mode
       const input = readFileSync(0, 'utf-8');
       let output: string;
       try {
         output = formatOneInput(input);
       } catch (err) {
-        handleParseError(err, input);
+        handleParseError(err, input, opts.stdinFilepath);
       }
 
       if (opts.check) {
         const normalizedInput = normalizeForComparison(input);
         if (normalizedInput !== output) {
           checkFailures++;
-          console.error(red('Input is not formatted.'));
-          if (opts.diff) {
+          if (!opts.quiet) {
+            console.error(red('Input is not formatted.'));
+          }
+          if (opts.diff && !opts.quiet) {
             console.error(unifiedDiff(normalizedInput, output));
           }
         }
-      } else {
+      } else if (!opts.quiet) {
         process.stdout.write(output);
       }
     } else {
+      if (opts.verbose) {
+        console.error(`Formatting ${expandedFiles.length} file${expandedFiles.length === 1 ? '' : 's'}...`);
+      }
+
       for (const file of expandedFiles) {
+        if (opts.verbose) {
+          console.error(file);
+        }
+
         const input = readFileSync(file, 'utf-8');
 
         let output: string;
@@ -346,7 +505,15 @@ function main(): void {
         }
 
         if (opts.write) {
-          if (input !== output) writeFileSync(file, output, 'utf-8');
+          if (input !== output) {
+            const validPath = validateWritePath(file);
+            if (validPath === null) {
+              console.error(red(`Warning: skipping '${file}' — path resolves outside working directory`));
+            } else {
+              atomicWriteFileSync(validPath, output);
+              changedCount++;
+            }
+          }
           continue;
         }
 
@@ -363,39 +530,53 @@ function main(): void {
           const normalizedInput = normalizeForComparison(input);
           if (normalizedInput !== output) {
             checkFailures++;
-            console.error(red(`${file}: not formatted.`));
-            if (opts.diff) {
+            if (!opts.quiet) {
+              console.error(red(`${file}: not formatted.`));
+            }
+            if (opts.diff && !opts.quiet) {
               console.error(unifiedDiff(normalizedInput, output));
             }
           }
           continue;
         }
 
-        process.stdout.write(output);
+        if (!opts.quiet) {
+          process.stdout.write(output);
+        }
+      }
+
+      if (opts.verbose) {
+        console.error(`Formatted ${expandedFiles.length} file${expandedFiles.length === 1 ? '' : 's'} (${changedCount} changed)`);
       }
     }
 
     if (opts.check && checkFailures === 0 && expandedFiles.length > 0) {
-      console.error(green('All files are formatted.'));
+      if (!opts.quiet) {
+        console.error(green('All files are formatted.'));
+      }
     }
 
     if (checkFailures > 0) {
       process.exit(1);
     }
   } catch (err) {
-    if (err instanceof CLIUsageError) {
+    if (err instanceof CLIUsageError || err instanceof NoFilesMatchedError) {
       console.error(red(err.message));
       process.exit(1);
     }
 
-    const ioErr = err as NodeJS.ErrnoException;
-    if (ioErr && typeof ioErr === 'object' && (ioErr.code === 'ENOENT' || ioErr.code === 'EISDIR')) {
+    if (err instanceof ParseError || err instanceof TokenizeError) {
+      handleParseError(err);
+    }
+
+    const ioErr = err as NodeJS.ErrnoException | undefined;
+    if (ioErr?.code === 'ENOENT' || ioErr?.code === 'EISDIR') {
       console.error(red(`I/O error: ${ioErr.message}`));
       process.exit(1);
     }
 
-    handleParseError(err);
-    throw err;
+    console.error(red(`Unexpected error: ${err instanceof Error ? err.message : String(err)}`));
+    process.exit(1);
   }
 }
 

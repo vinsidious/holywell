@@ -24,15 +24,54 @@ const TYPE_CONTINUATIONS: Record<string, Set<string>> = {
   WITHOUT: new Set(['TIME']),
 };
 
+/**
+ * Options for {@link parse} and the {@link Parser} constructor.
+ */
 export interface ParseOptions {
+  /**
+   * When `true` (default), unparseable statements are preserved as
+   * `RawStatement` nodes instead of throwing.
+   *
+   * @default true
+   */
   recover?: boolean;
+
+  /**
+   * Maximum allowed nesting depth. Exceeding this limit throws an error
+   * to prevent stack overflow on deeply nested or adversarial input.
+   *
+   * @default 100
+   */
   maxDepth?: number;
 }
 
+/**
+ * Thrown when the parser encounters unexpected tokens and recovery is disabled.
+ *
+ * Carries the offending {@link Token} plus the human-readable description of
+ * what was expected, making it straightforward to build rich diagnostics.
+ *
+ * @example
+ * ```typescript
+ * import { parse, ParseError } from '@vcoppola/sqlfmt';
+ *
+ * try {
+ *   parse('SELECT FROM;', { recover: false });
+ * } catch (err) {
+ *   if (err instanceof ParseError) {
+ *     console.error(`${err.line}:${err.column} - expected ${err.expected}`);
+ *   }
+ * }
+ * ```
+ */
 export class ParseError extends Error {
+  /** The token that triggered the error. */
   readonly token: Token;
+  /** Human-readable description of what the parser expected. */
   readonly expected: string;
+  /** One-based line number of the offending token. */
   readonly line: number;
+  /** One-based column number of the offending token. */
   readonly column: number;
 
   constructor(expected: string, token: Token) {
@@ -43,6 +82,24 @@ export class ParseError extends Error {
     this.token = token;
     this.line = token.line;
     this.column = token.column;
+  }
+}
+
+/**
+ * Thrown when the parser exceeds the configured maximum nesting depth.
+ *
+ * This is a subclass of {@link ParseError} so callers catching `ParseError`
+ * still receive it, but it can be distinguished via `instanceof` when depth
+ * violations need special handling (e.g. never recovered to RawStatement).
+ */
+export class MaxDepthError extends ParseError {
+  /** The configured nesting depth limit that was exceeded. */
+  readonly maxDepth: number;
+
+  constructor(maxDepth: number, token: Token) {
+    super(`maximum nesting depth ${maxDepth}`, token);
+    this.name = 'MaxDepthError';
+    this.maxDepth = maxDepth;
   }
 }
 
@@ -94,6 +151,29 @@ export class Parser {
     this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   }
 
+  /**
+   * Parse all statements from the token stream.
+   *
+   * **Recovery mode** (`this.recover === true`, the default):
+   * When a statement fails to parse, the error is caught and the parser
+   * rewinds to the start of that statement. The tokens are then consumed
+   * as a {@link AST.RawExpression} (raw text) up to the next semicolon.
+   * This allows the formatter to pass through unrecognized SQL verbatim
+   * rather than aborting the entire input.
+   *
+   * Recovery is limited to ordinary {@link ParseError}s. The following
+   * errors always propagate regardless of recovery mode:
+   *   - {@link MaxDepthError} — nesting depth exceeded (security guard)
+   *   - Non-ParseError exceptions (e.g. runtime TypeError)
+   *
+   * **Strict mode** (`this.recover === false`):
+   * All ParseErrors propagate immediately, letting the caller handle them.
+   *
+   * API consumers should be aware that in recovery mode the returned array
+   * may contain `RawExpression` nodes alongside structured statement nodes.
+   * These raw nodes preserve the original text and can be detected via
+   * `node.type === 'raw'`.
+   */
   parseStatements(): AST.Node[] {
     const stmts: AST.Node[] = [];
     while (!this.isAtEnd()) {
@@ -106,7 +186,8 @@ export class Parser {
       } catch (err) {
         if (!this.recover) throw err;
         if (!(err instanceof ParseError)) throw err;
-        if (err.expected.startsWith('maximum nesting depth')) throw err;
+        if (err instanceof MaxDepthError) throw err;
+        // Recovery: rewind and consume as raw text until next semicolon
         this.pos = stmtStart;
         const raw = this.parseRawStatement();
         if (raw) stmts.push(raw);
@@ -383,8 +464,6 @@ export class Parser {
     }
 
     const table = this.parseTableExpr();
-    let alias: string | undefined;
-    let aliasColumns: string[] | undefined;
     let tablesample: AST.FromClause['tablesample'];
 
     // TABLESAMPLE
@@ -404,36 +483,49 @@ export class Parser {
       tablesample = { method, args, repeatable };
     }
 
+    const { alias, aliasColumns } = this.parseOptionalAlias(['TABLESAMPLE']);
+
+    return { table, alias, aliasColumns, lateral, tablesample };
+  }
+
+  // Shared alias parsing for FROM items and JOINs.
+  // Parses optional AS alias (col1, col2) or bare alias after a table expression.
+  // extraStopKeywords: additional keywords that prevent implicit alias detection.
+  private parseOptionalAlias(extraStopKeywords: string[] = []): { alias?: string; aliasColumns?: string[] } {
+    let alias: string | undefined;
+    let aliasColumns: string[] | undefined;
+
     if (this.peekUpper() === 'AS') {
       this.advance();
       alias = this.advance().value;
-      // Check for column alias list: AS alias(col1, col2)
-      if (this.check('(')) {
-        this.advance();
-        const cols: string[] = [];
-        while (!this.check(')') && !this.isAtEnd()) {
-          cols.push(this.advance().value);
-          if (this.check(',')) this.advance();
-        }
-        this.expect(')');
-        aliasColumns = cols;
-      }
-    } else if (this.peekType() === 'identifier' && !CLAUSE_KEYWORDS.has(this.peekUpper()) && !this.isJoinKeyword() && !this.check(',') && !this.check(')') && !this.check(';') && this.peekUpper() !== 'TABLESAMPLE') {
+      aliasColumns = this.tryParseAliasColumnList();
+    } else if (
+      this.peekType() === 'identifier'
+      && !CLAUSE_KEYWORDS.has(this.peekUpper())
+      && !this.isJoinKeyword()
+      && !this.check(',')
+      && !this.check(')')
+      && !this.check(';')
+      && !extraStopKeywords.includes(this.peekUpper())
+    ) {
       alias = this.advance().value;
-      // Check for column alias list
-      if (this.check('(')) {
-        this.advance();
-        const cols: string[] = [];
-        while (!this.check(')') && !this.isAtEnd()) {
-          cols.push(this.advance().value);
-          if (this.check(',')) this.advance();
-        }
-        this.expect(')');
-        aliasColumns = cols;
-      }
+      aliasColumns = this.tryParseAliasColumnList();
     }
 
-    return { table, alias, aliasColumns, lateral, tablesample };
+    return { alias, aliasColumns };
+  }
+
+  // Parse an optional parenthesized column alias list: (col1, col2, ...)
+  private tryParseAliasColumnList(): string[] | undefined {
+    if (!this.check('(')) return undefined;
+    this.advance();
+    const cols: string[] = [];
+    while (!this.check(')') && !this.isAtEnd()) {
+      cols.push(this.advance().value);
+      if (this.check(',')) this.advance();
+    }
+    this.expect(')');
+    return cols;
   }
 
   private parseTableExpr(): AST.Expression {
@@ -503,35 +595,8 @@ export class Parser {
     }
 
     const table = this.parseTableExpr();
-    let alias: string | undefined;
-    let aliasColumns: string[] | undefined;
-
-    if (this.peekUpper() === 'AS') {
-      this.advance();
-      alias = this.advance().value;
-      if (this.check('(')) {
-        this.advance();
-        const cols: string[] = [];
-        while (!this.check(')') && !this.isAtEnd()) {
-          cols.push(this.advance().value);
-          if (this.check(',')) this.advance();
-        }
-        this.expect(')');
-        aliasColumns = cols;
-      }
-    } else if (this.peekType() === 'identifier' && !CLAUSE_KEYWORDS.has(this.peekUpper()) && !this.isJoinKeyword() && this.peekUpper() !== 'ON' && this.peekUpper() !== 'USING' && !this.check(',') && !this.check(')') && !this.check(';')) {
-      alias = this.advance().value;
-      if (this.check('(')) {
-        this.advance();
-        const cols: string[] = [];
-        while (!this.check(')') && !this.isAtEnd()) {
-          cols.push(this.advance().value);
-          if (this.check(',')) this.advance();
-        }
-        this.expect(')');
-        aliasColumns = cols;
-      }
-    }
+    // ON and USING are already in CLAUSE_KEYWORDS, so no extra stop keywords needed
+    const { alias, aliasColumns } = this.parseOptionalAlias();
 
     let on: AST.Expression | undefined;
     let usingClause: string[] | undefined;
@@ -2919,7 +2984,7 @@ export class Parser {
     this.depth++;
     if (this.depth > this.maxDepth) {
       this.depth--;
-      throw new ParseError(`maximum nesting depth ${this.maxDepth}`, this.peek());
+      throw new MaxDepthError(this.maxDepth, this.peek());
     }
     try {
       return fn();
@@ -2936,22 +3001,41 @@ export class Parser {
  * {@link Parser}. Each top-level SQL statement becomes one node in the
  * returned array.
  *
+ * By default, **recovery mode** is enabled: statements that cannot be parsed
+ * are silently captured as `RawExpression` nodes (type `'raw'`) so the
+ * formatter can pass them through unchanged. To get strict parsing where
+ * every syntax error throws, set `recover: false`.
+ *
+ * Note: {@link MaxDepthError} always throws even in recovery mode, because
+ * exceeding the nesting limit is a security boundary, not a syntax issue.
+ *
  * @param input    Raw SQL text containing one or more statements.
  * @param options  Parser options (recovery mode, max nesting depth).
- * @returns An array of {@link AST.Node} trees, one per statement. Returns an
- *   empty array for blank input.
+ * @returns An array of {@link AST.Node} trees, one per statement. In
+ *   recovery mode (default), some entries may be `RawExpression` nodes
+ *   for statements that could not be parsed. Returns an empty array for
+ *   blank input.
  * @throws {TokenizeError} When the input contains unterminated literals or comments.
  * @throws {ParseError} When `recover` is `false` and a statement cannot be parsed.
+ * @throws {MaxDepthError} When nesting depth exceeds `maxDepth` (always, regardless
+ *   of recovery mode).
  *
  * @example
  * import { parse } from '@vcoppola/sqlfmt';
  *
  * const ast = parse('SELECT id, name FROM users WHERE active = TRUE;');
- * // ast[0].type === 'select_statement'
+ * // ast[0].type === 'select'
  *
  * @example
  * // Strict mode -- throws on parse errors instead of recovering
  * const ast = parse('SELECT ...', { recover: false });
+ *
+ * @example
+ * // Detect unrecognized statements in recovery mode
+ * const nodes = parse('SELECT 1; FOOBAR baz;');
+ * for (const node of nodes) {
+ *   if (node.type === 'raw') console.warn('Unparsed:', node);
+ * }
  */
 export function parse(input: string, options: ParseOptions = {}): AST.Node[] {
   if (!input.trim()) return [];

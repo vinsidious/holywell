@@ -1,11 +1,54 @@
 import * as AST from './ast';
 import { FUNCTION_KEYWORDS } from './keywords';
 
+// Type guard: checks if an InExpr's values field is a SubqueryExpr (vs Expression[])
+function isSubqueryValues(values: AST.Expression[] | AST.SubqueryExpr): values is AST.SubqueryExpr {
+  return !Array.isArray(values) && typeof values === 'object' && 'type' in values && values.type === 'subquery';
+}
+
 // The formatter walks the AST and produces formatted SQL per the Holywell style guide.
 // Key concept: "The River" — top-level clause keywords are right-aligned so content
 // starts at a consistent column position.
 
 const DEFAULT_RIVER = 6; // length of SELECT keyword
+const MAX_FORMATTER_DEPTH = 200;
+
+// Layout thresholds that control when the formatter breaks lines or switches
+// from inline to multi-line output. Values are in character columns.
+//
+//   topLevelInlineColumnMax (66)
+//     Maximum columns for a top-level SELECT column list on one line.
+//     66 = 80 (standard terminal) - 6 (river) - 8 (typical indent headroom).
+//
+//   nestedInlineColumnMax (80)
+//     Maximum columns for inline expressions inside subqueries/CTEs.
+//     Matches the standard 80-column terminal width.
+//
+//   nestedInlineWithShortAliasesMax (66)
+//     Same as topLevelInlineColumnMax — used for nested contexts where
+//     short aliases keep things compact enough to warrant a tighter limit.
+//
+//   topLevelAliasBreakMin (50)
+//     When a column alias pushes a line past this threshold, the alias is
+//     moved to the next line. ~63% of 80 columns, keeps aliases readable.
+//
+//   nestedConcatTailBreakMin (66)
+//     Threshold for breaking concatenation operator (||) tails in nested
+//     contexts. Matches the 66-column river-aware limit.
+//
+//   groupPackColumnMax (66)
+//     Maximum columns before GROUP BY / ORDER BY items wrap to new lines.
+//     Same river-aware 66-column limit as top-level SELECT lists.
+//
+//   nestedGroupPackColumnMax (80)
+//     Same as groupPackColumnMax but for nested contexts — full terminal width.
+//
+//   expressionWrapColumnMax (80)
+//     Maximum columns for general expression wrapping. Standard terminal width.
+//
+//   createTableTypeAlignMax (13)
+//     Maximum data-type-name length (e.g. "VARCHAR(255)") for column-type
+//     alignment in CREATE TABLE. 13 covers common types like TIMESTAMP(6).
 const LAYOUT_POLICY = {
   topLevelInlineColumnMax: 66,
   nestedInlineColumnMax: 80,
@@ -23,6 +66,7 @@ interface FormatContext {
   riverWidth: number;
   isSubquery: boolean;
   outerColumnOffset?: number;  // additional columns in the final output (for threshold calc in subqueries)
+  depth: number;  // current recursion depth for stack overflow prevention
 }
 
 export function formatStatements(nodes: AST.Node[]): string {
@@ -32,6 +76,7 @@ export function formatStatements(nodes: AST.Node[]): string {
       indentOffset: 0,
       riverWidth: deriveRiverWidth(node),
       isSubquery: false,
+      depth: 0,
     }));
   }
   return parts.join('\n\n') + '\n';
@@ -158,8 +203,10 @@ function formatNode(node: AST.Node, ctx: FormatContext): string {
     case 'standalone_values': return formatStandaloneValues(node, ctx);
     case 'raw': return node.text;
     case 'comment': return node.text;
-    default:
-      throw new Error(`Unknown node type: ${(node as { type?: string }).type ?? 'unknown'}`);
+    default: {
+      const _exhaustive: never = node;
+      throw new Error(`Unknown node type: ${(_exhaustive as { type?: string }).type ?? 'unknown'}`);
+    }
   }
 }
 
@@ -622,17 +669,18 @@ function fmtExprColumnAware(expr: AST.Expression, col: number, outerOffset: numb
   if (expr.type === 'in') {
     const simple = fmtExpr(expr);
     if (col + outerOffset + simple.length > LAYOUT_POLICY.expressionWrapColumnMax) {
-      return fmtInExprWrapped(expr as AST.InExpr, col);
+      return fmtInExprWrapped(expr, col);
     }
   }
   return fmtExpr(expr);
 }
 
-// Wrap IN list values across lines when too long
+// Wrap IN list values across lines when too long (only called for non-subquery IN)
 function fmtInExprWrapped(expr: AST.InExpr, col: number): string {
   const neg = expr.negated ? 'NOT ' : '';
   const prefix = fmtExpr(expr.expr) + ' ' + neg + 'IN (';
-  const vals = (expr.values as AST.Expression[]).map(fmtExpr);
+  if (isSubqueryValues(expr.values)) return fmtExpr(expr);
+  const vals = expr.values.map(fmtExpr);
   const valStartCol = col + prefix.length;
   const valPad = ' '.repeat(valStartCol);
 
@@ -668,7 +716,7 @@ function isLiteralLike(expr: AST.Expression): boolean {
   if (expr.type === 'literal') return true;
   if (expr.type === 'interval' || expr.type === 'null' || expr.type === 'typed_string') return true;
   if (expr.type === 'raw') return /^INTERVAL\s+/.test(expr.text) || /^NULL$/i.test(expr.text);
-  if (expr.type === 'pg_cast') return isLiteralLike(expr.expr as AST.Expression);
+  if (expr.type === 'pg_cast') return isLiteralLike(expr.expr);
   if (expr.type === 'paren') return isLiteralLike(expr.expr);
   return false;
 }
@@ -683,7 +731,7 @@ function formatFromClause(from: AST.FromClause, ctx: FormatContext): string {
   if (from.tablesample) {
     result += ' TABLESAMPLE ' + from.tablesample.method + '(' + from.tablesample.args.map(fmtExpr).join(', ') + ')';
     if (from.tablesample.repeatable) {
-      result += ' REPEATABLE(' + fmtExpr(from.tablesample.repeatable as AST.Expression) + ')';
+      result += ' REPEATABLE(' + fmtExpr(from.tablesample.repeatable) + ')';
     }
   }
   if (from.alias) {
@@ -749,9 +797,12 @@ function formatJoinTable(join: AST.JoinClause, tableStartCol: number): string {
   return result;
 }
 
-function formatJoinOn(expr: AST.Expression, baseCol: number): string {
+function formatJoinOn(expr: AST.Expression, baseCol: number, depth: number = 0): string {
+  if (depth >= MAX_FORMATTER_DEPTH) {
+    return fmtExpr(expr);
+  }
   if (expr.type === 'binary' && expr.operator === 'AND') {
-    const left = formatJoinOn(expr.left, baseCol);
+    const left = formatJoinOn(expr.left, baseCol, depth + 1);
     const indent = ' '.repeat(baseCol);
     return left + '\n' + indent + 'AND ' + fmtExpr(expr.right);
   }
@@ -765,16 +816,23 @@ function formatCondition(expr: AST.Expression, ctx: FormatContext): string {
 }
 
 function formatConditionInner(expr: AST.Expression, ctx: FormatContext): string {
+  if (ctx.depth >= MAX_FORMATTER_DEPTH) {
+    return fmtExpr(expr);
+  }
   if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
-    const left = formatConditionInner(expr.left, ctx);
+    const deeper = { ...ctx, depth: ctx.depth + 1 };
+    const left = formatConditionInner(expr.left, deeper);
     const opKw = rightAlign(expr.operator, ctx);
-    const right = formatConditionRight(expr.right, ctx);
+    const right = formatConditionRight(expr.right, deeper);
     return left + '\n' + opKw + ' ' + right;
   }
   return fmtExprInCondition(expr, ctx);
 }
 
 function formatConditionRight(expr: AST.Expression, ctx: FormatContext): string {
+  if (ctx.depth >= MAX_FORMATTER_DEPTH) {
+    return fmtExpr(expr);
+  }
   if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
     return formatConditionInner(expr, ctx);
   }
@@ -837,10 +895,10 @@ function fmtExprInCondition(expr: AST.Expression, ctx: FormatContext): string {
   }
 
   // IN with subquery
-  if (expr.type === 'in' && 'type' in expr.values && (expr.values as any).type === 'subquery') {
+  if (expr.type === 'in' && isSubqueryValues(expr.values)) {
     const e = fmtExpr(expr.expr);
     const neg = expr.negated ? 'NOT ' : '';
-    const subqExpr = expr.values as AST.SubqueryExpr;
+    const subqExpr = expr.values;
 
     // NOT IN: always on new line
     if (expr.negated) {
@@ -889,18 +947,24 @@ function fmtExprInCondition(expr: AST.Expression, ctx: FormatContext): string {
   return fmtExpr(expr);
 }
 
-function formatParenLogical(expr: AST.BinaryExpr, opCol: number): string {
-  const left = formatParenOperand(expr.left, opCol, expr.operator);
-  const right = formatParenOperand(expr.right, opCol, expr.operator);
+function formatParenLogical(expr: AST.BinaryExpr, opCol: number, depth: number = 0): string {
+  if (depth >= MAX_FORMATTER_DEPTH) {
+    return fmtExpr(expr);
+  }
+  const left = formatParenOperand(expr.left, opCol, expr.operator, depth + 1);
+  const right = formatParenOperand(expr.right, opCol, expr.operator, depth + 1);
   return left + '\n' + ' '.repeat(opCol) + expr.operator + ' ' + right;
 }
 
-function formatParenOperand(expr: AST.Expression, opCol: number, parentOp: string): string {
+function formatParenOperand(expr: AST.Expression, opCol: number, parentOp: string, depth: number = 0): string {
+  if (depth >= MAX_FORMATTER_DEPTH) {
+    return fmtExpr(expr);
+  }
   if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
-    return formatParenLogical(expr, opCol);
+    return formatParenLogical(expr, opCol, depth);
   }
   if (expr.type === 'paren' && expr.expr.type === 'binary' && (expr.expr.operator === 'AND' || expr.expr.operator === 'OR')) {
-    return '(' + formatParenLogical(expr.expr, opCol + parentOp.length + 2) + ')';
+    return '(' + formatParenLogical(expr.expr, opCol + parentOp.length + 2, depth) + ')';
   }
   return fmtExpr(expr);
 }
@@ -909,13 +973,15 @@ function formatParenOperand(expr: AST.Expression, opCol: number, parentOp: strin
 
 function formatQueryExpressionForSubquery(
   query: AST.QueryExpression,
-  outerColumnOffset?: number
+  outerColumnOffset?: number,
+  depth: number = 0
 ): string {
   return formatNode(query, {
     indentOffset: 0,
     riverWidth: deriveRiverWidth(query),
     isSubquery: true,
     outerColumnOffset,
+    depth,
   });
 }
 
@@ -1120,7 +1186,7 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
       const conflictCtx: FormatContext = { ...dmlCtx, indentOffset: 7 };
       for (let i = 0; i < (node.onConflict.setItems || []).length; i++) {
         const item = node.onConflict.setItems![i];
-        const val = item.column + ' = ' + fmtExpr(item.value as AST.Expression);
+        const val = item.column + ' = ' + fmtExpr(item.value);
         const comma = i < node.onConflict.setItems!.length - 1 ? ',' : '';
         if (i === 0) {
           lines.push(rightAlign('SET', conflictCtx) + ' ' + val + comma);
@@ -1129,13 +1195,13 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
         }
       }
       if (node.onConflict.where) {
-        lines.push(rightAlign('WHERE', conflictCtx) + ' ' + formatCondition(node.onConflict.where as AST.Expression, dmlCtx));
+        lines.push(rightAlign('WHERE', conflictCtx) + ' ' + formatCondition(node.onConflict.where, dmlCtx));
       }
     }
   }
 
   if (node.returning && node.returning.length > 0) {
-    lines.push(rightAlign('RETURNING', dmlCtx) + ' ' + node.returning.map(e => fmtExpr(e as AST.Expression)).join(', ') + ';');
+    lines.push(rightAlign('RETURNING', dmlCtx) + ' ' + node.returning.map(fmtExpr).join(', ') + ';');
     return lines.join('\n');
   }
 
@@ -1187,7 +1253,7 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
   }
 
   if (node.returning && node.returning.length > 0) {
-    lines.push(rightAlign('RETURNING', dmlCtx) + ' ' + node.returning.map(e => fmtExpr(e as AST.Expression)).join(', ') + ';');
+    lines.push(rightAlign('RETURNING', dmlCtx) + ' ' + node.returning.map(fmtExpr).join(', ') + ';');
     return lines.join('\n');
   }
 
@@ -1222,7 +1288,7 @@ function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
   }
 
   if (node.returning && node.returning.length > 0) {
-    lines.push(rightAlign('RETURNING', dmlCtx) + ' ' + node.returning.map(e => fmtExpr(e as AST.Expression)).join(', ') + ';');
+    lines.push(rightAlign('RETURNING', dmlCtx) + ' ' + node.returning.map(fmtExpr).join(', ') + ';');
     return lines.join('\n');
   }
 
@@ -1262,7 +1328,7 @@ function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): 
   header += ' ' + node.name;
   lines.push(header);
 
-  const cols = node.columns.map(c => fmtExpr(c as AST.Expression)).join(', ');
+  const cols = node.columns.map(fmtExpr).join(', ');
   if (node.using) {
     lines.push(rightAlign('ON', idxCtx) + ' ' + node.table);
     lines.push(rightAlign('USING', idxCtx) + ' ' + node.using + ' (' + cols + ')');
@@ -1271,7 +1337,7 @@ function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): 
   }
 
   if (node.where) {
-    lines.push(rightAlign('WHERE', idxCtx) + ' ' + formatCondition(node.where as AST.Expression, idxCtx) + ';');
+    lines.push(rightAlign('WHERE', idxCtx) + ' ' + formatCondition(node.where, idxCtx) + ';');
   } else {
     lines[lines.length - 1] += ';';
   }
@@ -1294,6 +1360,7 @@ function formatCreateView(node: AST.CreateViewStatement, ctx: FormatContext): st
     indentOffset: 0,
     riverWidth: deriveRiverWidth(node.query as AST.Node),
     isSubquery: false,
+    depth: ctx.depth + 1,
   };
   let queryStr = formatNode(node.query as AST.Node, queryCtx).trimEnd();
   if (node.withData !== undefined && queryStr.endsWith(';')) {
@@ -1377,14 +1444,14 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
   lines.push(rightAlign('MERGE', mergeCtx) + ' INTO ' + target);
   lines.push(rightAlign('USING', mergeCtx) + ' ' + source);
   const cCol = contentCol(mergeCtx);
-  lines.push(rightAlign('ON', mergeCtx) + ' ' + formatCondition(node.on as AST.Expression, mergeCtx));
+  lines.push(rightAlign('ON', mergeCtx) + ' ' + formatCondition(node.on, mergeCtx));
 
   // Action body: content is indented at content column
   const actionPad = contentPad(mergeCtx);
 
   for (const wc of node.whenClauses) {
     const branch = wc.matched ? 'MATCHED' : 'NOT MATCHED';
-    const cond = wc.condition ? ' AND ' + fmtExpr(wc.condition as AST.Expression) : '';
+    const cond = wc.condition ? ' AND ' + fmtExpr(wc.condition) : '';
     lines.push(rightAlign('WHEN', mergeCtx) + ' ' + branch + cond + ' THEN');
 
     if (wc.action === 'delete') {
@@ -1401,9 +1468,9 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
         const item = wc.setItems![i];
         const comma = i < wc.setItems!.length - 1 ? ',' : '';
         if (i === 0) {
-          lines.push(' '.repeat(setOffset) + 'SET ' + item.column + ' = ' + fmtExpr(item.value as AST.Expression) + comma);
+          lines.push(' '.repeat(setOffset) + 'SET ' + item.column + ' = ' + fmtExpr(item.value) + comma);
         } else {
-          lines.push(setContinuePad + item.column + ' = ' + fmtExpr(item.value as AST.Expression) + comma);
+          lines.push(setContinuePad + item.column + ' = ' + fmtExpr(item.value) + comma);
         }
       }
       continue;
@@ -1412,7 +1479,7 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
     if (wc.action === 'insert') {
       const cols = wc.columns ? ' (' + wc.columns.join(', ') + ')' : '';
       lines.push(actionPad + 'INSERT' + cols);
-      lines.push(actionPad + 'VALUES (' + (wc.values || []).map(v => fmtExpr(v as AST.Expression)).join(', ') + ')');
+      lines.push(actionPad + 'VALUES (' + (wc.values || []).map(fmtExpr).join(', ') + ')');
     }
   }
 
@@ -1538,8 +1605,10 @@ function formatAlterAction(action: AST.AlterAction): string {
       return `SET TABLESPACE ${action.tablespace}`;
     case 'raw':
       return action.text;
-    default:
-      return '';
+    default: {
+      const _exhaustive: never = action;
+      throw new Error(`Unknown alter action type: ${(_exhaustive as { type?: string }).type}`);
+    }
   }
 }
 
@@ -1575,6 +1644,7 @@ function formatUnion(node: AST.UnionStatement, ctx: FormatContext): string {
         riverWidth: deriveSelectRiverWidth(member.statement),
         isSubquery: true,
         outerColumnOffset: 1,
+        depth: ctx.depth + 1,
       };
       const inner = formatSelect(member.statement, innerCtx);
       const innerLines = inner.split('\n');
@@ -1668,6 +1738,7 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
       indentOffset: cteBodyIndent,
       riverWidth: deriveRiverWidth(cte.query as AST.Node),
       isSubquery: true,
+      depth: ctx.depth + 1,
     };
 
     if (cte.query.type === 'values') {
@@ -1688,6 +1759,7 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
     indentOffset: 0,
     riverWidth: deriveRiverWidth(node.mainQuery),
     isSubquery: ctx.isSubquery,
+    depth: ctx.depth + 1,
   };
   // Emit leading comments before main query (we handle them here, so clear them
   // from the node to avoid double-emitting in formatSelect/formatUnion)
@@ -1791,10 +1863,10 @@ function fmtExpr(expr: AST.Expression): string {
     }
     case 'in': {
       const neg = expr.negated ? 'NOT ' : '';
-      if ('type' in expr.values && (expr.values as any).type === 'subquery') {
-        return fmtExpr(expr.expr) + ' ' + neg + 'IN ' + fmtSubquerySimple(expr.values as AST.SubqueryExpr);
+      if (isSubqueryValues(expr.values)) {
+        return fmtExpr(expr.expr) + ' ' + neg + 'IN ' + fmtSubquerySimple(expr.values);
       }
-      const vals = (expr.values as AST.Expression[]).map(fmtExpr).join(', ');
+      const vals = expr.values.map(fmtExpr).join(', ');
       return fmtExpr(expr.expr) + ' ' + neg + 'IN (' + vals + ')';
     }
     case 'is':
@@ -1857,7 +1929,7 @@ function fmtExpr(expr: AST.Expression): string {
       return expr.text;
     // New expression types
     case 'pg_cast':
-      return fmtExpr(expr.expr as AST.Expression) + '::' + expr.targetType;
+      return fmtExpr(expr.expr) + '::' + expr.targetType;
     case 'ilike': {
       const neg = expr.negated ? 'NOT ' : '';
       let out = fmtExpr(expr.expr) + ' ' + neg + 'ILIKE ' + fmtExpr(expr.pattern);
@@ -1869,13 +1941,13 @@ function fmtExpr(expr: AST.Expression): string {
       return fmtExpr(expr.expr) + ' ' + neg + 'SIMILAR TO ' + fmtExpr(expr.pattern);
     }
     case 'array_constructor':
-      return 'ARRAY[' + expr.elements.map(e => fmtExpr(e as AST.Expression)).join(', ') + ']';
+      return 'ARRAY[' + expr.elements.map(fmtExpr).join(', ') + ']';
     case 'is_distinct_from': {
       const kw = expr.negated ? 'IS NOT DISTINCT FROM' : 'IS DISTINCT FROM';
-      return fmtExpr(expr.left as AST.Expression) + ' ' + kw + ' ' + fmtExpr(expr.right as AST.Expression);
+      return fmtExpr(expr.left) + ' ' + kw + ' ' + fmtExpr(expr.right);
     }
     case 'regex_match':
-      return fmtExpr(expr.left as AST.Expression) + ' ' + expr.operator + ' ' + fmtExpr(expr.right as AST.Expression);
+      return fmtExpr(expr.left) + ' ' + expr.operator + ' ' + fmtExpr(expr.right);
   }
 
   return assertNeverExpr(expr);
@@ -1899,7 +1971,7 @@ function fmtFunctionCall(expr: AST.FunctionCallExpr): string {
     out += ' WITHIN GROUP (ORDER BY ' + expr.withinGroup.orderBy.map(fmtOrderByItem).join(', ') + ')';
   }
   if (expr.filter) {
-    out += ' FILTER (WHERE ' + fmtExpr(expr.filter as AST.Expression) + ')';
+    out += ' FILTER (WHERE ' + fmtExpr(expr.filter) + ')';
   }
   return out;
 }
