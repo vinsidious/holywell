@@ -4,7 +4,31 @@ export { tokenize, TokenizeError } from './tokenizer';
 export type { Token, TokenType } from './tokenizer';
 export { Parser, parse, ParseError, MaxDepthError } from './parser';
 export type { ParseOptions } from './parser';
-export type * from './ast';
+export type {
+  Statement,
+  Node,
+  Expression,
+  QueryExpression,
+  SelectStatement,
+  InsertStatement,
+  UpdateStatement,
+  DeleteStatement,
+  MergeStatement,
+  CTEStatement,
+  UnionStatement,
+  CommentNode,
+  ColumnExpr,
+  JoinClause,
+  FromClause,
+  RawExpression,
+  CreateTableStatement,
+  CreateIndexStatement,
+  CreateViewStatement,
+  AlterTableStatement,
+  DropTableStatement,
+  GrantStatement,
+  TruncateStatement,
+} from './ast';
 
 // Injected at build time by tsup's `define` option from package.json.
 declare const __SQLFMT_VERSION__: string | undefined;

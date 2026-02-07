@@ -2,7 +2,7 @@ import { tokenize, Token } from './tokenizer';
 import * as AST from './ast';
 import { parseComparisonExpression, parsePrimaryExpression } from './parser/expressions';
 import {
-  type DmlContext,
+  type DmlParser,
   parseDeleteStatement,
   parseInsertStatement,
   parseSetItem as parseDmlSetItem,
@@ -318,10 +318,10 @@ export class Parser {
     });
   }
 
-  private tryParseQueryExpressionAtCurrent(comments: AST.CommentNode[] = []): AST.QueryExpression | null {
+  private tryParse<T>(fn: () => T): T | null {
     const checkpoint = this.pos;
     try {
-      return this.parseQueryExpression(comments);
+      return fn();
     } catch (err) {
       if (err instanceof ParseError) {
         this.pos = checkpoint;
@@ -329,6 +329,10 @@ export class Parser {
       }
       throw err;
     }
+  }
+
+  private tryParseQueryExpressionAtCurrent(comments: AST.CommentNode[] = []): AST.QueryExpression | null {
+    return this.tryParse(() => this.parseQueryExpression(comments));
   }
 
   private checkUnionKeyword(): boolean {
@@ -563,20 +567,13 @@ export class Parser {
   }
 
   private tryParseSubqueryAtCurrent(): AST.SubqueryExpr | null {
-    const checkpoint = this.pos;
-    try {
-      if (!this.check('(')) return null;
+    if (!this.check('(')) return null;
+    return this.tryParse(() => {
       this.advance();
       const query = this.parseQueryExpression();
       this.expect(')');
-      return { type: 'subquery', query };
-    } catch (err) {
-      if (err instanceof ParseError) {
-        this.pos = checkpoint;
-        return null;
-      }
-      throw err;
-    }
+      return { type: 'subquery', query } as AST.SubqueryExpr;
+    });
   }
 
   private parseSubquery(): AST.SubqueryExpr {
@@ -1040,7 +1037,7 @@ export class Parser {
             targetType += ' ';
           }
         }
-        targetType += this.advance().value; // closing )
+        targetType += this.expect(')').value;
       }
       // Handle array suffix []
       if (this.check('[')) {
@@ -1449,7 +1446,7 @@ export class Parser {
     return { expr, alias, trailingComment };
   }
 
-  private createDmlContext(): DmlContext {
+  private createDmlContext(): DmlParser {
     return {
       expect: (value: string) => this.expect(value),
       advance: () => this.advance(),
@@ -2021,7 +2018,6 @@ export class Parser {
       type: 'alter_table',
       objectType,
       objectName,
-      tableName: objectName,
       action,
       actions,
       leadingComments: comments,
@@ -2203,7 +2199,6 @@ export class Parser {
       objectType,
       ifExists,
       objectName,
-      tableName: objectName,
       leadingComments: comments,
     };
   }

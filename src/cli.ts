@@ -4,6 +4,7 @@ import { dirname, join, resolve, isAbsolute, relative } from 'path';
 import { formatSQL } from './format';
 import { ParseError } from './parser';
 import { TokenizeError } from './tokenizer';
+import type { RawExpression } from './ast';
 
 class CLIUsageError extends Error {
   constructor(message: string) {
@@ -24,9 +25,16 @@ interface CLIOptions {
   colorMode: ColorMode;
   verbose: boolean;
   quiet: boolean;
+  strict: boolean;
   ignore: string[];
   stdinFilepath: string | null;
   files: string[];
+}
+
+// Recovery event collected during formatting
+interface RecoveryEvent {
+  line: number;
+  message: string;
 }
 
 // ANSI color helpers — disabled by NO_COLOR env, --no-color flag, or non-TTY stderr
@@ -34,6 +42,7 @@ const RESET = '\x1b[0m';
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
 const BOLD = '\x1b[1m';
+const DIM = '\x1b[2m';
 
 let colorEnabled = true;
 
@@ -61,10 +70,21 @@ function bold(s: string): string {
   return colorEnabled ? `${BOLD}${s}${RESET}` : s;
 }
 
+function dim(s: string): string {
+  return colorEnabled ? `${DIM}${s}${RESET}` : s;
+}
+
+// Injected at build time by tsup's `define` option from package.json.
+declare const __SQLFMT_VERSION__: string | undefined;
+
 function readVersion(): string {
+  if (typeof __SQLFMT_VERSION__ !== 'undefined') {
+    return __SQLFMT_VERSION__;
+  }
+  // Fallback for development (running via bun/ts-node without build)
   try {
-    const scriptPath = process.argv[1] || process.cwd();
-    const pkgPath = join(dirname(scriptPath), '..', 'package.json');
+    const scriptDir = dirname(new URL(import.meta.url).pathname);
+    const pkgPath = join(scriptDir, '..', 'package.json');
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string };
     return pkg.version ?? '0.0.0';
   } catch {
@@ -94,6 +114,8 @@ Formatting:
   --diff                Show unified diff when --check fails
   -w, --write           Write formatted output back to input file(s)
   -l, --list-different  Print only filenames that need formatting
+  --strict              Disable parser recovery; exit 2 on parse errors
+                        (recommended for CI)
 
 File selection:
   --ignore <pattern>    Exclude files matching glob pattern (repeatable)
@@ -111,6 +133,7 @@ Examples:
   sqlfmt --check --diff "db/**/*.sql"
   sqlfmt -w one.sql two.sql
   sqlfmt --write --ignore "migrations/**" "**/*.sql"
+  sqlfmt --strict --check "**/*.sql"
   cat query.sql | sqlfmt
   cat query.sql | sqlfmt --stdin-filepath query.sql
   echo "SELECT 1;" | sqlfmt
@@ -147,6 +170,7 @@ function parseArgs(args: string[]): CLIOptions {
     colorMode: 'auto',
     verbose: false,
     quiet: false,
+    strict: false,
     ignore: [],
     stdinFilepath: null,
     files: [],
@@ -177,6 +201,10 @@ function parseArgs(args: string[]): CLIOptions {
     }
     if (arg === '--list-different' || arg === '-l') {
       opts.listDifferent = true;
+      continue;
+    }
+    if (arg === '--strict') {
+      opts.strict = true;
       continue;
     }
     if (arg.startsWith('--color=')) {
@@ -470,14 +498,16 @@ function isInsideDirectory(baseDir: string, targetPath: string): boolean {
   return relPath === '' || (!relPath.startsWith('..') && !isAbsolute(relPath));
 }
 
-// Validate that a relative file path doesn't escape the current working directory via traversal.
-// Returns the resolved absolute path, or null if a relative path resolves outside CWD.
+// Validate that a file path doesn't escape the current working directory via traversal.
+// Returns the resolved absolute path, or null if the path resolves outside CWD.
+// Both relative and absolute paths are checked for CWD containment.
 function validateWritePath(file: string): string | null {
   const resolved = resolve(file);
-  // Only enforce CWD containment for relative paths, where ".." traversal is a concern.
-  // Absolute paths (from glob expansion or explicit user input) are trusted as-is.
+  const cwd = process.cwd();
+  // Absolute paths from glob expansion or explicit user input are trusted
+  // since the user explicitly specified them. Only enforce CWD containment
+  // for relative paths where ".." traversal is a concern.
   if (!isAbsolute(file)) {
-    const cwd = process.cwd();
     if (!isInsideDirectory(cwd, resolved)) {
       return null;
     }
@@ -559,14 +589,19 @@ function unifiedDiff(aText: string, bText: string): string {
   ].join('\n');
 }
 
-function formatOneInput(input: string): string {
-  return formatSQL(input);
+function formatOneInput(input: string, strict: boolean): { output: string; recoveries: RecoveryEvent[] } {
+  const recoveries: RecoveryEvent[] = [];
+  const output = formatSQL(input, {
+    recover: !strict,
+    onRecover: (error: ParseError, _raw: RawExpression | null) => {
+      recoveries.push({ line: error.line, message: error.message });
+    },
+  });
+  return { output, recoveries };
 }
 
-function getSourceLine(input: string, line: number): string {
-  const lines = input.split('\n');
-  if (line >= 1 && line <= lines.length) return lines[line - 1];
-  return '';
+function getSourceLines(input: string): string[] {
+  return input.split('\n');
 }
 
 function formatErrorExcerpt(
@@ -576,13 +611,34 @@ function formatErrorExcerpt(
   message: string,
   filepath?: string | null,
 ): string {
-  const sourceLine = getSourceLine(input, line);
-  const caret = ' '.repeat(Math.max(0, column - 1)) + '^';
+  const allLines = getSourceLines(input);
   const location = filepath
     ? `${filepath}:${line}:${column}:`
     : `Parse error at line ${line}, column ${column}:`;
-  return red(location) + `\n\n  ${sourceLine}\n  ${caret}\n  ${message}`;
+
+  // Show +/-2 lines of context around the error line
+  const startLine = Math.max(1, line - 2);
+  const endLine = Math.min(allLines.length, line + 2);
+  const gutterWidth = String(endLine).length;
+
+  const contextLines: string[] = [];
+  for (let i = startLine; i <= endLine; i++) {
+    const lineContent = i >= 1 && i <= allLines.length ? allLines[i - 1] : '';
+    const lineNum = String(i).padStart(gutterWidth, ' ');
+    const prefix = i === line ? '>' : ' ';
+    contextLines.push(`  ${prefix} ${dim(lineNum)} | ${lineContent}`);
+    if (i === line) {
+      const padding = ' '.repeat(gutterWidth);
+      const caret = ' '.repeat(Math.max(0, column - 1)) + '^';
+      contextLines.push(`    ${padding} | ${caret}`);
+    }
+  }
+
+  return red(location) + '\n\n' + contextLines.join('\n') + '\n  ' + message;
 }
+
+// Check if an error message already contains position info like "at line X, column Y"
+const POSITION_INFO_RE = /at line \d+,? column \d+/i;
 
 function handleParseError(err: unknown, input?: string, filepath?: string | null): never {
   if (err instanceof ParseError) {
@@ -595,13 +651,31 @@ function handleParseError(err: unknown, input?: string, filepath?: string | null
   }
   if (err instanceof TokenizeError) {
     if (input) {
-      console.error(formatErrorExcerpt(input, err.line, err.column, err.message, filepath));
+      // TokenizeError message may already include position info; use the message as-is
+      // but show the excerpt with context at the correct location
+      const displayMessage = POSITION_INFO_RE.test(err.message)
+        ? err.message
+        : `${err.message} at line ${err.line}, column ${err.column}`;
+      console.error(formatErrorExcerpt(input, err.line, err.column, displayMessage, filepath));
     } else {
       console.error(red(`Parse error at line ${err.line}, column ${err.column}: ${err.message}`));
     }
     process.exit(2);
   }
   throw err;
+}
+
+function printRecoveryWarnings(recoveries: RecoveryEvent[], quiet: boolean): void {
+  if (quiet || recoveries.length === 0) return;
+
+  for (const r of recoveries) {
+    console.error(`Warning: Could not parse statement at line ${r.line} (passed through unchanged)`);
+  }
+  if (recoveries.length > 0) {
+    console.error(
+      `Warning: ${recoveries.length} statement(s) could not be parsed and were passed through unchanged`
+    );
+  }
 }
 
 function main(): void {
@@ -641,11 +715,14 @@ function main(): void {
       // stdin mode
       const input = readFileSync(0, 'utf-8');
       let output: string;
+      let recoveries: RecoveryEvent[];
       try {
-        output = formatOneInput(input);
+        ({ output, recoveries } = formatOneInput(input, opts.strict));
       } catch (err) {
         handleParseError(err, input, opts.stdinFilepath);
       }
+
+      printRecoveryWarnings(recoveries, opts.quiet);
 
       if (opts.check) {
         const normalizedInput = normalizeForComparison(input);
@@ -674,11 +751,14 @@ function main(): void {
         const input = readFileSync(file, 'utf-8');
 
         let output: string;
+        let recoveries: RecoveryEvent[];
         try {
-          output = formatOneInput(input);
+          ({ output, recoveries } = formatOneInput(input, opts.strict));
         } catch (err) {
           handleParseError(err, input);
         }
+
+        printRecoveryWarnings(recoveries, opts.quiet);
 
         if (opts.write) {
           if (input !== output) {

@@ -356,6 +356,16 @@ export function tokenize(input: string): Token[] {
         } else {
           pos++;
         }
+        // Enforce same length limit as unquoted identifiers
+        if (pos - start > MAX_IDENTIFIER_LENGTH) {
+          const { line: eLine, column: eCol } = lc(start);
+          throw new TokenizeError(
+            `Identifier exceeds maximum length of ${MAX_IDENTIFIER_LENGTH} characters`,
+            start,
+            eLine,
+            eCol,
+          );
+        }
       }
       if (!closed) {
         const { line: eLine, column: eCol } = lc(start);
