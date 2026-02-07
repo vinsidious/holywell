@@ -472,7 +472,8 @@ function fmtFunctionCallMultiline(expr: AST.FunctionCallExpr, colStart: number):
   const innerPad = ' '.repeat(innerCol);
   const closePad = ' '.repeat(colStart);
 
-  if (name === 'JSONB_BUILD_OBJECT' && expr.args.length >= 6 && expr.args.length % 2 === 0) {
+  // Generic key/value pair layout (e.g., object builder functions).
+  if (hasKeyValueArgShape(expr)) {
     const lines: string[] = [];
     lines.push(name + '(');
     for (let i = 0; i < expr.args.length; i += 2) {
@@ -486,7 +487,8 @@ function fmtFunctionCallMultiline(expr: AST.FunctionCallExpr, colStart: number):
     return lines.join('\n');
   }
 
-  if (name === 'GENERATE_SERIES') {
+  // Generic 3-arg range/series shape where the step argument is interval-like.
+  if (hasSeriesArgShape(expr)) {
     const lines: string[] = [];
     lines.push(name + '(');
     const inlineArgs = expr.args.map(fmtExpr).join(', ');
@@ -514,6 +516,27 @@ function fmtFunctionCallMultiline(expr: AST.FunctionCallExpr, colStart: number):
   }
 
   return null;
+}
+
+function hasKeyValueArgShape(expr: AST.FunctionCallExpr): boolean {
+  if (expr.args.length < 6 || expr.args.length % 2 !== 0) return false;
+  for (let i = 0; i < expr.args.length; i += 2) {
+    const key = expr.args[i];
+    if (key.type === 'literal') continue;
+    if (key.type === 'identifier') continue;
+    if (key.type === 'raw') continue;
+    return false;
+  }
+  return true;
+}
+
+function hasSeriesArgShape(expr: AST.FunctionCallExpr): boolean {
+  if (expr.args.length !== 3) return false;
+  const step = expr.args[2];
+  if (step.type === 'raw') return /^INTERVAL\s+/i.test(step.text);
+  if (step.type === 'cast') return /INTERVAL/i.test(step.targetType);
+  if (step.type === 'pg_cast') return /INTERVAL/i.test(step.targetType);
+  return false;
 }
 
 // Compact CASE formatting for inside function calls:
@@ -975,28 +998,34 @@ function fmtWindowFunctionAtColumn(expr: AST.WindowFunctionExpr, col: number): s
   return result;
 }
 
-function formatFrameClause(frame: string, startCol: number, exclude?: string): string {
-  const offsetAdjust = /\bBETWEEN\s+(INTERVAL|\d+)/.test(frame) ? 1 : 0;
-  // Frame like "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
-  // Split at "AND" for alignment
-  const parts = frame.split(' AND ');
-  if (parts.length === 2) {
-    const pad = ' '.repeat(startCol + offsetAdjust + 'ROWS BETWEEN '.length - 'AND '.length);
-    // Actually align AND under BETWEEN
-    const betweenIdx = parts[0].indexOf('BETWEEN');
-    if (betweenIdx >= 0) {
-      const betweenPad = ' '.repeat(startCol + offsetAdjust + betweenIdx + 'BETWEEN '.length - 'AND '.length);
-      let out = (offsetAdjust ? ' ' : '') + parts[0] + '\n' + betweenPad + 'AND ' + parts[1];
-      if (exclude) out += '\n' + ' '.repeat(startCol + offsetAdjust) + 'EXCLUDE ' + exclude;
-      return out;
-    }
-    let out = (offsetAdjust ? ' ' : '') + parts[0] + '\n' + pad + 'AND ' + parts[1];
-    if (exclude) out += '\n' + ' '.repeat(startCol + offsetAdjust) + 'EXCLUDE ' + exclude;
-    return out;
+type ParsedFrameClause =
+  | { kind: 'between'; unit: string; low: string; high: string }
+  | { kind: 'simple'; text: string };
+
+function parseFrameClause(frame: string): ParsedFrameClause {
+  const betweenMatch = frame.match(/^([A-Z]+)\s+BETWEEN\s+(.+?)\s+AND\s+(.+)$/);
+  if (betweenMatch) {
+    const [, unit, low, high] = betweenMatch;
+    return { kind: 'between', unit, low, high };
   }
-  return exclude
-    ? (offsetAdjust ? ' ' : '') + frame + '\n' + ' '.repeat(startCol + offsetAdjust) + 'EXCLUDE ' + exclude
-    : (offsetAdjust ? ' ' : '') + frame;
+  return { kind: 'simple', text: frame };
+}
+
+function formatFrameClause(frame: string, startCol: number, exclude?: string): string {
+  const parsed = parseFrameClause(frame);
+  if (parsed.kind === 'simple') {
+    return exclude
+      ? parsed.text + '\n' + ' '.repeat(startCol) + 'EXCLUDE ' + exclude
+      : parsed.text;
+  }
+
+  const offsetAdjust = /^(INTERVAL|\d+)/.test(parsed.low) ? 1 : 0;
+  const head = `${parsed.unit} BETWEEN ${parsed.low}`;
+  const betweenIdx = head.indexOf('BETWEEN');
+  const andPad = ' '.repeat(startCol + offsetAdjust + betweenIdx + 'BETWEEN '.length - 'AND '.length);
+  let out = (offsetAdjust ? ' ' : '') + head + '\n' + andPad + 'AND ' + parsed.high;
+  if (exclude) out += '\n' + ' '.repeat(startCol + offsetAdjust) + 'EXCLUDE ' + exclude;
+  return out;
 }
 
 function formatWindowSpec(spec: AST.WindowSpec): string {

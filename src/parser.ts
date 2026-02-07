@@ -1368,14 +1368,48 @@ export class Parser {
       side = this.advance().upper;
     }
 
-    const char = this.parseExpression();
-    this.expectKeyword('FROM');
-    const str = this.parseExpression();
+    let char: AST.Expr | undefined;
+    let str: AST.Expr;
+    let usedFrom = false;
+
+    // TRIM([LEADING|TRAILING|BOTH] [trim_char] FROM str)
+    if (this.peekUpper() === 'FROM') {
+      usedFrom = true;
+      this.advance();
+      str = this.parseExpression();
+    } else {
+      const firstExpr = this.parseExpression();
+      if (this.peekUpper() === 'FROM') {
+        char = firstExpr;
+        usedFrom = true;
+        this.advance();
+        str = this.parseExpression();
+      } else {
+        // TRIM(str) (common shorthand)
+        str = firstExpr;
+      }
+    }
+
     this.expect(')');
 
     let text = 'TRIM(';
-    if (side) text += side + ' ';
-    text += fmtExprForRaw(char) + ' FROM ' + fmtExprForRaw(str) + ')';
+    if (side) {
+      text += side;
+      if (char) {
+        text += ' ' + fmtExprForRaw(char) + ' FROM ' + fmtExprForRaw(str);
+      } else if (usedFrom) {
+        text += ' FROM ' + fmtExprForRaw(str);
+      } else {
+        text += ' ' + fmtExprForRaw(str);
+      }
+    } else if (char) {
+      text += fmtExprForRaw(char) + ' FROM ' + fmtExprForRaw(str);
+    } else if (usedFrom) {
+      text += 'FROM ' + fmtExprForRaw(str);
+    } else {
+      text += fmtExprForRaw(str);
+    }
+    text += ')';
     return { type: 'raw', text } as AST.RawExpression;
   }
 

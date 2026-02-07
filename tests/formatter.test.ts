@@ -1013,6 +1013,14 @@ describe('Category 19: String Operators and Pattern Matching', () => {
        TRIM(LEADING '0' FROM account_num) AS trimmed_num
   FROM contacts;`
   );
+
+  assertFormat('19.5 — TRIM shorthand forms',
+    `select trim(name) as clean_name, trim(from name) as clean_name2, trim(leading from account_num) as clean_name3 from contacts;`,
+    `SELECT TRIM(name) AS clean_name,
+       TRIM(FROM name) AS clean_name2,
+       TRIM(LEADING FROM account_num) AS clean_name3
+  FROM contacts;`
+  );
 });
 
 describe('Category 20: LATERAL Joins', () => {
