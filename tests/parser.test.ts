@@ -72,6 +72,65 @@ describe('parser syntax coverage', () => {
     expect(out.trim()).toBe('ALTER INDEX idx_users_email\n        RENAME TO idx_users_email_new;');
   });
 
+  it('parses RETURNING aliases as structured expressions', () => {
+    const stmt = parseFirst('UPDATE inventory SET quantity = quantity - 1 RETURNING quantity AS remaining, updated_at updated_ts;');
+    expect(stmt.type).toBe('update');
+    expect(stmt.returning[0].type).toBe('aliased');
+    expect(stmt.returning[1].type).toBe('aliased');
+    expect(stmt.returning[0].expr.type).toBe('identifier');
+    expect(stmt.returning[0].alias).toBe('remaining');
+  });
+
+  it('parses CREATE INDEX column direction without raw expressions', () => {
+    const stmt = parseFirst('CREATE INDEX idx_orders_date ON orders (order_date DESC, customer_id);');
+    expect(stmt.type).toBe('create_index');
+    expect(stmt.columns[0].type).toBe('ordered_expr');
+    expect(stmt.columns[0].direction).toBe('DESC');
+    expect(stmt.columns[1].type).toBe('identifier');
+  });
+
+  it('parses array subscripts and slices as structured expressions', () => {
+    const stmt = parseFirst('SELECT phone_numbers[1] AS primary_phone, phone_numbers[2:3] AS alt_phones FROM employees WHERE phone_numbers[1] IS NOT NULL;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.type).toBe('array_subscript');
+    expect(stmt.columns[0].expr.isSlice).toBe(false);
+    expect(stmt.columns[1].expr.type).toBe('array_subscript');
+    expect(stmt.columns[1].expr.isSlice).toBe(true);
+    expect(stmt.where.condition.type).toBe('is');
+    expect(stmt.where.condition.expr.type).toBe('array_subscript');
+  });
+
+  it('parses GRANT/REVOKE into structured fields', () => {
+    const grant = parseFirst('GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA public TO app_readwrite;');
+    expect(grant.type).toBe('grant');
+    expect(grant.kind).toBe('GRANT');
+    expect(grant.privileges).toEqual(['SELECT', 'INSERT']);
+    expect(grant.object).toBe('ALL TABLES IN SCHEMA public');
+    expect(grant.recipients).toEqual(['app_readwrite']);
+
+    const revoke = parseFirst('REVOKE SELECT ON TABLE orders FROM app_readwrite CASCADE;');
+    expect(revoke.type).toBe('grant');
+    expect(revoke.kind).toBe('REVOKE');
+    expect(revoke.recipientKeyword).toBe('FROM');
+    expect(revoke.cascade).toBe(true);
+  });
+
+  it('parses CHECK constraints using expression parser', () => {
+    const stmt = parseFirst('CREATE TABLE checks_demo (CONSTRAINT qty_check CHECK(quantity BETWEEN 1 AND 99));');
+    expect(stmt.type).toBe('create_table');
+    expect(stmt.elements[0].elementType).toBe('constraint');
+    expect(stmt.elements[0].constraintType).toBe('check');
+    expect(stmt.elements[0].checkExpr?.type).toBe('between');
+  });
+
+  it('parses ALTER actions into structured actions list', () => {
+    const stmt = parseFirst('ALTER TABLE users ADD COLUMN status TEXT DEFAULT \'active\', RENAME COLUMN status TO state;');
+    expect(stmt.type).toBe('alter_table');
+    expect(stmt.actions).toHaveLength(2);
+    expect(stmt.actions[0].type).toBe('add_column');
+    expect(stmt.actions[1].type).toBe('rename_column');
+  });
+
   it('parses LIKE/ILIKE ESCAPE clauses', () => {
     const out = formatSQL("SELECT * FROM t WHERE a LIKE '%!_%' ESCAPE '!' OR b ILIKE '%!_%' ESCAPE '!';");
     expect(out).toContain("LIKE '%!_%' ESCAPE '!'");

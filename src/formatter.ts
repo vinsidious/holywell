@@ -1,5 +1,5 @@
 import * as AST from './ast';
-import { FUNCTION_KEYWORDS, isKeyword } from './keywords';
+import { FUNCTION_KEYWORDS } from './keywords';
 
 // The formatter walks the AST and produces formatted SQL per the Holywell style guide.
 // Key concept: "The River" — top-level clause keywords are right-aligned so content
@@ -1291,41 +1291,39 @@ function formatCreateView(node: AST.CreateViewStatement, ctx: FormatContext): st
 function formatGrant(node: AST.GrantStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   for (const c of node.leadingComments) lines.push(c.text);
-
-  const raw = node.raw
-    .replace(/\s*,\s*/g, ', ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .split(' ')
-    .map(part => {
-      const bare = part.replace(/[^A-Za-z_]/g, '');
-      const upper = bare.toUpperCase();
-      if (upper === 'TABLES') return part.replace(bare, 'TABLES');
-      if (bare && isKeyword(bare)) return part.replace(bare, upper);
-      return part;
-    })
-    .join(' ');
-  const upper = raw.toUpperCase();
-
-  if (upper.startsWith('GRANT ') && upper.includes(' ON ') && upper.includes(' TO ')) {
-    const [grantPart, rest] = raw.split(/\s+ON\s+/i);
-    const [onPart, toPart] = rest.split(/\s+TO\s+/i);
-    lines.push(grantPart);
-    lines.push('   ON ' + onPart);
-    lines.push('   TO ' + toPart + ';');
+  if (node.privileges.length === 0 || !node.object || node.recipients.length === 0) {
+    const fallback = (node.raw || '').replace(/\s+/g, ' ').trim();
+    lines.push((fallback || node.kind) + ';');
     return lines.join('\n');
   }
 
-  if (upper.startsWith('REVOKE ') && upper.includes(' ON ') && upper.includes(' FROM ')) {
-    const [revokePart, rest] = raw.split(/\s+ON\s+/i);
-    const [onPart, fromPart] = rest.split(/\s+FROM\s+/i);
-    lines.push(revokePart);
-    lines.push('  ON ' + onPart);
-    lines.push('FROM ' + fromPart + ';');
-    return lines.join('\n');
+  const head = node.kind
+    + (node.kind === 'REVOKE' && node.grantOptionFor ? ' GRANT OPTION FOR' : '')
+    + ' '
+    + node.privileges.join(', ');
+  lines.push(head);
+
+  if (node.kind === 'GRANT') {
+    lines.push('   ON ' + node.object);
+    lines.push('   TO ' + node.recipients.join(', '));
+  } else {
+    lines.push('  ON ' + node.object);
+    lines.push('FROM ' + node.recipients.join(', '));
   }
 
-  lines.push(raw + ';');
+  if (node.withGrantOption) {
+    lines.push('WITH GRANT OPTION');
+  }
+  if (node.grantedBy) {
+    lines.push('GRANTED BY ' + node.grantedBy);
+  }
+  if (node.cascade) {
+    lines.push('CASCADE');
+  } else if (node.restrict) {
+    lines.push('RESTRICT');
+  }
+
+  lines[lines.length - 1] += ';';
   return lines.join('\n');
 }
 
@@ -1434,7 +1432,9 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       // Indent constraint name to align with type column
       const constraintPad = ' '.repeat(4 + maxNameLen + 1);
       lines.push(constraintPad + 'CONSTRAINT ' + elem.constraintName);
-      if (elem.constraintBody) {
+      if (elem.constraintType === 'check' && elem.checkExpr) {
+        lines.push(constraintPad + 'CHECK(' + fmtExpr(elem.checkExpr) + ')');
+      } else if (elem.constraintBody) {
         lines.push(constraintPad + elem.constraintBody);
       }
       // No comma after constraint body block — it's the last usually
@@ -1469,9 +1469,47 @@ function formatAlterTable(node: AST.AlterTableStatement, ctx: FormatContext): st
   const objectName = node.objectName || node.tableName;
   const header = `ALTER ${objectType} ${objectName}`;
   lines.push(header);
-  lines.push(' '.repeat(8) + node.action + ';');
+
+  const actions = node.actions && node.actions.length > 0
+    ? node.actions.map(formatAlterAction)
+    : [node.action];
+  for (let i = 0; i < actions.length; i++) {
+    const comma = i < actions.length - 1 ? ',' : ';';
+    lines.push(' '.repeat(8) + actions[i] + comma);
+  }
 
   return lines.join('\n');
+}
+
+function formatAlterAction(action: AST.AlterAction): string {
+  switch (action.type) {
+    case 'add_column': {
+      let out = 'ADD COLUMN ';
+      if (action.ifNotExists) out += 'IF NOT EXISTS ';
+      out += action.columnName;
+      if (action.definition) out += ' ' + action.definition;
+      return out;
+    }
+    case 'drop_column': {
+      let out = 'DROP COLUMN ';
+      if (action.ifExists) out += 'IF EXISTS ';
+      out += action.columnName;
+      if (action.behavior) out += ' ' + action.behavior;
+      return out;
+    }
+    case 'rename_to':
+      return `RENAME TO ${action.newName}`;
+    case 'rename_column':
+      return `RENAME COLUMN ${action.columnName} TO ${action.newName}`;
+    case 'set_schema':
+      return `SET SCHEMA ${action.schema}`;
+    case 'set_tablespace':
+      return `SET TABLESPACE ${action.tablespace}`;
+    case 'raw':
+      return action.text;
+    default:
+      return '';
+  }
 }
 
 // ─── DROP TABLE ──────────────────────────────────────────────────────
@@ -1774,6 +1812,16 @@ function fmtExpr(expr: AST.Expression): string {
       }
       return out + ')';
     }
+    case 'aliased':
+      return fmtExpr(expr.expr) + ' AS ' + fmtAlias(expr.alias);
+    case 'array_subscript': {
+      const lower = expr.lower ? fmtExpr(expr.lower) : '';
+      const upper = expr.upper ? fmtExpr(expr.upper) : '';
+      const body = expr.isSlice ? `${lower}:${upper}` : lower;
+      return fmtExpr(expr.array) + '[' + body + ']';
+    }
+    case 'ordered_expr':
+      return fmtExpr(expr.expr) + ' ' + expr.direction;
     case 'raw':
       return expr.text;
     // New expression types
