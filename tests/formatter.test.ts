@@ -740,3 +740,949 @@ SELECT m.month,
     `-- ============================================================================\n-- STACKED BAR CHART: Monthly Patient Volume by Category\n-- ============================================================================\n-- This query produces three volume columns for a stacked bar chart:\n--   1. Inpatient Volume     - from fully settled admissions (existing logic)\n--   2. Recurring Trials     - monthly clinical trial enrollment income\n--   3. One-time Equipment   - incidental/non-recurring equipment purchases\n--\n-- OUTPUT COLUMNS:\n--   Month                    (YYYYMM format)\n--   Inpatient_Volume         (sum of procedure/penalty/adjustment fees)\n--   Recurring_Trial_Revenue\n--   Onetime_Equipment_Revenue\n-- ============================================================================\n\n\n-- ############################################################################\n-- SYNTHETIC RESEARCH REVENUE SECTION\n-- ############################################################################\n-- Add new research revenue entries in the CTEs below.\n-- Each entry needs: record_date (DATE) and amount (NUMERIC)\n-- ############################################################################\n\n-- ****************************************************************************\n-- ONE-TIME EQUIPMENT PURCHASES\n-- ****************************************************************************\n-- Add new one-time equipment purchases here.\n-- Format: (DATE 'YYYY-MM-DD', amount)\n--\n-- Example entries:\n--   (DATE '2025-12-19', 50000),    -- December 2025 purchase\n--   (DATE '2026-01-15', 25000),    -- January 2026 purchase\n--   (DATE '2026-02-01', 10000)     -- February 2026 purchase (no trailing comma on last entry)\n-- ****************************************************************************\n\n  WITH onetime_equipment_purchase_entries (record_date, amount) AS (\n           VALUES\n               -- \u2193\u2193\u2193 ADD NEW ONE-TIME EQUIPMENT PURCHASE ENTRIES BELOW THIS LINE \u2193\u2193\u2193\n               (DATE '2025-12-19', 50000.00)  -- Initial equipment order - December 2025\n               -- \u2191\u2191\u2191 ADD NEW ONE-TIME EQUIPMENT PURCHASE ENTRIES ABOVE THIS LINE \u2191\u2191\u2191\n               -- Remember: separate multiple entries with commas, no comma after the last one\n       ),\n\n-- ****************************************************************************\n-- RECURRING TRIAL REVENUE\n-- ****************************************************************************\n-- Add new recurring/subscription trial revenue here.\n-- Format: (DATE 'YYYY-MM-DD', amount)\n--\n-- Example entries:\n--   (DATE '2025-12-01', 5000),     -- December 2025 enrollment\n--   (DATE '2026-01-01', 5000),     -- January 2026 enrollment\n--   (DATE '2026-02-01', 5500)      -- February 2026 enrollment (rate increase)\n-- ****************************************************************************\n\n       recurring_trial_revenue_entries (record_date, amount) AS (\n           VALUES\n               -- \u2193\u2193\u2193 ADD NEW RECURRING TRIAL REVENUE ENTRIES BELOW THIS LINE \u2193\u2193\u2193\n               (DATE '1900-01-01', 0.00)  -- Placeholder (no trial revenue yet)\n               -- \u2191\u2191\u2191 ADD NEW RECURRING TRIAL REVENUE ENTRIES ABOVE THIS LINE \u2191\u2191\u2191\n               -- Remember: separate multiple entries with commas, no comma after the last one\n               -- Delete the placeholder row above once you add real entries\n       ),\n\n       /* Aggregate one-time equipment revenue by month */\n       onetime_equipment_monthly AS (\n           SELECT TO_CHAR(record_date, 'YYYYMM') AS month,\n                  SUM(amount) AS onetime_equipment_revenue\n             FROM onetime_equipment_purchase_entries\n            WHERE record_date > DATE '1900-01-01'  -- Exclude placeholder\n            GROUP BY TO_CHAR(record_date, 'YYYYMM')\n       ),\n\n       /* Aggregate recurring trial revenue by month */\n       recurring_trial_monthly AS (\n           SELECT TO_CHAR(record_date, 'YYYYMM') AS month,\n                  SUM(amount) AS recurring_trial_revenue\n             FROM recurring_trial_revenue_entries\n            WHERE record_date > DATE '1900-01-01'  -- Exclude placeholder\n            GROUP BY TO_CHAR(record_date, 'YYYYMM')\n       ),\n\n-- ############################################################################\n-- INPATIENT VOLUME SECTION (existing logic - no changes needed)\n-- ############################################################################\n\n       base AS (\n           SELECT patient_stay.admission_number,\n                  a.stay_id,\n                  patient_stay.stay_duration AS duration,\n                  f.charges,\n                  f.collection,\n                  patient_stay.balance AS bal,\n                  c.treatment_start_date,\n                  CASE\n                  WHEN lp.last_collection_date >= DATE '2025-10-01' THEN lp.last_collection_date\n                  ELSE fp.first_collection_date\n                  END AS settle_date\n             FROM (SELECT DISTINCT stay_id\n                     FROM billing_ledger) AS a\n\n                  LEFT JOIN patient_stay\n                  ON patient_stay.uuid = a.stay_id\n\n                  LEFT JOIN (SELECT stay_id,\n                                    action_date AS treatment_start_date\n                               FROM treatment_ledger\n                              WHERE action = 'treatment') AS c\n                  ON c.stay_id = a.stay_id\n\n                  LEFT JOIN (SELECT stay_id,\n                                    MIN(action_date) AS first_collection_date\n                               FROM collection_ledger\n                              WHERE action = 'payment_received'\n                                AND action_amount > 1\n                              GROUP BY stay_id) AS fp\n                  ON fp.stay_id = a.stay_id\n\n                  LEFT JOIN (SELECT stay_id,\n                                    MAX(action_date) AS last_collection_date\n                               FROM collection_ledger\n                              WHERE action = 'payment_received'\n                                AND action_amount > 1\n                              GROUP BY stay_id) AS lp\n                  ON lp.stay_id = a.stay_id\n\n                  LEFT JOIN (SELECT stay_id,\n                                    SUM(CASE WHEN action IN ('procedure_fee_added',\n                                                             'penalty_fee_added',\n                                                             'adjustment_fee_added')\n                                             THEN amount ELSE 0 END) AS charges,\n                                    SUM(CASE WHEN action = 'payment_received' THEN amount\n                                             WHEN action = 'payment_reversed' THEN -1 * amount\n                                             ELSE 0 END) AS collection\n                               FROM billing_ledger\n                              GROUP BY stay_id) AS f\n                  ON patient_stay.uuid = f.stay_id\n\n            WHERE patient_stay.billing_status = 'fully_settled'\n       ),\n\n       enriched AS (\n           SELECT admission_number,\n                  stay_id,\n                  duration,\n                  charges,\n                  collection,\n                  bal,\n                  treatment_start_date,\n                  settle_date,\n                  TO_CHAR(treatment_start_date, 'YYYYMM') AS treatment_yearmon,\n                  TO_CHAR(settle_date, 'YYYYMM') AS settle_yearmon,\n                  EXTRACT(DAY FROM (settle_date - treatment_start_date)) AS actual_duration,\n                  (charges / NULLIF(bal, 0)) * 365\n                      / NULLIF(EXTRACT(DAY FROM (settle_date - treatment_start_date)), 0) AS apr\n             FROM base\n       ),\n\n       /* Aggregate inpatient volume by month */\n       inpatient_monthly AS (\n           SELECT settle_yearmon AS month,\n                  SUM(charges) AS inpatient_volume\n             FROM enriched\n            GROUP BY settle_yearmon\n       ),\n\n-- ############################################################################\n-- COMBINE ALL VOLUME STREAMS\n-- ############################################################################\n\n       /* Get all unique months across all volume types */\n       all_months AS (\n           SELECT month\n             FROM inpatient_monthly\n\n            UNION\n\n           SELECT month\n             FROM onetime_equipment_monthly\n\n            UNION\n\n           SELECT month\n             FROM recurring_trial_monthly\n       )\n\n-- ============================================================================\n-- FINAL OUTPUT: Stacked Bar Chart Data\n-- ============================================================================\nSELECT am.month AS "Month",\n       COALESCE(im.inpatient_volume, 0) AS "Inpatient_Volume",\n       COALESCE(rtm.recurring_trial_revenue, 0) AS "Recurring_Trial_Revenue",\n       COALESCE(oem.onetime_equipment_revenue, 0) AS "Onetime_Equipment_Revenue"\n  FROM all_months AS am\n       LEFT JOIN inpatient_monthly AS im\n       ON am.month = im.month\n\n       LEFT JOIN recurring_trial_monthly AS rtm\n       ON am.month = rtm.month\n\n       LEFT JOIN onetime_equipment_monthly AS oem\n       ON am.month = oem.month\n ORDER BY am.month;`
   );
 });
+
+describe('Category 16: PostgreSQL Type Casting (::)', () => {
+  assertFormat('16.1 — Simple cast with ::',
+    `select '2024-01-15'::date as start_date, '100.50'::numeric(10, 2) as amount from transactions;`,
+    `SELECT '2024-01-15'::DATE AS start_date,
+       '100.50'::NUMERIC(10, 2) AS amount
+  FROM transactions;`
+  );
+
+  assertFormat('16.2 — Cast in WHERE clause',
+    `select order_id, total from orders where created_at::date = '2025-01-01' and total::integer > 100;`,
+    `SELECT order_id, total
+  FROM orders
+ WHERE created_at::DATE = '2025-01-01'
+   AND total::INTEGER > 100;`
+  );
+
+  assertFormat('16.3 — Chained casts and cast with array',
+    `select id, payload::text::integer as parsed_id, tags::text[] as tag_array from raw_events where payload::text <> '';`,
+    `SELECT id,
+       payload::TEXT::INTEGER AS parsed_id,
+       tags::TEXT[] AS tag_array
+  FROM raw_events
+ WHERE payload::TEXT <> '';`
+  );
+
+  assertFormat('16.4 — Cast in aggregate and expression',
+    `select department, sum(salary::numeric(12, 2)) as total_salary, avg(salary::numeric)::numeric(10, 2) as avg_salary from employees group by department;`,
+    `SELECT department,
+       SUM(salary::NUMERIC(12, 2)) AS total_salary,
+       AVG(salary::NUMERIC)::NUMERIC(10, 2) AS avg_salary
+  FROM employees
+ GROUP BY department;`
+  );
+
+  assertFormat('16.5 — Cast to INTERVAL',
+    `select event_name, event_date, event_date + duration::interval as end_time, ('30 days')::interval as buffer from events where event_date + duration::interval > now();`,
+    `SELECT event_name,
+       event_date,
+       event_date + duration::INTERVAL AS end_time,
+       ('30 days')::INTERVAL AS buffer
+  FROM events
+ WHERE event_date + duration::INTERVAL > NOW();`
+  );
+
+  assertFormat('16.6 — Cast inside CASE',
+    `select name, case when amount::numeric > 1000 then 'high'::varchar when amount::numeric > 100 then 'medium'::varchar else 'low'::varchar end as tier from invoices;`,
+    `SELECT name,
+       CASE
+       WHEN amount::NUMERIC > 1000 THEN 'high'::VARCHAR
+       WHEN amount::NUMERIC > 100 THEN 'medium'::VARCHAR
+       ELSE 'low'::VARCHAR
+       END AS tier
+  FROM invoices;`
+  );
+});
+
+describe('Category 17: JSON and JSONB Operators', () => {
+  assertFormat('17.1 — Arrow operators (-> and ->>)',
+    `select id, payload -> 'user' as user_obj, payload -> 'user' ->> 'name' as user_name, payload -> 'user' ->> 'email' as user_email from events where payload ->> 'type' = 'login';`,
+    `SELECT id,
+       payload -> 'user' AS user_obj,
+       payload -> 'user' ->> 'name' AS user_name,
+       payload -> 'user' ->> 'email' AS user_email
+  FROM events
+ WHERE payload ->> 'type' = 'login';`
+  );
+
+  assertFormat('17.2 — Path operators (#> and #>>)',
+    `select id, data #> '{address,city}' as city_json, data #>> '{address,city}' as city_text, data #>> '{contacts,0,phone}' as first_phone from customers where data #>> '{address,country}' = 'US';`,
+    `SELECT id,
+       data #> '{address,city}' AS city_json,
+       data #>> '{address,city}' AS city_text,
+       data #>> '{contacts,0,phone}' AS first_phone
+  FROM customers
+ WHERE data #>> '{address,country}' = 'US';`
+  );
+
+  assertFormat('17.3 — JSONB containment (@>, <@)',
+    `select id, name from products where metadata @> '{"featured": true}'::jsonb and attributes @> '{"color": "red"}'::jsonb;`,
+    `SELECT id, name
+  FROM products
+ WHERE metadata @> '{"featured": true}'::JSONB
+   AND attributes @> '{"color": "red"}'::JSONB;`
+  );
+
+  assertFormat('17.4 — JSONB existence (?, ?|, ?&)',
+    `select id, name from products where tags ? 'sale' and metadata ?| array['featured', 'promoted'] and requirements ?& array['size', 'color'];`,
+    `SELECT id, name
+  FROM products
+ WHERE tags ? 'sale'
+   AND metadata ?| ARRAY['featured', 'promoted']
+   AND requirements ?& ARRAY['size', 'color'];`
+  );
+
+  assertFormat('17.5 — JSONB concatenation and deletion',
+    `update user_profiles set preferences = preferences || '{"theme": "dark"}'::jsonb, metadata = metadata - 'deprecated_key', tags = tags - 'old_tag' where user_id = 42;`,
+    `UPDATE user_profiles
+   SET preferences = preferences || '{"theme": "dark"}'::JSONB,
+       metadata = metadata - 'deprecated_key',
+       tags = tags - 'old_tag'
+ WHERE user_id = 42;`
+  );
+
+  assertFormat('17.6 — jsonb_build_object and jsonb_agg',
+    `select d.department_name, jsonb_build_object('count', count(*), 'avg_salary', avg(e.salary)::numeric(10, 2), 'employees', jsonb_agg(jsonb_build_object('name', e.name, 'title', e.title) order by e.name)) as department_summary from departments as d inner join employees as e on d.department_id = e.department_id group by d.department_name;`,
+    `SELECT d.department_name,
+       JSONB_BUILD_OBJECT(
+           'count', COUNT(*),
+           'avg_salary', AVG(e.salary)::NUMERIC(10, 2),
+           'employees', JSONB_AGG(
+               JSONB_BUILD_OBJECT('name', e.name, 'title', e.title)
+               ORDER BY e.name
+           )
+       ) AS department_summary
+  FROM departments AS d
+       INNER JOIN employees AS e
+       ON d.department_id = e.department_id
+ GROUP BY d.department_name;`
+  );
+
+  assertFormat('17.7 — jsonb_each, jsonb_array_elements (set-returning in FROM)',
+    `select e.id, kv.key as setting_name, kv.value as setting_value from events as e, jsonb_each(e.settings) as kv where kv.key like 'notification_%';`,
+    `SELECT e.id,
+       kv.key AS setting_name,
+       kv.value AS setting_value
+  FROM events AS e,
+       JSONB_EACH(e.settings) AS kv
+ WHERE kv.key LIKE 'notification_%';`
+  );
+
+  assertFormat('17.8 — JSON path expression (PostgreSQL 12+)',
+    `select id, data @? '$.items[*] ? (@.price > 100)' as has_expensive, jsonb_path_query_array(data, '$.items[*].name') as item_names from orders where data @@ '$.total > 500';`,
+    `SELECT id,
+       data @? '$.items[*] ? (@.price > 100)' AS has_expensive,
+       JSONB_PATH_QUERY_ARRAY(data, '$.items[*].name') AS item_names
+  FROM orders
+ WHERE data @@ '$.total > 500';`
+  );
+});
+
+describe('Category 18: Array Operators and Syntax', () => {
+  assertFormat('18.1 — ARRAY constructor and ANY/ALL',
+    `select product_name, price from products where category_id = any(array[1, 2, 3]) and price > all(array[10.00, 20.00]);`,
+    `SELECT product_name, price
+  FROM products
+ WHERE category_id = ANY(ARRAY[1, 2, 3])
+   AND price > ALL(ARRAY[10.00, 20.00]);`
+  );
+
+  assertFormat('18.2 — Array overlap (&&), contains (@>), contained by (<@)',
+    `select id, name from users where interests && array['music', 'art'] and skills @> array['python', 'sql'] and roles <@ array['admin', 'editor', 'viewer'];`,
+    `SELECT id, name
+  FROM users
+ WHERE interests && ARRAY['music', 'art']
+   AND skills @> ARRAY['python', 'sql']
+   AND roles <@ ARRAY['admin', 'editor', 'viewer'];`
+  );
+
+  assertFormat('18.3 — Array subscript and slice',
+    `select employee_name, phone_numbers[1] as primary_phone, phone_numbers[2:3] as alt_phones, array_length(phone_numbers, 1) as phone_count from employees where phone_numbers[1] is not null;`,
+    `SELECT employee_name,
+       phone_numbers[1] AS primary_phone,
+       phone_numbers[2:3] AS alt_phones,
+       ARRAY_LENGTH(phone_numbers, 1) AS phone_count
+  FROM employees
+ WHERE phone_numbers[1] IS NOT NULL;`
+  );
+
+  assertFormat('18.4 — ARRAY_AGG with ORDER BY',
+    `select department, array_agg(employee_name order by hire_date) as employees_by_seniority, array_agg(distinct job_title order by job_title) as unique_titles from employees group by department;`,
+    `SELECT department,
+       ARRAY_AGG(employee_name ORDER BY hire_date) AS employees_by_seniority,
+       ARRAY_AGG(DISTINCT job_title ORDER BY job_title) AS unique_titles
+  FROM employees
+ GROUP BY department;`
+  );
+
+  assertFormat('18.5 — UNNEST',
+    `select u.id, u.name, t.tag from users as u, unnest(u.tags) as t(tag) where t.tag like 'vip_%';`,
+    `SELECT u.id, u.name, t.tag
+  FROM users AS u,
+       UNNEST(u.tags) AS t(tag)
+ WHERE t.tag LIKE 'vip_%';`
+  );
+});
+
+describe('Category 19: String Operators and Pattern Matching', () => {
+  assertFormat('19.1 — Concatenation operator (||)',
+    `select first_name || ' ' || last_name as full_name, 'ID-' || id::text || '-' || region as composite_key from employees where first_name || ' ' || last_name like 'John%';`,
+    `SELECT first_name || ' ' || last_name AS full_name,
+       'ID-' || id::TEXT || '-' || region AS composite_key
+  FROM employees
+ WHERE first_name || ' ' || last_name LIKE 'John%';`
+  );
+
+  assertFormat('19.2 — ILIKE and SIMILAR TO',
+    `select name, email from users where name ilike '%smith%' and email not ilike '%test%' and phone similar to '\\+1[0-9]{10}';`,
+    `SELECT name, email
+  FROM users
+ WHERE name ILIKE '%smith%'
+   AND email NOT ILIKE '%test%'
+   AND phone SIMILAR TO '\\+1[0-9]{10}';`
+  );
+
+  assertFormat('19.3 — Regex operators (~, ~*, !~, !~*)',
+    `select email, username from accounts where email ~ '^[a-z]+@example\\.com$' and username ~* '^admin' and notes !~ 'deprecated' and path !~* '^/test/';`,
+    `SELECT email, username
+  FROM accounts
+ WHERE email ~ '^[a-z]+@example\\.com$'
+   AND username ~* '^admin'
+   AND notes !~ 'deprecated'
+   AND path !~* '^/test/';`
+  );
+
+  assertFormat('19.4 — POSITION, OVERLAY, SUBSTRING, TRIM',
+    `select position('@' in email) as at_pos, substring(phone from 1 for 3) as area_code, overlay(ssn placing '***' from 1 for 3) as masked_ssn, trim(both ' ' from name) as clean_name, trim(leading '0' from account_num) as trimmed_num from contacts;`,
+    `SELECT POSITION('@' IN email) AS at_pos,
+       SUBSTRING(phone FROM 1 FOR 3) AS area_code,
+       OVERLAY(ssn PLACING '***' FROM 1 FOR 3) AS masked_ssn,
+       TRIM(BOTH ' ' FROM name) AS clean_name,
+       TRIM(LEADING '0' FROM account_num) AS trimmed_num
+  FROM contacts;`
+  );
+});
+
+describe('Category 20: LATERAL Joins', () => {
+  assertFormat('20.1 — LATERAL subquery',
+    `select d.department_name, top_earner.name, top_earner.salary from departments as d left join lateral (select e.name, e.salary from employees as e where e.department_id = d.department_id order by e.salary desc limit 1) as top_earner on true;`,
+    `SELECT d.department_name, top_earner.name, top_earner.salary
+  FROM departments AS d
+       LEFT JOIN LATERAL (SELECT e.name, e.salary
+                            FROM employees AS e
+                           WHERE e.department_id = d.department_id
+                           ORDER BY e.salary DESC
+                           LIMIT 1) AS top_earner
+       ON TRUE;`
+  );
+
+  assertFormat('20.2 — LATERAL with set-returning function',
+    `select u.user_name, g.month_start from users as u, lateral generate_series(u.created_at::date, current_date, '1 month'::interval) as g(month_start) where u.active = true;`,
+    `SELECT u.user_name, g.month_start
+  FROM users AS u,
+       LATERAL GENERATE_SERIES(
+           u.created_at::DATE, CURRENT_DATE, '1 month'::INTERVAL
+       ) AS g(month_start)
+ WHERE u.active = TRUE;`
+  );
+});
+
+describe('Category 21: RETURNING Clause', () => {
+  assertFormat('21.1 — INSERT ... RETURNING',
+    `insert into audit_log (action, entity_id, created_at) values ('create', 42, now()) returning log_id, created_at;`,
+    `   INSERT INTO audit_log (action, entity_id, created_at)
+   VALUES ('create', 42, NOW())
+RETURNING log_id, created_at;`
+  );
+
+  assertFormat('21.2 — UPDATE ... RETURNING',
+    `update inventory set quantity = quantity - 1, updated_at = now() where product_id = 101 and quantity > 0 returning product_id, quantity as remaining;`,
+    `   UPDATE inventory
+      SET quantity = quantity - 1,
+          updated_at = NOW()
+    WHERE product_id = 101
+      AND quantity > 0
+RETURNING product_id, quantity AS remaining;`
+  );
+
+  assertFormat('21.3 — DELETE ... RETURNING',
+    `delete from expired_sessions where expires_at < now() returning session_id, user_id;`,
+    `   DELETE
+     FROM expired_sessions
+    WHERE expires_at < NOW()
+RETURNING session_id, user_id;`
+  );
+});
+
+describe('Category 22: ON CONFLICT (Upsert)', () => {
+  assertFormat('22.1 — ON CONFLICT DO NOTHING',
+    `insert into user_logins (user_id, login_date) values (42, current_date) on conflict (user_id, login_date) do nothing;`,
+    `INSERT INTO user_logins (user_id, login_date)
+VALUES (42, CURRENT_DATE)
+    ON CONFLICT (user_id, login_date)
+    DO NOTHING;`
+  );
+
+  assertFormat('22.2 — ON CONFLICT DO UPDATE (full upsert)',
+    `insert into product_inventory (product_id, warehouse_id, quantity, updated_at) values (101, 5, 50, now()) on conflict (product_id, warehouse_id) do update set quantity = excluded.quantity, updated_at = excluded.updated_at where product_inventory.quantity <> excluded.quantity returning product_id, quantity;`,
+    `   INSERT INTO product_inventory (product_id, warehouse_id, quantity, updated_at)
+   VALUES (101, 5, 50, NOW())
+       ON CONFLICT (product_id, warehouse_id)
+       DO UPDATE
+             SET quantity = excluded.quantity,
+                 updated_at = excluded.updated_at
+           WHERE product_inventory.quantity <> excluded.quantity
+RETURNING product_id, quantity;`
+  );
+
+  assertFormat('22.3 — ON CONFLICT ON CONSTRAINT',
+    `insert into subscriptions (user_id, plan_id, starts_at) values (7, 3, now()) on conflict on constraint subscriptions_user_id_key do update set plan_id = excluded.plan_id, starts_at = excluded.starts_at;`,
+    `INSERT INTO subscriptions (user_id, plan_id, starts_at)
+VALUES (7, 3, NOW())
+    ON CONFLICT ON CONSTRAINT subscriptions_user_id_key
+    DO UPDATE
+          SET plan_id = excluded.plan_id,
+              starts_at = excluded.starts_at;`
+  );
+});
+
+describe('Category 23: GROUPING SETS, CUBE, ROLLUP', () => {
+  assertFormat('23.1 — GROUPING SETS',
+    `select region, department, sum(revenue) as total_revenue from sales group by grouping sets ((region, department), (region), (department), ());`,
+    `SELECT region, department, SUM(revenue) AS total_revenue
+  FROM sales
+ GROUP BY GROUPING SETS (
+              (region, department),
+              (region),
+              (department),
+              ()
+          );`
+  );
+
+  assertFormat('23.2 — ROLLUP',
+    `select extract(year from order_date) as order_year, extract(quarter from order_date) as order_quarter, region, sum(amount) as total from orders group by rollup (extract(year from order_date), extract(quarter from order_date), region) order by order_year, order_quarter, region;`,
+    `SELECT EXTRACT(YEAR FROM order_date) AS order_year,
+       EXTRACT(QUARTER FROM order_date) AS order_quarter,
+       region,
+       SUM(amount) AS total
+  FROM orders
+ GROUP BY ROLLUP (
+              EXTRACT(YEAR FROM order_date),
+              EXTRACT(QUARTER FROM order_date),
+              region
+          )
+ ORDER BY order_year, order_quarter, region;`
+  );
+
+  assertFormat('23.3 — CUBE with GROUPING function',
+    `select region, product, sum(sales) as total, grouping(region) as is_region_total, grouping(product) as is_product_total from revenue group by cube (region, product) having sum(sales) > 10000 order by grouping(region), grouping(product), region, product;`,
+    `SELECT region,
+       product,
+       SUM(sales) AS total,
+       GROUPING(region) AS is_region_total,
+       GROUPING(product) AS is_product_total
+  FROM revenue
+ GROUP BY CUBE (region, product)
+HAVING SUM(sales) > 10000
+ ORDER BY GROUPING(region), GROUPING(product), region, product;`
+  );
+});
+
+describe('Category 24: Recursive CTEs', () => {
+  assertFormat('24.1 — Recursive hierarchy traversal',
+    `with recursive org_chart as (select employee_id, name, manager_id, 1 as depth from employees where manager_id is null union all select e.employee_id, e.name, e.manager_id, oc.depth + 1 from employees as e inner join org_chart as oc on e.manager_id = oc.employee_id) select employee_id, name, depth from org_chart order by depth, name;`,
+    `  WITH RECURSIVE org_chart AS (
+           SELECT employee_id, name, manager_id, 1 AS depth
+             FROM employees
+            WHERE manager_id IS NULL
+
+            UNION ALL
+
+           SELECT e.employee_id, e.name, e.manager_id, oc.depth + 1
+             FROM employees AS e
+                  INNER JOIN org_chart AS oc
+                  ON e.manager_id = oc.employee_id
+       )
+SELECT employee_id, name, depth
+  FROM org_chart
+ ORDER BY depth, name;`
+  );
+
+  assertFormat('24.2 — Recursive path-building',
+    `with recursive category_path as (select id, name, parent_id, name::text as path from categories where parent_id is null union all select c.id, c.name, c.parent_id, cp.path || ' > ' || c.name from categories as c inner join category_path as cp on c.parent_id = cp.id) select id, name, path from category_path order by path;`,
+    `  WITH RECURSIVE category_path AS (
+           SELECT id, name, parent_id, name::TEXT AS path
+             FROM categories
+            WHERE parent_id IS NULL
+
+            UNION ALL
+
+           SELECT c.id, c.name, c.parent_id,
+                  cp.path || ' > ' || c.name
+             FROM categories AS c
+                  INNER JOIN category_path AS cp
+                  ON c.parent_id = cp.id
+       )
+SELECT id, name, path
+  FROM category_path
+ ORDER BY path;`
+  );
+});
+
+describe('Category 25: FILTER Clause on Aggregates', () => {
+  assertFormat('25.1 — FILTER on COUNT/SUM',
+    `select department, count(*) as total, count(*) filter (where status = 'active') as active_count, sum(salary) filter (where hire_date >= '2024-01-01') as new_hire_salary, avg(salary) filter (where title like '%Senior%') as senior_avg from employees group by department;`,
+    `SELECT department,
+       COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE status = 'active') AS active_count,
+       SUM(salary) FILTER (WHERE hire_date >= '2024-01-01') AS new_hire_salary,
+       AVG(salary) FILTER (WHERE title LIKE '%Senior%') AS senior_avg
+  FROM employees
+ GROUP BY department;`
+  );
+});
+
+describe('Category 26: Ordered-Set and Hypothetical Aggregates', () => {
+  assertFormat('26.1 — PERCENTILE_CONT, PERCENTILE_DISC, MODE',
+    `select department, percentile_cont(0.5) within group (order by salary) as median_salary, percentile_disc(0.9) within group (order by salary) as p90_salary, mode() within group (order by job_title) as most_common_title from employees group by department;`,
+    `SELECT department,
+       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY salary) AS median_salary,
+       PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY salary) AS p90_salary,
+       MODE() WITHIN GROUP (ORDER BY job_title) AS most_common_title
+  FROM employees
+ GROUP BY department;`
+  );
+});
+
+describe('Category 27: UPDATE with FROM and JOIN', () => {
+  assertFormat('27.1 — UPDATE ... FROM',
+    `update orders set status = 'shipped', shipped_date = s.ship_date from shipments as s where s.order_id = orders.order_id and s.carrier = 'FedEx';`,
+    `UPDATE orders
+   SET status = 'shipped',
+       shipped_date = s.ship_date
+  FROM shipments AS s
+ WHERE s.order_id = orders.order_id
+   AND s.carrier = 'FedEx';`
+  );
+
+  assertFormat('27.2 — UPDATE with subquery in SET',
+    `update products set avg_rating = (select avg(rating)::numeric(3, 2) from reviews as r where r.product_id = products.product_id), review_count = (select count(*) from reviews as r where r.product_id = products.product_id) where exists (select 1 from reviews as r where r.product_id = products.product_id);`,
+    `UPDATE products
+   SET avg_rating = (SELECT AVG(rating)::NUMERIC(3, 2)
+                       FROM reviews AS r
+                      WHERE r.product_id = products.product_id),
+       review_count = (SELECT COUNT(*)
+                         FROM reviews AS r
+                        WHERE r.product_id = products.product_id)
+ WHERE EXISTS
+       (SELECT 1
+          FROM reviews AS r
+         WHERE r.product_id = products.product_id);`
+  );
+});
+
+describe('Category 28: NATURAL JOIN and JOIN ... USING', () => {
+  assertFormat('28.1 — NATURAL JOIN',
+    `select order_id, customer_name, product_name from orders natural join customers natural join products;`,
+    `SELECT order_id, customer_name, product_name
+  FROM orders
+       NATURAL JOIN customers
+       NATURAL JOIN products;`
+  );
+
+  assertFormat('28.2 — JOIN ... USING',
+    `select o.order_id, c.name, p.product_name from orders as o inner join customers as c using (customer_id) inner join order_items as oi using (order_id) inner join products as p using (product_id) where o.order_date > '2024-01-01';`,
+    `SELECT o.order_id, c.name, p.product_name
+  FROM orders AS o
+       INNER JOIN customers AS c
+       USING (customer_id)
+
+       INNER JOIN order_items AS oi
+       USING (order_id)
+
+       INNER JOIN products AS p
+       USING (product_id)
+ WHERE o.order_date > '2024-01-01';`
+  );
+});
+
+describe('Category 29: GENERATE_SERIES and Table-Generating Functions', () => {
+  assertFormat('29.1 — generate_series for date spine',
+    `select d.date::date as calendar_date, coalesce(o.order_count, 0) as order_count from generate_series('2024-01-01'::date, '2024-12-31'::date, '1 day'::interval) as d(date) left join (select order_date::date as order_date, count(*) as order_count from orders group by order_date::date) as o on d.date::date = o.order_date;`,
+    `SELECT d.date::DATE AS calendar_date,
+       COALESCE(o.order_count, 0) AS order_count
+  FROM GENERATE_SERIES(
+           '2024-01-01'::DATE,
+           '2024-12-31'::DATE,
+           '1 day'::INTERVAL
+       ) AS d(date)
+       LEFT JOIN (SELECT order_date::DATE AS order_date,
+                         COUNT(*) AS order_count
+                    FROM orders
+                   GROUP BY order_date::DATE) AS o
+       ON d.date::DATE = o.order_date;`
+  );
+});
+
+describe('Category 30: INTERVAL Arithmetic', () => {
+  assertFormat('30.1 — Interval expressions',
+    `select user_id, last_login, now() - last_login as time_since_login, created_at + interval '30 days' as trial_end, created_at + (term_months || ' months')::interval as contract_end from users where last_login < now() - interval '90 days' and created_at > now() - interval '1 year';`,
+    `SELECT user_id,
+       last_login,
+       NOW() - last_login AS time_since_login,
+       created_at + INTERVAL '30 days' AS trial_end,
+       created_at + (term_months || ' months')::INTERVAL AS contract_end
+  FROM users
+ WHERE last_login < NOW() - INTERVAL '90 days'
+   AND created_at > NOW() - INTERVAL '1 year';`
+  );
+});
+
+describe('Category 31: EXTRACT, DATE_PART, DATE_TRUNC, AGE', () => {
+  assertFormat('31.1 — Date/time extraction functions',
+    `select order_id, extract(year from order_date) as order_year, extract(dow from order_date) as day_of_week, date_part('quarter', order_date) as quarter, date_trunc('month', order_date) as month_start, age(now(), order_date) as order_age from orders where date_trunc('year', order_date) = date_trunc('year', now());`,
+    `SELECT order_id,
+       EXTRACT(YEAR FROM order_date) AS order_year,
+       EXTRACT(DOW FROM order_date) AS day_of_week,
+       DATE_PART('quarter', order_date) AS quarter,
+       DATE_TRUNC('month', order_date) AS month_start,
+       AGE(NOW(), order_date) AS order_age
+  FROM orders
+ WHERE DATE_TRUNC('year', order_date) = DATE_TRUNC('year', NOW());`
+  );
+});
+
+describe('Category 32: IS DISTINCT FROM', () => {
+  assertFormat('32.1 — IS DISTINCT FROM / IS NOT DISTINCT FROM',
+    `select a.id, a.value, b.value from table_a as a inner join table_b as b on a.id = b.id where a.status is distinct from b.status and a.category is not distinct from b.category;`,
+    `SELECT a.id, a.value, b.value
+  FROM table_a AS a
+       INNER JOIN table_b AS b
+       ON a.id = b.id
+ WHERE a.status IS DISTINCT FROM b.status
+   AND a.category IS NOT DISTINCT FROM b.category;`
+  );
+});
+
+describe('Category 33: GREATEST, LEAST', () => {
+  assertFormat('33.1 — GREATEST and LEAST',
+    `select product_name, greatest(online_price, store_price, wholesale_price) as max_price, least(online_price, store_price, wholesale_price) as min_price, greatest(online_price, store_price) - least(online_price, store_price) as price_spread from products where greatest(online_price, store_price) > 100;`,
+    `SELECT product_name,
+       GREATEST(online_price, store_price, wholesale_price) AS max_price,
+       LEAST(online_price, store_price, wholesale_price) AS min_price,
+       GREATEST(online_price, store_price) - LEAST(online_price, store_price) AS price_spread
+  FROM products
+ WHERE GREATEST(online_price, store_price) > 100;`
+  );
+});
+
+describe('Category 34: STRING_AGG', () => {
+  assertFormat('34.1 — STRING_AGG with ORDER BY and SEPARATOR',
+    `select department, string_agg(employee_name, ', ' order by employee_name) as employee_list, string_agg(distinct job_title, '; ' order by job_title) as titles from employees group by department having count(*) > 3;`,
+    `SELECT department,
+       STRING_AGG(employee_name, ', ' ORDER BY employee_name) AS employee_list,
+       STRING_AGG(DISTINCT job_title, '; ' ORDER BY job_title) AS titles
+  FROM employees
+ GROUP BY department
+HAVING COUNT(*) > 3;`
+  );
+});
+
+describe('Category 35: VALUES as Standalone Query', () => {
+  assertFormat('35.1 — Standalone VALUES',
+    `values (1, 'alpha', true), (2, 'beta', false), (3, 'gamma', true);`,
+    `VALUES (1, 'alpha', TRUE),
+       (2, 'beta', FALSE),
+       (3, 'gamma', TRUE);`
+  );
+});
+
+describe('Category 36: CREATE INDEX, CREATE VIEW', () => {
+  assertFormat('36.1 — CREATE INDEX',
+    `create index concurrently if not exists idx_orders_customer_date on orders using btree (customer_id, order_date desc) where status <> 'cancelled';`,
+    `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_customer_date
+    ON orders
+ USING BTREE (customer_id, order_date DESC)
+ WHERE status <> 'cancelled';`
+  );
+
+  assertFormat('36.2 — CREATE INDEX with expression',
+    `create unique index idx_users_lower_email on users (lower(email)) where deleted_at is null;`,
+    `CREATE UNIQUE INDEX idx_users_lower_email
+    ON users (LOWER(email))
+ WHERE deleted_at IS NULL;`
+  );
+
+  assertFormat('36.3 — CREATE VIEW',
+    `create or replace view active_employee_summary as select d.department_name, count(*) as headcount, avg(e.salary)::numeric(10, 2) as avg_salary from employees as e inner join departments as d on e.department_id = d.department_id where e.termination_date is null group by d.department_name;`,
+    `CREATE OR REPLACE VIEW active_employee_summary AS
+SELECT d.department_name,
+       COUNT(*) AS headcount,
+       AVG(e.salary)::NUMERIC(10, 2) AS avg_salary
+  FROM employees AS e
+       INNER JOIN departments AS d
+       ON e.department_id = d.department_id
+ WHERE e.termination_date IS NULL
+ GROUP BY d.department_name;`
+  );
+
+  assertFormat('36.4 — CREATE MATERIALIZED VIEW',
+    `create materialized view if not exists monthly_revenue as select date_trunc('month', order_date)::date as month, sum(amount) as total, count(*) as order_count from orders where status = 'completed' group by date_trunc('month', order_date)::date with data;`,
+    `CREATE MATERIALIZED VIEW IF NOT EXISTS monthly_revenue AS
+SELECT DATE_TRUNC('month', order_date)::DATE AS month,
+       SUM(amount) AS total,
+       COUNT(*) AS order_count
+  FROM orders
+ WHERE status = 'completed'
+ GROUP BY DATE_TRUNC('month', order_date)::DATE
+  WITH DATA;`
+  );
+});
+
+describe('Category 37: GRANT, REVOKE, TRUNCATE', () => {
+  assertFormat('37.1 — GRANT',
+    `grant select, insert, update on all tables in schema public to app_readwrite;`,
+    `GRANT SELECT, INSERT, UPDATE
+   ON ALL TABLES IN SCHEMA public
+   TO app_readwrite;`
+  );
+
+  assertFormat('37.2 — TRUNCATE',
+    `truncate table staging_events, staging_users restart identity cascade;`,
+    `TRUNCATE TABLE staging_events, staging_users
+RESTART IDENTITY CASCADE;`
+  );
+});
+
+describe('Category 38: Sequences', () => {
+  assertFormat('38.1 — NEXTVAL, CURRVAL, SETVAL',
+    `select nextval('invoice_id_seq') as next_id;`,
+    `SELECT NEXTVAL('invoice_id_seq') AS next_id;`
+  );
+
+  assertFormat('38.2 — INSERT with sequence',
+    `insert into invoices (invoice_id, customer_id, amount) values (nextval('invoice_id_seq'), 42, 500.00) returning invoice_id;`,
+    `   INSERT INTO invoices (invoice_id, customer_id, amount)
+   VALUES (NEXTVAL('invoice_id_seq'), 42, 500.00)
+RETURNING invoice_id;`
+  );
+});
+
+describe('Category 39: Advanced Window Functions', () => {
+  assertFormat('39.1 — LAG, LEAD with defaults',
+    `select order_date, revenue, lag(revenue, 1, 0) over (order by order_date) as prev_revenue, lead(revenue, 1, 0) over (order by order_date) as next_revenue, revenue - lag(revenue, 1, 0) over (order by order_date) as revenue_change from daily_revenue;`,
+    `SELECT order_date,
+       revenue,
+       LAG(revenue, 1, 0) OVER (ORDER BY order_date) AS prev_revenue,
+       LEAD(revenue, 1, 0) OVER (ORDER BY order_date) AS next_revenue,
+       revenue - LAG(revenue, 1, 0) OVER (ORDER BY order_date) AS revenue_change
+  FROM daily_revenue;`
+  );
+
+  assertFormat('39.2 — NTILE, CUME_DIST, PERCENT_RANK',
+    `select employee_name, salary, ntile(4) over (order by salary) as quartile, cume_dist() over (order by salary) as cumulative_dist, percent_rank() over (order by salary) as pct_rank from employees where department = 'Engineering';`,
+    `SELECT employee_name,
+       salary,
+       NTILE(4) OVER (ORDER BY salary) AS quartile,
+       CUME_DIST() OVER (ORDER BY salary) AS cumulative_dist,
+       PERCENT_RANK() OVER (ORDER BY salary) AS pct_rank
+  FROM employees
+ WHERE department = 'Engineering';`
+  );
+
+  assertFormat('39.3 — WINDOW clause (named windows)',
+    `select employee_name, department, salary, avg(salary) over dept_window as dept_avg, rank() over salary_window as salary_rank from employees window dept_window as (partition by department), salary_window as (order by salary desc);`,
+    `SELECT employee_name,
+       department,
+       salary,
+       AVG(salary) OVER dept_window AS dept_avg,
+       RANK() OVER salary_window AS salary_rank
+  FROM employees
+WINDOW dept_window AS (PARTITION BY department),
+       salary_window AS (ORDER BY salary DESC);`
+  );
+
+  assertFormat('39.4 — Window frame with EXCLUDE',
+    `select measurement_date, value, avg(value) over (order by measurement_date rows between 3 preceding and 3 following exclude current row) as smoothed from sensor_data;`,
+    `SELECT measurement_date,
+       value,
+       AVG(value) OVER (ORDER BY measurement_date
+                         ROWS BETWEEN 3 PRECEDING
+                                  AND 3 FOLLOWING
+                         EXCLUDE CURRENT ROW) AS smoothed
+  FROM sensor_data;`
+  );
+
+  assertFormat('39.5 — RANGE frame with interval',
+    `select event_date, event_count, sum(event_count) over (order by event_date range between interval '7 days' preceding and current row) as rolling_7d from daily_events;`,
+    `SELECT event_date,
+       event_count,
+       SUM(event_count) OVER (ORDER BY event_date
+                               RANGE BETWEEN INTERVAL '7 days' PRECEDING
+                                         AND CURRENT ROW) AS rolling_7d
+  FROM daily_events;`
+  );
+});
+
+describe('Category 40: MERGE Statement', () => {
+  assertFormat('40.1 — MERGE with all clauses',
+    `merge into inventory as t using incoming_stock as s on t.product_id = s.product_id and t.warehouse_id = s.warehouse_id when matched and s.quantity = 0 then delete when matched then update set quantity = t.quantity + s.quantity, updated_at = now() when not matched then insert (product_id, warehouse_id, quantity, updated_at) values (s.product_id, s.warehouse_id, s.quantity, now());`,
+    ` MERGE INTO inventory AS t
+       USING incoming_stock AS s
+          ON t.product_id = s.product_id
+         AND t.warehouse_id = s.warehouse_id
+  WHEN MATCHED AND s.quantity = 0 THEN
+       DELETE
+  WHEN MATCHED THEN
+       UPDATE
+          SET quantity = t.quantity + s.quantity,
+              updated_at = NOW()
+  WHEN NOT MATCHED THEN
+       INSERT (product_id, warehouse_id, quantity, updated_at)
+       VALUES (s.product_id, s.warehouse_id, s.quantity, NOW());`
+  );
+});
+
+describe('Category 41: Complex Parenthesized Boolean Logic', () => {
+  assertFormat('41.1 — Nested AND/OR with parentheses',
+    `select * from orders where (status = 'pending' and (priority = 'high' or (priority = 'medium' and created_at < now() - interval '7 days'))) or (status = 'review' and assigned_to is not null);`,
+    `SELECT *
+  FROM orders
+ WHERE (status = 'pending'
+        AND (priority = 'high'
+             OR (priority = 'medium'
+                 AND created_at < NOW() - INTERVAL '7 days')))
+    OR (status = 'review'
+        AND assigned_to IS NOT NULL);`
+  );
+});
+
+describe('Category 42: Multiple CTEs with MATERIALIZED Hints', () => {
+  assertFormat('42.1 — MATERIALIZED / NOT MATERIALIZED CTEs',
+    `with active_users as materialized (select user_id, email from users where status = 'active'), recent_orders as not materialized (select order_id, user_id, amount from orders where order_date > now() - interval '30 days') select au.email, count(ro.order_id) as order_count, sum(ro.amount) as total_spent from active_users as au left join recent_orders as ro on au.user_id = ro.user_id group by au.email having sum(ro.amount) > 100;`,
+    `  WITH active_users AS MATERIALIZED (
+           SELECT user_id, email
+             FROM users
+            WHERE status = 'active'
+       ),
+       recent_orders AS NOT MATERIALIZED (
+           SELECT order_id, user_id, amount
+             FROM orders
+            WHERE order_date > NOW() - INTERVAL '30 days'
+       )
+SELECT au.email,
+       COUNT(ro.order_id) AS order_count,
+       SUM(ro.amount) AS total_spent
+  FROM active_users AS au
+       LEFT JOIN recent_orders AS ro
+       ON au.user_id = ro.user_id
+ GROUP BY au.email
+HAVING SUM(ro.amount) > 100;`
+  );
+});
+
+describe('Category 43: Self-Joins', () => {
+  assertFormat('43.1 — Self-join for hierarchy',
+    `select e.name as employee, m.name as manager from employees as e left join employees as m on e.manager_id = m.employee_id where e.department = 'Engineering';`,
+    `SELECT e.name AS employee, m.name AS manager
+  FROM employees AS e
+       LEFT JOIN employees AS m
+       ON e.manager_id = m.employee_id
+ WHERE e.department = 'Engineering';`
+  );
+});
+
+describe('Category 44: Correlated Subqueries', () => {
+  assertFormat('44.1 — Correlated UPDATE subquery',
+    `select e.employee_name, e.salary, (select avg(e2.salary) from employees as e2 where e2.department_id = e.department_id) as dept_avg, e.salary - (select avg(e2.salary) from employees as e2 where e2.department_id = e.department_id) as diff_from_avg from employees as e where e.salary > (select avg(e2.salary) * 1.5 from employees as e2 where e2.department_id = e.department_id) order by diff_from_avg desc;`,
+    `SELECT e.employee_name,
+       e.salary,
+       (SELECT AVG(e2.salary)
+          FROM employees AS e2
+         WHERE e2.department_id = e.department_id) AS dept_avg,
+       e.salary - (SELECT AVG(e2.salary)
+                      FROM employees AS e2
+                     WHERE e2.department_id = e.department_id) AS diff_from_avg
+  FROM employees AS e
+ WHERE e.salary >
+       (SELECT AVG(e2.salary) * 1.5
+          FROM employees AS e2
+         WHERE e2.department_id = e.department_id)
+ ORDER BY diff_from_avg DESC;`
+  );
+});
+
+describe('Category 45: FETCH FIRST', () => {
+  assertFormat('45.1 — FETCH FIRST N ROWS',
+    `select employee_name, salary from employees order by salary desc offset 10 rows fetch first 5 rows only;`,
+    `SELECT employee_name, salary
+  FROM employees
+ ORDER BY salary DESC
+OFFSET 10 ROWS
+ FETCH FIRST 5 ROWS ONLY;`
+  );
+
+  assertFormat('45.2 — FETCH with ties',
+    `select employee_name, salary from employees order by salary desc fetch first 10 rows with ties;`,
+    `SELECT employee_name, salary
+  FROM employees
+ ORDER BY salary DESC
+ FETCH FIRST 10 ROWS WITH TIES;`
+  );
+});
+
+describe('Category 46: TABLESAMPLE', () => {
+  assertFormat('46.1 — TABLESAMPLE BERNOULLI',
+    `select * from large_events tablesample bernoulli(10) repeatable(42) where event_type = 'click';`,
+    `SELECT *
+  FROM large_events TABLESAMPLE BERNOULLI(10) REPEATABLE(42)
+ WHERE event_type = 'click';`
+  );
+});
+
+describe('Category 47: Complex Expressions and Operator Precedence', () => {
+  assertFormat('47.1 — Mixed arithmetic with function calls',
+    `select product_name, (unit_price * (1 - discount / 100.0))::numeric(10, 2) * quantity as line_total, round(((unit_price * quantity) - coalesce(credit, 0)) * (1 + tax_rate / 100.0), 2) as total_with_tax from order_lines where (unit_price * quantity) > 0 and coalesce(discount, 0) between 0 and 50;`,
+    `SELECT product_name,
+       (unit_price * (1 - discount / 100.0))::NUMERIC(10, 2) * quantity AS line_total,
+       ROUND(((unit_price * quantity) - COALESCE(credit, 0)) * (1 + tax_rate / 100.0), 2) AS total_with_tax
+  FROM order_lines
+ WHERE (unit_price * quantity) > 0
+   AND COALESCE(discount, 0) BETWEEN 0 AND 50;`
+  );
+
+  assertFormat('47.2 — Bitwise operators',
+    `select id, permissions, permissions & 4 as has_read, permissions | 2 as with_write, permissions # 255 as inverted, ~permissions as bitwise_not, permissions << 1 as shifted from user_permissions where permissions & 4 = 4;`,
+    `SELECT id,
+       permissions,
+       permissions & 4 AS has_read,
+       permissions | 2 AS with_write,
+       permissions # 255 AS inverted,
+       ~permissions AS bitwise_not,
+       permissions << 1 AS shifted
+  FROM user_permissions
+ WHERE permissions & 4 = 4;`
+  );
+});
+
+describe('Category 48: Multiple Statements in Sequence', () => {
+  assertFormat('48.1 — DDL + DML sequence',
+    `create table if not exists temp_results (id serial primary key, label varchar(50) not null, value numeric(10, 2) default 0.00 not null); insert into temp_results (label, value) select category, sum(amount) from transactions group by category; update temp_results set label = upper(label) where value > 1000; select * from temp_results order by value desc;`,
+    `CREATE TABLE IF NOT EXISTS temp_results (
+    id    SERIAL       PRIMARY KEY,
+    label VARCHAR(50)  NOT NULL,
+    value NUMERIC(10, 2) DEFAULT 0.00 NOT NULL
+);
+
+INSERT INTO temp_results (label, value)
+SELECT category, SUM(amount)
+  FROM transactions
+ GROUP BY category;
+
+UPDATE temp_results
+   SET label = UPPER(label)
+ WHERE value > 1000;
+
+SELECT *
+  FROM temp_results
+ ORDER BY value DESC;`
+  );
+});
+
+describe('Category 49: Stress Tests — Operator Ambiguity', () => {
+  assertFormat('49.1 — Operators that look like keywords or other operators',
+    `select j.data -> 'key' ->> 'sub' as text_val, j.data::text as json_text, j.data @> '{"a":1}'::jsonb as contains_a, j.tags && array['x'] as has_x, j.perms & 7 as low_bits, j.name || ':' || j.id::text as composite, j.score between 1 and 10 as in_range from jsonb_table as j where j.data ? 'key' and j.data ->> 'type' in ('a', 'b') and j.active is not distinct from true;`,
+    `SELECT j.data -> 'key' ->> 'sub' AS text_val,
+       j.data::TEXT AS json_text,
+       j.data @> '{"a":1}'::JSONB AS contains_a,
+       j.tags && ARRAY['x'] AS has_x,
+       j.perms & 7 AS low_bits,
+       j.name || ':' || j.id::TEXT AS composite,
+       j.score BETWEEN 1 AND 10 AS in_range
+  FROM jsonb_table AS j
+ WHERE j.data ? 'key'
+   AND j.data ->> 'type' IN ('a', 'b')
+   AND j.active IS NOT DISTINCT FROM TRUE;`
+  );
+
+  assertFormat('49.2 — Cast ambiguity: :: vs comparison chains',
+    `select a::integer + b::integer as sum_ints, (a || b)::varchar(100) as concat_cast, array[1,2,3]::integer[] as int_array, row(1, 'a')::my_type as typed_row, null::bigint as null_bigint from expressions where a::numeric > b::numeric and c::text <> '' and d::boolean is true;`,
+    `SELECT a::INTEGER + b::INTEGER AS sum_ints,
+       (a || b)::VARCHAR(100) AS concat_cast,
+       ARRAY[1, 2, 3]::INTEGER[] AS int_array,
+       ROW(1, 'a')::my_type AS typed_row,
+       NULL::BIGINT AS null_bigint
+  FROM expressions
+ WHERE a::NUMERIC > b::NUMERIC
+   AND c::TEXT <> ''
+   AND d::BOOLEAN IS TRUE;`
+  );
+});
+
+describe('Category 50: Full Kitchen-Sink Query', () => {
+  assertFormat('50.1 — Maximum complexity: CTE + recursive + window + JSON + cast + LATERAL + FILTER + CASE',
+    `with recursive category_tree as (select id, name, parent_id, 1 as depth, array[id] as path from categories where parent_id is null union all select c.id, c.name, c.parent_id, ct.depth + 1, ct.path || c.id from categories as c inner join category_tree as ct on c.parent_id = ct.id where ct.depth < 10), category_stats as materialized (select ct.id, ct.name, ct.depth, ct.path, count(*) filter (where p.status = 'active') as active_products, count(*) filter (where p.status = 'discontinued') as discontinued_products, avg(p.price::numeric)::numeric(10, 2) as avg_price, jsonb_build_object('min', min(p.price), 'max', max(p.price), 'median', percentile_cont(0.5) within group (order by p.price)) as price_stats from category_tree as ct left join products as p on p.category_id = ct.id group by ct.id, ct.name, ct.depth, ct.path) select cs.name, cs.depth, cs.active_products, cs.avg_price, cs.price_stats ->> 'median' as median_price, case when cs.active_products > 100 then 'large' when cs.active_products > 10 then 'medium' else 'small' end as size_tier, row_number() over (partition by cs.depth order by cs.active_products desc) as rank_in_depth, recent.latest_product, recent.latest_date from category_stats as cs left join lateral (select p.name as latest_product, p.created_at::date as latest_date from products as p where p.category_id = cs.id and p.status = 'active' order by p.created_at desc limit 1) as recent on true where cs.active_products > 0 and cs.price_stats ->> 'max' is not null order by cs.depth, cs.active_products desc;`,
+    `  WITH RECURSIVE category_tree AS (
+           SELECT id, name, parent_id, 1 AS depth, ARRAY[id] AS path
+             FROM categories
+            WHERE parent_id IS NULL
+
+            UNION ALL
+
+           SELECT c.id, c.name, c.parent_id,
+                  ct.depth + 1,
+                  ct.path || c.id
+             FROM categories AS c
+                  INNER JOIN category_tree AS ct
+                  ON c.parent_id = ct.id
+            WHERE ct.depth < 10
+       ),
+       category_stats AS MATERIALIZED (
+           SELECT ct.id,
+                  ct.name,
+                  ct.depth,
+                  ct.path,
+                  COUNT(*) FILTER (WHERE p.status = 'active') AS active_products,
+                  COUNT(*) FILTER (WHERE p.status = 'discontinued') AS discontinued_products,
+                  AVG(p.price::NUMERIC)::NUMERIC(10, 2) AS avg_price,
+                  JSONB_BUILD_OBJECT(
+                      'min', MIN(p.price),
+                      'max', MAX(p.price),
+                      'median', PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY p.price)
+                  ) AS price_stats
+             FROM category_tree AS ct
+                  LEFT JOIN products AS p
+                  ON p.category_id = ct.id
+            GROUP BY ct.id, ct.name, ct.depth, ct.path
+       )
+SELECT cs.name,
+       cs.depth,
+       cs.active_products,
+       cs.avg_price,
+       cs.price_stats ->> 'median' AS median_price,
+       CASE
+       WHEN cs.active_products > 100 THEN 'large'
+       WHEN cs.active_products > 10 THEN 'medium'
+       ELSE 'small'
+       END AS size_tier,
+       ROW_NUMBER() OVER (PARTITION BY cs.depth
+                              ORDER BY cs.active_products DESC) AS rank_in_depth,
+       recent.latest_product,
+       recent.latest_date
+  FROM category_stats AS cs
+       LEFT JOIN LATERAL (SELECT p.name AS latest_product,
+                                 p.created_at::DATE AS latest_date
+                            FROM products AS p
+                           WHERE p.category_id = cs.id
+                             AND p.status = 'active'
+                           ORDER BY p.created_at DESC
+                           LIMIT 1) AS recent
+       ON TRUE
+ WHERE cs.active_products > 0
+   AND cs.price_stats ->> 'max' IS NOT NULL
+ ORDER BY cs.depth, cs.active_products DESC;`
+  );
+});
