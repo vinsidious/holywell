@@ -19,6 +19,7 @@ interface CLIOptions {
   check: boolean;
   write: boolean;
   diff: boolean;
+  dryRun: boolean;
   help: boolean;
   version: boolean;
   listDifferent: boolean;
@@ -35,6 +36,7 @@ interface CLIOptions {
 interface RecoveryEvent {
   line: number;
   message: string;
+  dropped?: boolean;
 }
 
 // ANSI color helpers — disabled by NO_COLOR env, --no-color flag, or non-TTY stderr
@@ -55,7 +57,8 @@ function initColor(opts: CLIOptions): void {
     colorEnabled = false;
     return;
   }
-  colorEnabled = process.env.NO_COLOR === undefined && !!process.stderr.isTTY;
+  const runningInCI = process.env.CI !== undefined || process.env.GITHUB_ACTIONS !== undefined;
+  colorEnabled = process.env.NO_COLOR === undefined && !!process.stderr.isTTY && !runningInCI;
 }
 
 function red(s: string): string {
@@ -107,11 +110,13 @@ Usage: sqlfmt [options] [file ...]
 
 Options:
   -h, --help            Show this help text
-  -v, --version         Show version
+  -V, --version         Show version
 
 Formatting:
   --check               Exit 1 when input is not formatted
   --diff                Show unified diff when --check fails
+  --dry-run             Preview changes without writing (implies --check --diff)
+  --preview             Alias for --dry-run
   -w, --write           Write formatted output back to input file(s)
   -l, --list-different  Print only filenames that need formatting
   --strict              Disable parser recovery; exit 2 on parse errors
@@ -123,7 +128,7 @@ File selection:
   --stdin-filepath <p>  Path shown in error messages when reading stdin
 
 Output:
-  --verbose             Print progress details to stderr
+  -v, --verbose         Print progress details to stderr
   --quiet               Suppress all output except errors
   --no-color            Alias for --color=never
   --color <mode>        Colorize output: auto|always|never (default: auto)
@@ -164,6 +169,7 @@ function parseArgs(args: string[]): CLIOptions {
     check: false,
     write: false,
     diff: false,
+    dryRun: false,
     help: false,
     version: false,
     listDifferent: false,
@@ -187,6 +193,10 @@ function parseArgs(args: string[]): CLIOptions {
       opts.diff = true;
       continue;
     }
+    if (arg === '--dry-run' || arg === '--preview') {
+      opts.dryRun = true;
+      continue;
+    }
     if (arg === '--write' || arg === '-w') {
       opts.write = true;
       continue;
@@ -195,7 +205,7 @@ function parseArgs(args: string[]): CLIOptions {
       opts.help = true;
       continue;
     }
-    if (arg === '--version' || arg === '-v') {
+    if (arg === '--version' || arg === '-V') {
       opts.version = true;
       continue;
     }
@@ -224,7 +234,7 @@ function parseArgs(args: string[]): CLIOptions {
       opts.colorMode = 'never';
       continue;
     }
-    if (arg === '--verbose') {
+    if (arg === '--verbose' || arg === '-v') {
       opts.verbose = true;
       continue;
     }
@@ -258,7 +268,7 @@ function parseArgs(args: string[]): CLIOptions {
     }
 
     if (arg.startsWith('-')) {
-      throw new CLIUsageError(`Unknown option: ${arg}`);
+      throw new CLIUsageError(`Unknown option: ${arg}. Run --help for usage.`);
     }
 
     opts.files.push(arg);
@@ -268,8 +278,17 @@ function parseArgs(args: string[]): CLIOptions {
     throw new CLIUsageError('--verbose and --quiet cannot be used together');
   }
 
+  if (opts.dryRun) {
+    opts.check = true;
+    opts.diff = true;
+  }
+
   if (opts.diff && !opts.check) {
     throw new CLIUsageError('--diff can only be used with --check');
+  }
+
+  if (opts.dryRun && opts.write) {
+    throw new CLIUsageError('--dry-run and --write cannot be used together');
   }
 
   if (opts.write && opts.check) {
@@ -504,13 +523,9 @@ function isInsideDirectory(baseDir: string, targetPath: string): boolean {
 function validateWritePath(file: string): string | null {
   const resolved = resolve(file);
   const cwd = process.cwd();
-  // Absolute paths from glob expansion or explicit user input are trusted
-  // since the user explicitly specified them. Only enforce CWD containment
-  // for relative paths where ".." traversal is a concern.
-  if (!isAbsolute(file)) {
-    if (!isInsideDirectory(cwd, resolved)) {
-      return null;
-    }
+  // Enforce CWD containment for both relative and absolute paths.
+  if (!isInsideDirectory(cwd, resolved)) {
+    return null;
   }
   return resolved;
 }
@@ -593,8 +608,12 @@ function formatOneInput(input: string, strict: boolean): { output: string; recov
   const recoveries: RecoveryEvent[] = [];
   const output = formatSQL(input, {
     recover: !strict,
-    onRecover: (error: ParseError, _raw: RawExpression | null) => {
+    onRecover: (error: ParseError, raw: RawExpression | null) => {
+      if (!raw) return;
       recoveries.push({ line: error.line, message: error.message });
+    },
+    onDropStatement: (error: ParseError) => {
+      recoveries.push({ line: error.line, message: error.message, dropped: true });
     },
   });
   return { output, recoveries };
@@ -669,13 +688,18 @@ function printRecoveryWarnings(recoveries: RecoveryEvent[], quiet: boolean): voi
   if (quiet || recoveries.length === 0) return;
 
   for (const r of recoveries) {
-    console.error(`Warning: Could not parse statement at line ${r.line} (passed through unchanged)`);
+    if (r.dropped) {
+      console.error(`Warning: Could not recover statement at line ${r.line} (dropped in recovery mode)`);
+    } else {
+      console.error(`Warning: Could not parse statement at line ${r.line} (passed through unchanged)`);
+    }
   }
-  if (recoveries.length > 0) {
-    console.error(
-      `Warning: ${recoveries.length} statement(s) could not be parsed and were passed through unchanged`
-    );
-  }
+  const droppedCount = recoveries.filter(r => r.dropped).length;
+  const passthroughCount = recoveries.length - droppedCount;
+  const parts: string[] = [];
+  if (passthroughCount > 0) parts.push(`${passthroughCount} passed through`);
+  if (droppedCount > 0) parts.push(`${droppedCount} dropped`);
+  console.error(`Warning: ${recoveries.length} statement(s) could not be parsed (${parts.join(', ')})`);
 }
 
 function main(): void {
@@ -743,9 +767,14 @@ function main(): void {
         console.error(`Formatting ${expandedFiles.length} file${expandedFiles.length === 1 ? '' : 's'}...`);
       }
 
-      for (const file of expandedFiles) {
+      for (let fileIndex = 0; fileIndex < expandedFiles.length; fileIndex++) {
+        const file = expandedFiles[fileIndex];
         if (opts.verbose) {
-          console.error(file);
+          if (expandedFiles.length >= 20) {
+            console.error(`[${fileIndex + 1}/${expandedFiles.length}] ${file}`);
+          } else {
+            console.error(file);
+          }
         }
 
         const input = readFileSync(file, 'utf-8');
