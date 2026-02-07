@@ -10,55 +10,30 @@ function assertFormat(name: string, input: string, expected: string) {
 }
 
 describe('Category 1: Basic SELECT Queries', () => {
-  assertFormat('1.1 — Simple single-table SELECT',
-    `select file_hash from file_system where file_name = '.vimrc';`,
-    `SELECT file_hash
-  FROM file_system
- WHERE file_name = '.vimrc';`
-  );
-
-  assertFormat('1.2 — Multiple columns, single table',
-    `select a.title, a.release_date, a.recording_date from albums as a where a.title = 'Charcoal Lane' or a.title = 'The New Danger';`,
-    `SELECT a.title, a.release_date, a.recording_date
-  FROM albums AS a
- WHERE a.title = 'Charcoal Lane'
-    OR a.title = 'The New Danger';`
-  );
-
-  assertFormat('1.3 — Column list wrapping with logical grouping',
-    `select a.title, a.release_date, a.recording_date, a.production_date from albums as a where a.title = 'Charcoal Lane' or a.title = 'The New Danger';`,
-    `SELECT a.title,
-       a.release_date, a.recording_date, a.production_date
-  FROM albums AS a
- WHERE a.title = 'Charcoal Lane'
-    OR a.title = 'The New Danger';`
-  );
-
-  assertFormat('1.4 — Simple SELECT with alias',
-    `select first_name as fn from staff;`,
-    `SELECT first_name AS fn
-  FROM staff;`
-  );
-
-  assertFormat('1.5 — Aggregate with alias',
-    `select sum(s.monitor_tally) as monitor_total from staff as s;`,
-    `SELECT SUM(s.monitor_tally) AS monitor_total
-  FROM staff AS s;`
-  );
-
-  assertFormat('1.6 — WHERE with AND',
-    `select model_num from phones as p where p.release_date > '2014-09-30' and p.manufacturer = 'Apple';`,
-    `SELECT model_num
-  FROM phones AS p
- WHERE p.release_date > '2014-09-30'
-   AND p.manufacturer = 'Apple';`
-  );
-
-  assertFormat('1.7 — SELECT with no WHERE clause',
-    `select first_name from staff;`,
-    `SELECT first_name
-  FROM staff;`
-  );
+  const tests: [string, string, string][] = [
+    ['1.1 — Simple single-table SELECT',
+      `select file_hash from file_system where file_name = '.vimrc';`,
+      `SELECT file_hash\n  FROM file_system\n WHERE file_name = '.vimrc';`],
+    ['1.2 — Multiple columns, single table',
+      `select a.title, a.release_date, a.recording_date from albums as a where a.title = 'Charcoal Lane' or a.title = 'The New Danger';`,
+      `SELECT a.title, a.release_date, a.recording_date\n  FROM albums AS a\n WHERE a.title = 'Charcoal Lane'\n    OR a.title = 'The New Danger';`],
+    ['1.3 — Column list wrapping with logical grouping',
+      `select a.title, a.release_date, a.recording_date, a.production_date from albums as a where a.title = 'Charcoal Lane' or a.title = 'The New Danger';`,
+      `SELECT a.title,\n       a.release_date, a.recording_date, a.production_date\n  FROM albums AS a\n WHERE a.title = 'Charcoal Lane'\n    OR a.title = 'The New Danger';`],
+    ['1.4 — Simple SELECT with alias',
+      `select first_name as fn from staff;`,
+      `SELECT first_name AS fn\n  FROM staff;`],
+    ['1.5 — Aggregate with alias',
+      `select sum(s.monitor_tally) as monitor_total from staff as s;`,
+      `SELECT SUM(s.monitor_tally) AS monitor_total\n  FROM staff AS s;`],
+    ['1.6 — WHERE with AND',
+      `select model_num from phones as p where p.release_date > '2014-09-30' and p.manufacturer = 'Apple';`,
+      `SELECT model_num\n  FROM phones AS p\n WHERE p.release_date > '2014-09-30'\n   AND p.manufacturer = 'Apple';`],
+    ['1.7 — SELECT with no WHERE clause',
+      `select first_name from staff;`,
+      `SELECT first_name\n  FROM staff;`],
+  ];
+  for (const [name, input, expected] of tests) assertFormat(name, input, expected);
 });
 
 describe('Category 2: JOINs', () => {
@@ -203,74 +178,36 @@ describe('Category 3: Subqueries', () => {
 });
 
 describe('Category 4: CASE Expressions', () => {
-  assertFormat('4.1 — Simple CASE',
-    `select case postcode when 'BN1' then 'Brighton' when 'EH1' then 'Edinburgh' end as city from office_locations where country = 'United Kingdom' and opening_time between 8 and 9 and postcode in ('EH1', 'BN1', 'NN1', 'KW1');`,
-    `SELECT CASE postcode
-       WHEN 'BN1' THEN 'Brighton'
-       WHEN 'EH1' THEN 'Edinburgh'
-       END AS city
-  FROM office_locations
- WHERE country = 'United Kingdom'
-   AND opening_time BETWEEN 8 AND 9
-   AND postcode IN ('EH1', 'BN1', 'NN1', 'KW1');`
-  );
-
-  assertFormat('4.2 — Searched CASE with ELSE',
-    `select employee_name, case when salary > 100000 then 'Senior' when salary > 50000 then 'Mid' else 'Junior' end as level from employees;`,
-    `SELECT employee_name,
-       CASE
-       WHEN salary > 100000 THEN 'Senior'
-       WHEN salary > 50000 THEN 'Mid'
-       ELSE 'Junior'
-       END AS level
-  FROM employees;`
-  );
-
-  assertFormat('4.3 — Nested CASE',
-    `select product_name, case category when 'Electronics' then case when price > 1000 then 'Premium' else 'Standard' end when 'Books' then 'Literature' else 'Other' end as classification from products;`,
-    `SELECT product_name,
-       CASE category
-       WHEN 'Electronics' THEN CASE
-                               WHEN price > 1000 THEN 'Premium'
-                               ELSE 'Standard'
-                               END
-       WHEN 'Books' THEN 'Literature'
-       ELSE 'Other'
-       END AS classification
-  FROM products;`
-  );
+  const tests: [string, string, string][] = [
+    ['4.1 — Simple CASE',
+      `select case postcode when 'BN1' then 'Brighton' when 'EH1' then 'Edinburgh' end as city from office_locations where country = 'United Kingdom' and opening_time between 8 and 9 and postcode in ('EH1', 'BN1', 'NN1', 'KW1');`,
+      `SELECT CASE postcode\n       WHEN 'BN1' THEN 'Brighton'\n       WHEN 'EH1' THEN 'Edinburgh'\n       END AS city\n  FROM office_locations\n WHERE country = 'United Kingdom'\n   AND opening_time BETWEEN 8 AND 9\n   AND postcode IN ('EH1', 'BN1', 'NN1', 'KW1');`],
+    ['4.2 — Searched CASE with ELSE',
+      `select employee_name, case when salary > 100000 then 'Senior' when salary > 50000 then 'Mid' else 'Junior' end as level from employees;`,
+      `SELECT employee_name,\n       CASE\n       WHEN salary > 100000 THEN 'Senior'\n       WHEN salary > 50000 THEN 'Mid'\n       ELSE 'Junior'\n       END AS level\n  FROM employees;`],
+    ['4.3 — Nested CASE',
+      `select product_name, case category when 'Electronics' then case when price > 1000 then 'Premium' else 'Standard' end when 'Books' then 'Literature' else 'Other' end as classification from products;`,
+      `SELECT product_name,\n       CASE category\n       WHEN 'Electronics' THEN CASE\n                               WHEN price > 1000 THEN 'Premium'\n                               ELSE 'Standard'\n                               END\n       WHEN 'Books' THEN 'Literature'\n       ELSE 'Other'\n       END AS classification\n  FROM products;`],
+  ];
+  for (const [name, input, expected] of tests) assertFormat(name, input, expected);
 });
 
 describe('Category 5: INSERT / UPDATE / DELETE', () => {
-  assertFormat('5.1 — Simple INSERT',
-    `insert into albums (title, release_date, recording_date) values ('Charcoal Lane', '1990-01-01 01:01:01.00000', '1990-01-01 01:01:01.00000'), ('The New Danger', '2008-01-01 01:01:01.00000', '1990-01-01 01:01:01.00000');`,
-    `INSERT INTO albums (title, release_date, recording_date)
-VALUES ('Charcoal Lane', '1990-01-01 01:01:01.00000', '1990-01-01 01:01:01.00000'),
-       ('The New Danger', '2008-01-01 01:01:01.00000', '1990-01-01 01:01:01.00000');`
-  );
-
-  assertFormat('5.2 — UPDATE with multiple SET',
-    `update file_system set file_modified_date = '1980-02-22 13:19:01.00000', file_size = 209732 where file_name = '.vimrc';`,
-    `UPDATE file_system
-   SET file_modified_date = '1980-02-22 13:19:01.00000',
-       file_size = 209732
- WHERE file_name = '.vimrc';`
-  );
-
-  assertFormat('5.3 — Simple DELETE',
-    `delete from albums where title = 'The New Danger';`,
-    `DELETE
-  FROM albums
- WHERE title = 'The New Danger';`
-  );
-
-  assertFormat('5.4 — INSERT with SELECT',
-    `insert into archive_albums (title, release_date) select title, release_date from albums where release_date < '2000-01-01';`,
-    `INSERT INTO archive_albums (title, release_date)
-SELECT title, release_date
-  FROM albums
- WHERE release_date < '2000-01-01';`
-  );
+  const tests: [string, string, string][] = [
+    ['5.1 — Simple INSERT',
+      `insert into albums (title, release_date, recording_date) values ('Charcoal Lane', '1990-01-01 01:01:01.00000', '1990-01-01 01:01:01.00000'), ('The New Danger', '2008-01-01 01:01:01.00000', '1990-01-01 01:01:01.00000');`,
+      `INSERT INTO albums (title, release_date, recording_date)\nVALUES ('Charcoal Lane', '1990-01-01 01:01:01.00000', '1990-01-01 01:01:01.00000'),\n       ('The New Danger', '2008-01-01 01:01:01.00000', '1990-01-01 01:01:01.00000');`],
+    ['5.2 — UPDATE with multiple SET',
+      `update file_system set file_modified_date = '1980-02-22 13:19:01.00000', file_size = 209732 where file_name = '.vimrc';`,
+      `UPDATE file_system\n   SET file_modified_date = '1980-02-22 13:19:01.00000',\n       file_size = 209732\n WHERE file_name = '.vimrc';`],
+    ['5.3 — Simple DELETE',
+      `delete from albums where title = 'The New Danger';`,
+      `DELETE\n  FROM albums\n WHERE title = 'The New Danger';`],
+    ['5.4 — INSERT with SELECT',
+      `insert into archive_albums (title, release_date) select title, release_date from albums where release_date < '2000-01-01';`,
+      `INSERT INTO archive_albums (title, release_date)\nSELECT title, release_date\n  FROM albums\n WHERE release_date < '2000-01-01';`],
+  ];
+  for (const [name, input, expected] of tests) assertFormat(name, input, expected);
 });
 
 describe('Category 6: UNION / INTERSECT / EXCEPT', () => {
@@ -446,37 +383,80 @@ from albums as a where a.title = 'Charcoal Lane' or a.title = 'The New Danger';`
 });
 
 describe('Category 11: GROUP BY and HAVING', () => {
-  assertFormat('11.1 — GROUP BY with HAVING',
-    `select department, count(*) as employee_count, avg(salary) as avg_salary from employees group by department having count(*) > 5 and avg(salary) > 60000 order by avg_salary desc;`,
-    `SELECT department,
-       COUNT(*) AS employee_count,
-       AVG(salary) AS avg_salary
-  FROM employees
- GROUP BY department
-HAVING COUNT(*) > 5
-   AND AVG(salary) > 60000
- ORDER BY avg_salary DESC;`
-  );
-
-  assertFormat('11.2 — GROUP BY multiple columns',
-    `select region, department, sum(revenue) as total_revenue from sales group by region, department order by region, total_revenue desc;`,
-    `SELECT region, department, SUM(revenue) AS total_revenue
-  FROM sales
- GROUP BY region, department
- ORDER BY region, total_revenue DESC;`
-  );
+  const tests: [string, string, string][] = [
+    ['11.1 — GROUP BY with HAVING',
+      `select department, count(*) as employee_count, avg(salary) as avg_salary from employees group by department having count(*) > 5 and avg(salary) > 60000 order by avg_salary desc;`,
+      `SELECT department,\n       COUNT(*) AS employee_count,\n       AVG(salary) AS avg_salary\n  FROM employees\n GROUP BY department\nHAVING COUNT(*) > 5\n   AND AVG(salary) > 60000\n ORDER BY avg_salary DESC;`],
+    ['11.2 — GROUP BY multiple columns',
+      `select region, department, sum(revenue) as total_revenue from sales group by region, department order by region, total_revenue desc;`,
+      `SELECT region, department, SUM(revenue) AS total_revenue\n  FROM sales\n GROUP BY region, department\n ORDER BY region, total_revenue DESC;`],
+  ];
+  for (const [name, input, expected] of tests) assertFormat(name, input, expected);
 });
 
 describe('Category 12: Edge Cases and Stress Tests', () => {
-  assertFormat('12.1 — Already formatted (idempotency)',
-    `SELECT file_hash
-  FROM file_system
- WHERE file_name = '.vimrc';`,
-    `SELECT file_hash
-  FROM file_system
- WHERE file_name = '.vimrc';`
-  );
+  const tests: [string, string, string][] = [
+    ['12.1 — Already formatted (idempotency)',
+      `SELECT file_hash\n  FROM file_system\n WHERE file_name = '.vimrc';`,
+      `SELECT file_hash\n  FROM file_system\n WHERE file_name = '.vimrc';`],
+    ['12.3 — Multiple statements',
+      `select 1; select 2;`,
+      `SELECT 1;\n\nSELECT 2;`],
+    ['12.4 — Empty/whitespace input',
+      `   `,
+      ``],
+    ['12.6 — Mixed case keywords in input',
+      `Select First_Name As FN From Staff Where Department = 'Sales' Order By First_Name Asc;`,
+      `SELECT first_name AS fn\n  FROM staff\n WHERE department = 'Sales'\n ORDER BY first_name ASC;`],
+    ['12.7 — String literals containing keywords',
+      `select message from logs where message like '%SELECT FROM%' and level = 'ERROR';`,
+      `SELECT message\n  FROM logs\n WHERE message LIKE '%SELECT FROM%'\n   AND level = 'ERROR';`],
+    ['12.8 — Quoted identifiers',
+      `select "Order ID", "Customer Name" from "Order Table" where "Order Date" > '2024-01-01';`,
+      `SELECT "Order ID", "Customer Name"\n  FROM "Order Table"\n WHERE "Order Date" > '2024-01-01';`],
+    ['12.8b — Escaped quoted identifiers',
+      `select "a""b", "schema""x"."weird""col" from "T""A";`,
+      `SELECT "a""b", "schema""x"."weird""col"\n  FROM "T""A";`],
+    ['12.9 — DISTINCT keyword',
+      `select distinct department, city from employees where country = 'US' order by department;`,
+      `SELECT DISTINCT department, city\n  FROM employees\n WHERE country = 'US'\n ORDER BY department;`],
+    ['12.10 — SELECT with LIMIT and OFFSET',
+      `select employee_name, salary from employees order by salary desc limit 10 offset 20;`,
+      `SELECT employee_name, salary\n  FROM employees\n ORDER BY salary DESC\n LIMIT 10\nOFFSET 20;`],
+    ['12.11 — COALESCE and NULLIF',
+      `select coalesce(preferred_name, first_name) as display_name, nullif(middle_name, '') as middle_name from staff;`,
+      `SELECT COALESCE(preferred_name, first_name) AS display_name,\n       NULLIF(middle_name, '') AS middle_name\n  FROM staff;`],
+    ['12.12 — CAST expression',
+      `select cast(order_date as date) as order_day, cast(amount as decimal(10, 2)) as formatted_amount from orders;`,
+      `SELECT CAST(order_date AS DATE) AS order_day,\n       CAST(amount AS DECIMAL(10, 2)) AS formatted_amount\n  FROM orders;`],
+    ['12.13 — Arithmetic expressions',
+      `select product_name, price * quantity as line_total, (price * quantity) - discount as net_total from order_items where (price * quantity) > 100;`,
+      `SELECT product_name,\n       price * quantity AS line_total,\n       (price * quantity) - discount AS net_total\n  FROM order_items\n WHERE (price * quantity) > 100;`],
+    ['12.14 — IS NULL / IS NOT NULL',
+      `select employee_name from employees where manager_id is null or termination_date is not null;`,
+      `SELECT employee_name\n  FROM employees\n WHERE manager_id IS NULL\n    OR termination_date IS NOT NULL;`],
+    ['12.14b — IS NOT TRUE / IS NOT FALSE',
+      `select user_id from feature_flags where is_enabled is not true or is_enabled is not false;`,
+      `SELECT user_id\n  FROM feature_flags\n WHERE is_enabled IS NOT TRUE\n    OR is_enabled IS NOT FALSE;`],
+    ['12.15 — BETWEEN in WHERE',
+      `select order_id, order_date from orders where order_date between '2024-01-01' and '2024-12-31' and total_amount between 100 and 5000;`,
+      `SELECT order_id, order_date\n  FROM orders\n WHERE order_date BETWEEN '2024-01-01' AND '2024-12-31'\n   AND total_amount BETWEEN 100 AND 5000;`],
+    ['12.16 — NOT IN',
+      `select product_name from products where category_id not in (select category_id from discontinued_categories);`,
+      `SELECT product_name\n  FROM products\n WHERE category_id NOT IN\n       (SELECT category_id\n          FROM discontinued_categories);`],
+    ['12.17 — SELECT * (star)',
+      `select * from employees where department = 'Sales';`,
+      `SELECT *\n  FROM employees\n WHERE department = 'Sales';`],
+    ['12.18 — Multiple aggregate functions',
+      `select department, count(*) as cnt, min(salary) as min_sal, max(salary) as max_sal, avg(salary) as avg_sal, sum(salary) as total_sal from employees group by department;`,
+      `SELECT department,\n       COUNT(*) AS cnt,\n       MIN(salary) AS min_sal,\n       MAX(salary) AS max_sal,\n       AVG(salary) AS avg_sal,\n       SUM(salary) AS total_sal\n  FROM employees\n GROUP BY department;`],
+    ['12.19 — LIKE with wildcards',
+      `select first_name, last_name from customers where last_name like 'Mc%' and first_name not like '_a%';`,
+      `SELECT first_name, last_name\n  FROM customers\n WHERE last_name LIKE 'Mc%'\n   AND first_name NOT LIKE '_a%';`],
+  ];
+  for (const [name, input, expected] of tests) assertFormat(name, input, expected);
 
+  // Tests with complex multi-line expected output kept as individual calls
   assertFormat('12.2 — Everything on one line, very long',
     `select e.employee_id, e.first_name, e.last_name, d.department_name, j.job_title, l.city, l.state_province, l.country_id from employees as e inner join departments as d on e.department_id = d.department_id inner join jobs as j on e.job_id = j.job_id inner join locations as l on d.location_id = l.location_id where e.salary > 50000 and d.department_name in ('Sales', 'Marketing', 'Engineering') and l.country_id = 'US' order by e.last_name, e.first_name;`,
     `SELECT e.employee_id,
@@ -502,18 +482,6 @@ describe('Category 12: Edge Cases and Stress Tests', () => {
  ORDER BY e.last_name, e.first_name;`
   );
 
-  assertFormat('12.3 — Multiple statements',
-    `select 1; select 2;`,
-    `SELECT 1;
-
-SELECT 2;`
-  );
-
-  assertFormat('12.4 — Empty/whitespace input',
-    `   `,
-    ``
-  );
-
   assertFormat('12.5 — Deeply nested subqueries',
     `select a.name from accounts as a where a.balance > (select avg(b.balance) from accounts as b where b.region = (select c.region from offices as c where c.office_id = a.office_id));`,
     `SELECT a.name
@@ -525,135 +493,6 @@ SELECT 2;`
                (SELECT c.region
                   FROM offices AS c
                  WHERE c.office_id = a.office_id));`
-  );
-
-  assertFormat('12.6 — Mixed case keywords in input',
-    `Select First_Name As FN From Staff Where Department = 'Sales' Order By First_Name Asc;`,
-    `SELECT first_name AS fn
-  FROM staff
- WHERE department = 'Sales'
- ORDER BY first_name ASC;`
-  );
-
-  assertFormat('12.7 — String literals containing keywords',
-    `select message from logs where message like '%SELECT FROM%' and level = 'ERROR';`,
-    `SELECT message
-  FROM logs
- WHERE message LIKE '%SELECT FROM%'
-   AND level = 'ERROR';`
-  );
-
-  assertFormat('12.8 — Quoted identifiers',
-    `select "Order ID", "Customer Name" from "Order Table" where "Order Date" > '2024-01-01';`,
-    `SELECT "Order ID", "Customer Name"
-  FROM "Order Table"
- WHERE "Order Date" > '2024-01-01';`
-  );
-
-  assertFormat('12.8b — Escaped quoted identifiers',
-    `select "a""b", "schema""x"."weird""col" from "T""A";`,
-    `SELECT "a""b", "schema""x"."weird""col"
-  FROM "T""A";`
-  );
-
-  assertFormat('12.9 — DISTINCT keyword',
-    `select distinct department, city from employees where country = 'US' order by department;`,
-    `SELECT DISTINCT department, city
-  FROM employees
- WHERE country = 'US'
- ORDER BY department;`
-  );
-
-  assertFormat('12.10 — SELECT with LIMIT and OFFSET',
-    `select employee_name, salary from employees order by salary desc limit 10 offset 20;`,
-    `SELECT employee_name, salary
-  FROM employees
- ORDER BY salary DESC
- LIMIT 10
-OFFSET 20;`
-  );
-
-  assertFormat('12.11 — COALESCE and NULLIF',
-    `select coalesce(preferred_name, first_name) as display_name, nullif(middle_name, '') as middle_name from staff;`,
-    `SELECT COALESCE(preferred_name, first_name) AS display_name,
-       NULLIF(middle_name, '') AS middle_name
-  FROM staff;`
-  );
-
-  assertFormat('12.12 — CAST expression',
-    `select cast(order_date as date) as order_day, cast(amount as decimal(10, 2)) as formatted_amount from orders;`,
-    `SELECT CAST(order_date AS DATE) AS order_day,
-       CAST(amount AS DECIMAL(10, 2)) AS formatted_amount
-  FROM orders;`
-  );
-
-  assertFormat('12.13 — Arithmetic expressions',
-    `select product_name, price * quantity as line_total, (price * quantity) - discount as net_total from order_items where (price * quantity) > 100;`,
-    `SELECT product_name,
-       price * quantity AS line_total,
-       (price * quantity) - discount AS net_total
-  FROM order_items
- WHERE (price * quantity) > 100;`
-  );
-
-  assertFormat('12.14 — IS NULL / IS NOT NULL',
-    `select employee_name from employees where manager_id is null or termination_date is not null;`,
-    `SELECT employee_name
-  FROM employees
- WHERE manager_id IS NULL
-    OR termination_date IS NOT NULL;`
-  );
-
-  assertFormat('12.14b — IS NOT TRUE / IS NOT FALSE',
-    `select user_id from feature_flags where is_enabled is not true or is_enabled is not false;`,
-    `SELECT user_id
-  FROM feature_flags
- WHERE is_enabled IS NOT TRUE
-    OR is_enabled IS NOT FALSE;`
-  );
-
-  assertFormat('12.15 — BETWEEN in WHERE',
-    `select order_id, order_date from orders where order_date between '2024-01-01' and '2024-12-31' and total_amount between 100 and 5000;`,
-    `SELECT order_id, order_date
-  FROM orders
- WHERE order_date BETWEEN '2024-01-01' AND '2024-12-31'
-   AND total_amount BETWEEN 100 AND 5000;`
-  );
-
-  assertFormat('12.16 — NOT IN',
-    `select product_name from products where category_id not in (select category_id from discontinued_categories);`,
-    `SELECT product_name
-  FROM products
- WHERE category_id NOT IN
-       (SELECT category_id
-          FROM discontinued_categories);`
-  );
-
-  assertFormat('12.17 — SELECT * (star)',
-    `select * from employees where department = 'Sales';`,
-    `SELECT *
-  FROM employees
- WHERE department = 'Sales';`
-  );
-
-  assertFormat('12.18 — Multiple aggregate functions',
-    `select department, count(*) as cnt, min(salary) as min_sal, max(salary) as max_sal, avg(salary) as avg_sal, sum(salary) as total_sal from employees group by department;`,
-    `SELECT department,
-       COUNT(*) AS cnt,
-       MIN(salary) AS min_sal,
-       MAX(salary) AS max_sal,
-       AVG(salary) AS avg_sal,
-       SUM(salary) AS total_sal
-  FROM employees
- GROUP BY department;`
-  );
-
-  assertFormat('12.19 — LIKE with wildcards',
-    `select first_name, last_name from customers where last_name like 'Mc%' and first_name not like '_a%';`,
-    `SELECT first_name, last_name
-  FROM customers
- WHERE last_name LIKE 'Mc%'
-   AND first_name NOT LIKE '_a%';`
   );
 
   assertFormat('12.20 — Subquery as JOIN target',
@@ -671,90 +510,45 @@ OFFSET 20;`
 });
 
 describe('Category 13: Negative Examples', () => {
-  assertFormat('13.1 — Leading commas',
-    `SELECT manufacturer
-       , model
-       , engine_size
-  FROM motorbikes;`,
-    `SELECT manufacturer, model, engine_size
-  FROM motorbikes;`
-  );
-
-  assertFormat('13.2 — Lowercase keywords',
-    `select e.name from employees as e where e.active = true and e.department = 'Sales';`,
-    `SELECT e.name
-  FROM employees AS e
- WHERE e.active = TRUE
-   AND e.department = 'Sales';`
-  );
-
-  assertFormat('13.3 — No river alignment',
-    `SELECT file_hash
-FROM file_system
-WHERE file_name = '.vimrc';`,
-    `SELECT file_hash
-  FROM file_system
- WHERE file_name = '.vimrc';`
-  );
-
-  assertFormat('13.4 — Tabs instead of spaces',
-    `SELECT    file_hash
-    FROM    file_system
-    WHERE    file_name = '.vimrc';`,
-    `SELECT file_hash
-  FROM file_system
- WHERE file_name = '.vimrc';`
-  );
-
-  assertFormat('13.5 — No spaces around operators',
-    `select price*quantity as total,price+tax as with_tax from items where price>100 and quantity>=5;`,
-    `SELECT price * quantity AS total, price + tax AS with_tax
-  FROM items
- WHERE price > 100
-   AND quantity >= 5;`
-  );
-
-  assertFormat('13.6 — Missing semicolon',
-    `select name from staff`,
-    `SELECT name
-  FROM staff;`
-  );
-
-  assertFormat('13.7 — Everything on one line with terrible spacing',
-    `SELECT   a.id ,a.name,    a.email   FROM  accounts   a    WHERE     a.active=1     AND a.created>'2024-01-01'    ORDER BY    a.name`,
-    `SELECT a.id, a.name, a.email
-  FROM accounts AS a
- WHERE a.active = 1
-   AND a.created > '2024-01-01'
- ORDER BY a.name;`
-  );
-
-  assertFormat('13.8 — Mixed indentation chaos',
-    `  select
-    e.name,
-      e.salary
-        from employees e
-    where
-  e.salary > 50000
-      order by e.salary desc;`,
-    `SELECT e.name, e.salary
-  FROM employees AS e
- WHERE e.salary > 50000
- ORDER BY e.salary DESC;`
-  );
+  const tests: [string, string, string][] = [
+    ['13.1 — Leading commas',
+      `SELECT manufacturer\n       , model\n       , engine_size\n  FROM motorbikes;`,
+      `SELECT manufacturer, model, engine_size\n  FROM motorbikes;`],
+    ['13.2 — Lowercase keywords',
+      `select e.name from employees as e where e.active = true and e.department = 'Sales';`,
+      `SELECT e.name\n  FROM employees AS e\n WHERE e.active = TRUE\n   AND e.department = 'Sales';`],
+    ['13.3 — No river alignment',
+      `SELECT file_hash\nFROM file_system\nWHERE file_name = '.vimrc';`,
+      `SELECT file_hash\n  FROM file_system\n WHERE file_name = '.vimrc';`],
+    ['13.4 — Tabs instead of spaces',
+      `SELECT    file_hash\n    FROM    file_system\n    WHERE    file_name = '.vimrc';`,
+      `SELECT file_hash\n  FROM file_system\n WHERE file_name = '.vimrc';`],
+    ['13.5 — No spaces around operators',
+      `select price*quantity as total,price+tax as with_tax from items where price>100 and quantity>=5;`,
+      `SELECT price * quantity AS total, price + tax AS with_tax\n  FROM items\n WHERE price > 100\n   AND quantity >= 5;`],
+    ['13.6 — Missing semicolon',
+      `select name from staff`,
+      `SELECT name\n  FROM staff;`],
+    ['13.7 — Everything on one line with terrible spacing',
+      `SELECT   a.id ,a.name,    a.email   FROM  accounts   a    WHERE     a.active=1     AND a.created>'2024-01-01'    ORDER BY    a.name`,
+      `SELECT a.id, a.name, a.email\n  FROM accounts AS a\n WHERE a.active = 1\n   AND a.created > '2024-01-01'\n ORDER BY a.name;`],
+    ['13.8 — Mixed indentation chaos',
+      `  select\n    e.name,\n      e.salary\n        from employees e\n    where\n  e.salary > 50000\n      order by e.salary desc;`,
+      `SELECT e.name, e.salary\n  FROM employees AS e\n WHERE e.salary > 50000\n ORDER BY e.salary DESC;`],
+  ];
+  for (const [name, input, expected] of tests) assertFormat(name, input, expected);
 });
 
 describe('Category 14: ALTER TABLE and DROP', () => {
-  assertFormat('14.1 — ALTER TABLE ADD COLUMN',
-    `alter table staff add column email varchar(255) not null default '';`,
-    `ALTER TABLE staff
-        ADD COLUMN email VARCHAR(255) NOT NULL DEFAULT '';`
-  );
-
-  assertFormat('14.2 — DROP TABLE',
-    `drop table if exists temporary_data;`,
-    `DROP TABLE IF EXISTS temporary_data;`
-  );
+  const tests: [string, string, string][] = [
+    ['14.1 — ALTER TABLE ADD COLUMN',
+      `alter table staff add column email varchar(255) not null default '';`,
+      `ALTER TABLE staff\n        ADD COLUMN email VARCHAR(255) NOT NULL DEFAULT '';`],
+    ['14.2 — DROP TABLE',
+      `drop table if exists temporary_data;`,
+      `DROP TABLE IF EXISTS temporary_data;`],
+  ];
+  for (const [name, input, expected] of tests) assertFormat(name, input, expected);
 });
 
 describe('Category 15: Complex Real-World Queries', () => {
@@ -791,59 +585,27 @@ SELECT m.month,
 });
 
 describe('Category 16: PostgreSQL Type Casting (::)', () => {
-  assertFormat('16.1 — Simple cast with ::',
-    `select '2024-01-15'::date as start_date, '100.50'::numeric(10, 2) as amount from transactions;`,
-    `SELECT '2024-01-15'::DATE AS start_date,
-       '100.50'::NUMERIC(10, 2) AS amount
-  FROM transactions;`
-  );
-
-  assertFormat('16.2 — Cast in WHERE clause',
-    `select order_id, total from orders where created_at::date = '2025-01-01' and total::integer > 100;`,
-    `SELECT order_id, total
-  FROM orders
- WHERE created_at::DATE = '2025-01-01'
-   AND total::INTEGER > 100;`
-  );
-
-  assertFormat('16.3 — Chained casts and cast with array',
-    `select id, payload::text::integer as parsed_id, tags::text[] as tag_array from raw_events where payload::text <> '';`,
-    `SELECT id,
-       payload::TEXT::INTEGER AS parsed_id,
-       tags::TEXT[] AS tag_array
-  FROM raw_events
- WHERE payload::TEXT <> '';`
-  );
-
-  assertFormat('16.4 — Cast in aggregate and expression',
-    `select department, sum(salary::numeric(12, 2)) as total_salary, avg(salary::numeric)::numeric(10, 2) as avg_salary from employees group by department;`,
-    `SELECT department,
-       SUM(salary::NUMERIC(12, 2)) AS total_salary,
-       AVG(salary::NUMERIC)::NUMERIC(10, 2) AS avg_salary
-  FROM employees
- GROUP BY department;`
-  );
-
-  assertFormat('16.5 — Cast to INTERVAL',
-    `select event_name, event_date, event_date + duration::interval as end_time, ('30 days')::interval as buffer from events where event_date + duration::interval > now();`,
-    `SELECT event_name,
-       event_date,
-       event_date + duration::INTERVAL AS end_time,
-       ('30 days')::INTERVAL AS buffer
-  FROM events
- WHERE event_date + duration::INTERVAL > NOW();`
-  );
-
-  assertFormat('16.6 — Cast inside CASE',
-    `select name, case when amount::numeric > 1000 then 'high'::varchar when amount::numeric > 100 then 'medium'::varchar else 'low'::varchar end as tier from invoices;`,
-    `SELECT name,
-       CASE
-       WHEN amount::NUMERIC > 1000 THEN 'high'::VARCHAR
-       WHEN amount::NUMERIC > 100 THEN 'medium'::VARCHAR
-       ELSE 'low'::VARCHAR
-       END AS tier
-  FROM invoices;`
-  );
+  const tests: [string, string, string][] = [
+    ['16.1 — Simple cast with ::',
+      `select '2024-01-15'::date as start_date, '100.50'::numeric(10, 2) as amount from transactions;`,
+      `SELECT '2024-01-15'::DATE AS start_date,\n       '100.50'::NUMERIC(10, 2) AS amount\n  FROM transactions;`],
+    ['16.2 — Cast in WHERE clause',
+      `select order_id, total from orders where created_at::date = '2025-01-01' and total::integer > 100;`,
+      `SELECT order_id, total\n  FROM orders\n WHERE created_at::DATE = '2025-01-01'\n   AND total::INTEGER > 100;`],
+    ['16.3 — Chained casts and cast with array',
+      `select id, payload::text::integer as parsed_id, tags::text[] as tag_array from raw_events where payload::text <> '';`,
+      `SELECT id,\n       payload::TEXT::INTEGER AS parsed_id,\n       tags::TEXT[] AS tag_array\n  FROM raw_events\n WHERE payload::TEXT <> '';`],
+    ['16.4 — Cast in aggregate and expression',
+      `select department, sum(salary::numeric(12, 2)) as total_salary, avg(salary::numeric)::numeric(10, 2) as avg_salary from employees group by department;`,
+      `SELECT department,\n       SUM(salary::NUMERIC(12, 2)) AS total_salary,\n       AVG(salary::NUMERIC)::NUMERIC(10, 2) AS avg_salary\n  FROM employees\n GROUP BY department;`],
+    ['16.5 — Cast to INTERVAL',
+      `select event_name, event_date, event_date + duration::interval as end_time, ('30 days')::interval as buffer from events where event_date + duration::interval > now();`,
+      `SELECT event_name,\n       event_date,\n       event_date + duration::INTERVAL AS end_time,\n       ('30 days')::INTERVAL AS buffer\n  FROM events\n WHERE event_date + duration::INTERVAL > NOW();`],
+    ['16.6 — Cast inside CASE',
+      `select name, case when amount::numeric > 1000 then 'high'::varchar when amount::numeric > 100 then 'medium'::varchar else 'low'::varchar end as tier from invoices;`,
+      `SELECT name,\n       CASE\n       WHEN amount::NUMERIC > 1000 THEN 'high'::VARCHAR\n       WHEN amount::NUMERIC > 100 THEN 'medium'::VARCHAR\n       ELSE 'low'::VARCHAR\n       END AS tier\n  FROM invoices;`],
+  ];
+  for (const [name, input, expected] of tests) assertFormat(name, input, expected);
 });
 
 describe('Category 17: JSON and JSONB Operators', () => {
@@ -1361,16 +1123,16 @@ describe('Category 36: CREATE INDEX, CREATE VIEW', () => {
   assertFormat('36.1 — CREATE INDEX',
     `create index concurrently if not exists idx_orders_customer_date on orders using btree (customer_id, order_date desc) where status <> 'cancelled';`,
     `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_customer_date
-    ON orders
- USING BTREE (customer_id, order_date DESC)
- WHERE status <> 'cancelled';`
+   ON orders
+USING BTREE (customer_id, order_date DESC)
+WHERE status <> 'cancelled';`
   );
 
   assertFormat('36.2 — CREATE INDEX with expression',
     `create unique index idx_users_lower_email on users (lower(email)) where deleted_at is null;`,
     `CREATE UNIQUE INDEX idx_users_lower_email
-    ON users (LOWER(email))
- WHERE deleted_at IS NULL;`
+   ON users (LOWER(email))
+WHERE deleted_at IS NULL;`
   );
 
   assertFormat('36.3 — CREATE VIEW',
@@ -1400,32 +1162,27 @@ SELECT DATE_TRUNC('month', order_date)::DATE AS month,
 });
 
 describe('Category 37: GRANT, REVOKE, TRUNCATE', () => {
-  assertFormat('37.1 — GRANT',
-    `grant select, insert, update on all tables in schema public to app_readwrite;`,
-    `GRANT SELECT, INSERT, UPDATE
-   ON ALL TABLES IN SCHEMA public
-   TO app_readwrite;`
-  );
-
-  assertFormat('37.2 — TRUNCATE',
-    `truncate table staging_events, staging_users restart identity cascade;`,
-    `TRUNCATE TABLE staging_events, staging_users
-RESTART IDENTITY CASCADE;`
-  );
+  const tests: [string, string, string][] = [
+    ['37.1 — GRANT',
+      `grant select, insert, update on all tables in schema public to app_readwrite;`,
+      `GRANT SELECT, INSERT, UPDATE\n   ON ALL TABLES IN SCHEMA public\n   TO app_readwrite;`],
+    ['37.2 — TRUNCATE',
+      `truncate table staging_events, staging_users restart identity cascade;`,
+      `TRUNCATE TABLE staging_events, staging_users\nRESTART IDENTITY CASCADE;`],
+  ];
+  for (const [name, input, expected] of tests) assertFormat(name, input, expected);
 });
 
 describe('Category 38: Sequences', () => {
-  assertFormat('38.1 — NEXTVAL, CURRVAL, SETVAL',
-    `select nextval('invoice_id_seq') as next_id;`,
-    `SELECT NEXTVAL('invoice_id_seq') AS next_id;`
-  );
-
-  assertFormat('38.2 — INSERT with sequence',
-    `insert into invoices (invoice_id, customer_id, amount) values (nextval('invoice_id_seq'), 42, 500.00) returning invoice_id;`,
-    `   INSERT INTO invoices (invoice_id, customer_id, amount)
-   VALUES (NEXTVAL('invoice_id_seq'), 42, 500.00)
-RETURNING invoice_id;`
-  );
+  const tests: [string, string, string][] = [
+    ['38.1 — NEXTVAL, CURRVAL, SETVAL',
+      `select nextval('invoice_id_seq') as next_id;`,
+      `SELECT NEXTVAL('invoice_id_seq') AS next_id;`],
+    ['38.2 — INSERT with sequence',
+      `insert into invoices (invoice_id, customer_id, amount) values (nextval('invoice_id_seq'), 42, 500.00) returning invoice_id;`,
+      `   INSERT INTO invoices (invoice_id, customer_id, amount)\n   VALUES (NEXTVAL('invoice_id_seq'), 42, 500.00)\nRETURNING invoice_id;`],
+  ];
+  for (const [name, input, expected] of tests) assertFormat(name, input, expected);
 });
 
 describe('Category 39: Advanced Window Functions', () => {
@@ -1488,9 +1245,9 @@ describe('Category 40: MERGE Statement', () => {
   assertFormat('40.1 — MERGE with all clauses',
     `merge into inventory as t using incoming_stock as s on t.product_id = s.product_id and t.warehouse_id = s.warehouse_id when matched and s.quantity = 0 then delete when matched then update set quantity = t.quantity + s.quantity, updated_at = now() when not matched then insert (product_id, warehouse_id, quantity, updated_at) values (s.product_id, s.warehouse_id, s.quantity, now());`,
     ` MERGE INTO inventory AS t
-       USING incoming_stock AS s
-          ON t.product_id = s.product_id
-         AND t.warehouse_id = s.warehouse_id
+ USING incoming_stock AS s
+    ON t.product_id = s.product_id
+   AND t.warehouse_id = s.warehouse_id
   WHEN MATCHED AND s.quantity = 0 THEN
        DELETE
   WHEN MATCHED THEN
@@ -1500,6 +1257,51 @@ describe('Category 40: MERGE Statement', () => {
   WHEN NOT MATCHED THEN
        INSERT (product_id, warehouse_id, quantity, updated_at)
        VALUES (s.product_id, s.warehouse_id, s.quantity, NOW());`
+  );
+
+  assertFormat('40.2 — MERGE river alignment — keywords right-align to river',
+    `merge into target_table as t using source_table as s on t.id = s.id when matched then update set name = s.name when not matched then insert (id, name) values (s.id, s.name);`,
+    ` MERGE INTO target_table AS t
+ USING source_table AS s
+    ON t.id = s.id
+  WHEN MATCHED THEN
+       UPDATE
+          SET name = s.name
+  WHEN NOT MATCHED THEN
+       INSERT (id, name)
+       VALUES (s.id, s.name);`
+  );
+
+  assertFormat('40.3 — MERGE with delete-only (no VALUES, smaller river)',
+    `merge into target as t using source as s on t.id = s.id when matched then delete;`,
+    `MERGE INTO target AS t
+USING source AS s
+   ON t.id = s.id
+ WHEN MATCHED THEN
+      DELETE;`
+  );
+});
+
+describe('Category 40b: CREATE INDEX River Alignment', () => {
+  assertFormat('40b.1 — CREATE INDEX with USING and WHERE — keywords right-align to river',
+    `create index idx_test on my_table using gin (data) where active = true;`,
+    `CREATE INDEX idx_test
+   ON my_table
+USING GIN (data)
+WHERE active = TRUE;`
+  );
+
+  assertFormat('40b.2 — CREATE INDEX without USING — ON and WHERE aligned',
+    `create index idx_simple on my_table (col1, col2) where status = 'active';`,
+    `CREATE INDEX idx_simple
+   ON my_table (col1, col2)
+WHERE status = 'active';`
+  );
+
+  assertFormat('40b.3 — CREATE INDEX without WHERE — minimal river',
+    `create unique index idx_email on users (email);`,
+    `CREATE UNIQUE INDEX idx_email
+ON users (email);`
   );
 });
 
@@ -1573,22 +1375,15 @@ describe('Category 44: Correlated Subqueries', () => {
 });
 
 describe('Category 45: FETCH FIRST', () => {
-  assertFormat('45.1 — FETCH FIRST N ROWS',
-    `select employee_name, salary from employees order by salary desc offset 10 rows fetch first 5 rows only;`,
-    `SELECT employee_name, salary
-  FROM employees
- ORDER BY salary DESC
-OFFSET 10 ROWS
- FETCH FIRST 5 ROWS ONLY;`
-  );
-
-  assertFormat('45.2 — FETCH with ties',
-    `select employee_name, salary from employees order by salary desc fetch first 10 rows with ties;`,
-    `SELECT employee_name, salary
-  FROM employees
- ORDER BY salary DESC
- FETCH FIRST 10 ROWS WITH TIES;`
-  );
+  const tests: [string, string, string][] = [
+    ['45.1 — FETCH FIRST N ROWS',
+      `select employee_name, salary from employees order by salary desc offset 10 rows fetch first 5 rows only;`,
+      `SELECT employee_name, salary\n  FROM employees\n ORDER BY salary DESC\nOFFSET 10 ROWS\n FETCH FIRST 5 ROWS ONLY;`],
+    ['45.2 — FETCH with ties',
+      `select employee_name, salary from employees order by salary desc fetch first 10 rows with ties;`,
+      `SELECT employee_name, salary\n  FROM employees\n ORDER BY salary DESC\n FETCH FIRST 10 ROWS WITH TIES;`],
+  ];
+  for (const [name, input, expected] of tests) assertFormat(name, input, expected);
 });
 
 describe('Category 46: TABLESAMPLE', () => {

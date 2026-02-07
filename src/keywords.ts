@@ -31,15 +31,9 @@ const KEYWORD_LIST = [
   'VALUES', 'VARCHAR', 'VARYING', 'VIEW',
   'WHEN', 'WHERE', 'WINDOW', 'WITH', 'WITHIN', 'WITHOUT',
   'YEAR', 'NOWAIT', 'LOCKED',
-  // Aggregate/window functions treated as keywords for uppercasing
-  'ABS', 'AGE', 'ARRAY_AGG', 'ARRAY_LENGTH', 'AVG', 'COUNT', 'CUME_DIST', 'CURRVAL',
-  'DATE_PART', 'DATE_TRUNC', 'DENSE_RANK', 'FIRST_VALUE', 'FLOOR', 'GENERATE_SERIES',
-  'GREATEST', 'JSONB_AGG', 'JSONB_ARRAY_ELEMENTS', 'JSONB_BUILD_OBJECT', 'JSONB_EACH', 'JSONB_PATH_QUERY_ARRAY',
-  'LAG', 'LAST_VALUE', 'LEAD', 'LEAST', 'LENGTH', 'LOWER', 'MODE', 'NTH_VALUE', 'NTILE',
-  'PERCENT_RANK', 'PERCENTILE_CONT', 'PERCENTILE_DISC', 'RANK', 'ROUND', 'SETVAL',
-  'SIGN', 'STRING_AGG', 'SUBSTRING', 'TO_CHAR', 'UNNEST', 'CEIL', 'CEILING', 'CONCAT',
 ] as const;
 
+// Function-like keywords (followed by parens) — uppercased but not clause keywords.
 const FUNCTION_KEYWORD_LIST = [
   'ABS', 'AGE', 'ALL', 'ANY', 'ARRAY_AGG', 'ARRAY_LENGTH', 'AVG', 'CAST', 'CEIL', 'CEILING',
   'COALESCE', 'CONCAT', 'COUNT', 'CUME_DIST', 'CURRVAL', 'DATE_PART', 'DATE_TRUNC',
@@ -52,15 +46,16 @@ const FUNCTION_KEYWORD_LIST = [
   'SIGN', 'STRING_AGG', 'SUBSTRING', 'SUM', 'TO_CHAR', 'TRIM', 'UNNEST', 'UPPER', 'YEAR', 'DAY',
 ] as const;
 
-function unique(values: readonly string[]): string[] {
-  return [...new Set(values)];
-}
-
-export const KEYWORDS = new Set(unique(KEYWORD_LIST));
+export const KEYWORDS = new Set<string>(KEYWORD_LIST);
 
 // Keywords that are function-like (followed by parens) — should be uppercased
 // but not treated as clause keywords.
-export const FUNCTION_KEYWORDS = new Set(unique(FUNCTION_KEYWORD_LIST));
+export const FUNCTION_KEYWORDS = new Set<string>(FUNCTION_KEYWORD_LIST);
+
+// Add function keywords to the main keyword set so the tokenizer recognizes them.
+for (const kw of FUNCTION_KEYWORD_LIST) {
+  KEYWORDS.add(kw);
+}
 
 export function isKeyword(word: string): boolean {
   return KEYWORDS.has(word.toUpperCase());
