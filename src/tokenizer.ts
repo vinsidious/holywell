@@ -13,19 +13,49 @@ export type TokenType =
   | 'whitespace'
   | 'eof';
 
+/**
+ * A single token produced by the SQL tokenizer.
+ */
 export interface Token {
+  /** Semantic category of the token. */
   type: TokenType;
+  /** Original source text of the token. */
   value: string;
-  // Upper-cased value for keywords
+  /** Upper-cased value (meaningful for keywords; empty for whitespace). */
   upper: string;
+  /** Zero-based character offset in the input string. */
   position: number;
+  /** One-based line number in the input. */
   line: number;
+  /** One-based column number in the input. */
   column: number;
 }
 
+/**
+ * Thrown when the tokenizer encounters invalid input such as an unterminated
+ * string literal, quoted identifier, or block comment.
+ *
+ * Carries positional information so callers can produce useful diagnostics.
+ *
+ * @example
+ * ```typescript
+ * import { tokenize, TokenizeError } from '@vcoppola/sqlfmt';
+ *
+ * try {
+ *   tokenize("SELECT 'unterminated");
+ * } catch (err) {
+ *   if (err instanceof TokenizeError) {
+ *     console.error(`Error at ${err.line}:${err.column}: ${err.message}`);
+ *   }
+ * }
+ * ```
+ */
 export class TokenizeError extends Error {
+  /** Zero-based character offset where the error was detected. */
   readonly position: number;
+  /** One-based line number where the error was detected. */
   readonly line: number;
+  /** One-based column number where the error was detected. */
   readonly column: number;
 
   constructor(message: string, position: number, line: number = 1, column: number = 1) {
@@ -37,8 +67,16 @@ export class TokenizeError extends Error {
   }
 }
 
+// \p{L} matches any Unicode letter (Latin, CJK, Cyrillic, Greek, etc.)
 const IDENT_START_RE = /[\p{L}_]/u;
+// \p{L} = Unicode letter, \p{N} = Unicode number (digits in any script)
 const IDENT_CONT_RE = /[\p{L}\p{N}_]/u;
+
+/** Maximum number of tokens before the tokenizer aborts to prevent DoS. */
+const MAX_TOKEN_COUNT = 1_000_000;
+
+/** Maximum length for an unquoted identifier. */
+const MAX_IDENTIFIER_LENGTH = 10_000;
 
 function isAsciiDigitCode(code: number): boolean {
   return code >= 48 && code <= 57;
@@ -134,7 +172,11 @@ function readQuotedString(
   throw new TokenizeError('Unterminated string literal', errPos);
 }
 
-// Precompute line start offsets for O(1) line/column lookup
+// Precompute line start offsets for O(1) line/column lookup.
+// Note: positions and columns use JavaScript string indices (UTF-16 code units),
+// which is consistent with how most editors (VS Code, etc.) report columns.
+// Characters outside the BMP (e.g., emojis) occupy two UTF-16 code units and
+// will therefore count as two columns. This is standard behavior.
 function buildLineOffsets(input: string): number[] {
   const offsets = [0]; // line 1 starts at offset 0
   for (let i = 0; i < input.length; i++) {
@@ -144,7 +186,8 @@ function buildLineOffsets(input: string): number[] {
 }
 
 function posToLineCol(lineOffsets: number[], pos: number): { line: number; column: number } {
-  // Binary search for the line containing this position
+  // Binary search for the line containing this position.
+  // Column values are in UTF-16 code units (standard for editors like VS Code).
   let lo = 0;
   let hi = lineOffsets.length - 1;
   while (lo < hi) {
@@ -170,7 +213,8 @@ function posToLineCol(lineOffsets: number[], pos: number): { line: number; colum
  * @param input  Raw SQL text to tokenize.
  * @returns An array of {@link Token} objects ending with an `eof` token.
  * @throws {TokenizeError} When the input contains an unterminated string
- *   literal, quoted identifier, or block comment.
+ *   literal, quoted identifier, or block comment, or when the token count
+ *   exceeds the safety limit.
  *
  * @example
  * import { tokenize } from '@vcoppola/sqlfmt';
@@ -195,6 +239,21 @@ export function tokenize(input: string): Token[] {
     return { line, column };
   }
 
+  /** Build a Token object and push it onto the output array. */
+  function emit(type: TokenType, value: string, upper: string, position: number): void {
+    if (tokens.length >= MAX_TOKEN_COUNT) {
+      const { line, column } = lc(position);
+      throw new TokenizeError(
+        `Token count exceeds maximum of ${MAX_TOKEN_COUNT}`,
+        position,
+        line,
+        column,
+      );
+    }
+    const { line, column } = lc(position);
+    tokens.push({ type, value, upper, position, line, column });
+  }
+
   while (pos < len) {
     const start = pos;
     const ch = input[pos];
@@ -202,7 +261,7 @@ export function tokenize(input: string): Token[] {
     // Whitespace
     if (isWhitespaceCode(ch.charCodeAt(0))) {
       while (pos < len && isWhitespaceCode(input.charCodeAt(pos))) pos++;
-      tokens.push({ type: 'whitespace', value: input.slice(start, pos), upper: '', position: start, ...lc(start) });
+      emit('whitespace', input.slice(start, pos), '', start);
       continue;
     }
 
@@ -212,7 +271,7 @@ export function tokenize(input: string): Token[] {
       while (pos < len && input[pos] !== '\n') pos++;
       // Trim trailing whitespace from line comments
       const commentText = input.slice(start, pos).replace(/\s+$/, '');
-      tokens.push({ type: 'line_comment', value: commentText, upper: '', position: start, ...lc(start) });
+      emit('line_comment', commentText, '', start);
       continue;
     }
 
@@ -226,7 +285,7 @@ export function tokenize(input: string): Token[] {
         const { line: eLine, column: eCol } = lc(start);
         throw new TokenizeError('Unterminated block comment', start, eLine, eCol);
       }
-      tokens.push({ type: 'block_comment', value: input.slice(start, pos), upper: '', position: start, ...lc(start) });
+      emit('block_comment', input.slice(start, pos), '', start);
       continue;
     }
 
@@ -236,21 +295,30 @@ export function tokenize(input: string): Token[] {
         pos++;
         while (pos < len && isDigit(input[pos])) pos++;
         const val = input.slice(start, pos);
-        tokens.push({ type: 'parameter', value: val, upper: val, position: start, ...lc(start) });
+        emit('parameter', val, val, start);
         continue;
       }
 
       const delim = readDollarDelimiter(input, pos);
       if (delim) {
         pos += delim.length;
+        // Per PostgreSQL spec, dollar-quoted strings cannot nest with the same
+        // delimiter tag. Using indexOf to find the closing delimiter is correct.
+        // Different tags (e.g., $outer$ vs $inner$) allow pseudo-nesting because
+        // the inner delimiters are just literal text within the outer string.
         const close = input.indexOf(delim, pos);
         if (close === -1) {
           const { line: eLine, column: eCol } = lc(start);
-          throw new TokenizeError('Unterminated dollar-quoted string', start, eLine, eCol);
+          throw new TokenizeError(
+            `Unterminated dollar-quoted string (expected closing ${delim})`,
+            start,
+            eLine,
+            eCol,
+          );
         }
         pos = close + delim.length;
         const val = input.slice(start, pos);
-        tokens.push({ type: 'string', value: val, upper: val, position: start, ...lc(start) });
+        emit('string', val, val, start);
         continue;
       }
     }
@@ -261,7 +329,7 @@ export function tokenize(input: string): Token[] {
       pos += 2;
       pos = readQuotedString(input, pos, allowBackslashEscapes, lineOffsets);
       const val = input.slice(start, pos);
-      tokens.push({ type: 'string', value: val, upper: val, position: start, ...lc(start) });
+      emit('string', val, val, start);
       continue;
     }
 
@@ -270,7 +338,7 @@ export function tokenize(input: string): Token[] {
       pos++;
       pos = readQuotedString(input, pos, false, lineOffsets);
       const val = input.slice(start, pos);
-      tokens.push({ type: 'string', value: val, upper: val, position: start, ...lc(start) });
+      emit('string', val, val, start);
       continue;
     }
 
@@ -294,7 +362,7 @@ export function tokenize(input: string): Token[] {
         throw new TokenizeError('Unterminated quoted identifier', start, eLine, eCol);
       }
       const val = input.slice(start, pos);
-      tokens.push({ type: 'identifier', value: val, upper: val, position: start, ...lc(start) });
+      emit('identifier', val, val, start);
       continue;
     }
 
@@ -317,6 +385,10 @@ export function tokenize(input: string): Token[] {
         }
 
         // Scientific notation: 1e5, 1.2E-4, .5e+2
+        // When e/E is not followed by a digit (with optional sign), we backtrack
+        // so that e.g. `1e` is tokenized as number `1` followed by identifier `e`.
+        // This is necessary because SQL allows identifiers like `e` as column
+        // aliases: `SELECT 1e FROM t` means column "1" aliased as "e", not 1*10^(nothing).
         if (pos < len && (input[pos] === 'e' || input[pos] === 'E')) {
           const expStart = pos;
           pos++;
@@ -329,7 +401,7 @@ export function tokenize(input: string): Token[] {
         }
       }
       const val = input.slice(start, pos);
-      tokens.push({ type: 'number', value: val, upper: val, position: start, ...lc(start) });
+      emit('number', val, val, start);
       continue;
     }
 
@@ -339,7 +411,7 @@ export function tokenize(input: string): Token[] {
     // :: — PostgreSQL type cast
     if (ch === ':' && pos + 1 < len && input[pos + 1] === ':') {
       pos += 2;
-      tokens.push({ type: 'operator', value: '::', upper: '::', position: start, ...lc(start) });
+      emit('operator', '::', '::', start);
       continue;
     }
 
@@ -347,22 +419,22 @@ export function tokenize(input: string): Token[] {
     if (ch === '!') {
       if (pos + 2 < len && input[pos + 1] === '~' && input[pos + 2] === '*') {
         pos += 3;
-        tokens.push({ type: 'operator', value: '!~*', upper: '!~*', position: start, ...lc(start) });
+        emit('operator', '!~*', '!~*', start);
         continue;
       }
       if (pos + 1 < len && input[pos + 1] === '~') {
         pos += 2;
-        tokens.push({ type: 'operator', value: '!~', upper: '!~', position: start, ...lc(start) });
+        emit('operator', '!~', '!~', start);
         continue;
       }
       if (pos + 1 < len && input[pos + 1] === '=') {
         pos += 2;
-        tokens.push({ type: 'operator', value: '!=', upper: '!=', position: start, ...lc(start) });
+        emit('operator', '!=', '!=', start);
         continue;
       }
       // bare ! (not standard SQL but consume it)
       pos++;
-      tokens.push({ type: 'operator', value: '!', upper: '!', position: start, ...lc(start) });
+      emit('operator', '!', '!', start);
       continue;
     }
 
@@ -372,27 +444,27 @@ export function tokenize(input: string): Token[] {
         const next = input[pos + 1];
         if (next === '@') {
           pos += 2;
-          tokens.push({ type: 'operator', value: '<@', upper: '<@', position: start, ...lc(start) });
+          emit('operator', '<@', '<@', start);
           continue;
         }
         if (next === '>') {
           pos += 2;
-          tokens.push({ type: 'operator', value: '<>', upper: '<>', position: start, ...lc(start) });
+          emit('operator', '<>', '<>', start);
           continue;
         }
         if (next === '<') {
           pos += 2;
-          tokens.push({ type: 'operator', value: '<<', upper: '<<', position: start, ...lc(start) });
+          emit('operator', '<<', '<<', start);
           continue;
         }
         if (next === '=') {
           pos += 2;
-          tokens.push({ type: 'operator', value: '<=', upper: '<=', position: start, ...lc(start) });
+          emit('operator', '<=', '<=', start);
           continue;
         }
       }
       pos++;
-      tokens.push({ type: 'operator', value: '<', upper: '<', position: start, ...lc(start) });
+      emit('operator', '<', '<', start);
       continue;
     }
 
@@ -402,17 +474,17 @@ export function tokenize(input: string): Token[] {
         const next = input[pos + 1];
         if (next === '=') {
           pos += 2;
-          tokens.push({ type: 'operator', value: '>=', upper: '>=', position: start, ...lc(start) });
+          emit('operator', '>=', '>=', start);
           continue;
         }
         if (next === '>') {
           pos += 2;
-          tokens.push({ type: 'operator', value: '>>', upper: '>>', position: start, ...lc(start) });
+          emit('operator', '>>', '>>', start);
           continue;
         }
       }
       pos++;
-      tokens.push({ type: 'operator', value: '>', upper: '>', position: start, ...lc(start) });
+      emit('operator', '>', '>', start);
       continue;
     }
 
@@ -420,16 +492,16 @@ export function tokenize(input: string): Token[] {
     if (ch === '-') {
       if (pos + 2 < len && input[pos + 1] === '>' && input[pos + 2] === '>') {
         pos += 3;
-        tokens.push({ type: 'operator', value: '->>', upper: '->>', position: start, ...lc(start) });
+        emit('operator', '->>', '->>', start);
         continue;
       }
       if (pos + 1 < len && input[pos + 1] === '>') {
         pos += 2;
-        tokens.push({ type: 'operator', value: '->', upper: '->', position: start, ...lc(start) });
+        emit('operator', '->', '->', start);
         continue;
       }
       pos++;
-      tokens.push({ type: 'operator', value: '-', upper: '-', position: start, ...lc(start) });
+      emit('operator', '-', '-', start);
       continue;
     }
 
@@ -437,16 +509,16 @@ export function tokenize(input: string): Token[] {
     if (ch === '#') {
       if (pos + 2 < len && input[pos + 1] === '>' && input[pos + 2] === '>') {
         pos += 3;
-        tokens.push({ type: 'operator', value: '#>>', upper: '#>>', position: start, ...lc(start) });
+        emit('operator', '#>>', '#>>', start);
         continue;
       }
       if (pos + 1 < len && input[pos + 1] === '>') {
         pos += 2;
-        tokens.push({ type: 'operator', value: '#>', upper: '#>', position: start, ...lc(start) });
+        emit('operator', '#>', '#>', start);
         continue;
       }
       pos++;
-      tokens.push({ type: 'operator', value: '#', upper: '#', position: start, ...lc(start) });
+      emit('operator', '#', '#', start);
       continue;
     }
 
@@ -456,22 +528,22 @@ export function tokenize(input: string): Token[] {
         const next = input[pos + 1];
         if (next === '>') {
           pos += 2;
-          tokens.push({ type: 'operator', value: '@>', upper: '@>', position: start, ...lc(start) });
+          emit('operator', '@>', '@>', start);
           continue;
         }
         if (next === '?') {
           pos += 2;
-          tokens.push({ type: 'operator', value: '@?', upper: '@?', position: start, ...lc(start) });
+          emit('operator', '@?', '@?', start);
           continue;
         }
         if (next === '@') {
           pos += 2;
-          tokens.push({ type: 'operator', value: '@@', upper: '@@', position: start, ...lc(start) });
+          emit('operator', '@@', '@@', start);
           continue;
         }
       }
       pos++;
-      tokens.push({ type: 'operator', value: '@', upper: '@', position: start, ...lc(start) });
+      emit('operator', '@', '@', start);
       continue;
     }
 
@@ -481,17 +553,17 @@ export function tokenize(input: string): Token[] {
         const next = input[pos + 1];
         if (next === '|') {
           pos += 2;
-          tokens.push({ type: 'operator', value: '?|', upper: '?|', position: start, ...lc(start) });
+          emit('operator', '?|', '?|', start);
           continue;
         }
         if (next === '&') {
           pos += 2;
-          tokens.push({ type: 'operator', value: '?&', upper: '?&', position: start, ...lc(start) });
+          emit('operator', '?&', '?&', start);
           continue;
         }
       }
       pos++;
-      tokens.push({ type: 'operator', value: '?', upper: '?', position: start, ...lc(start) });
+      emit('operator', '?', '?', start);
       continue;
     }
 
@@ -499,11 +571,11 @@ export function tokenize(input: string): Token[] {
     if (ch === '~') {
       if (pos + 1 < len && input[pos + 1] === '*') {
         pos += 2;
-        tokens.push({ type: 'operator', value: '~*', upper: '~*', position: start, ...lc(start) });
+        emit('operator', '~*', '~*', start);
         continue;
       }
       pos++;
-      tokens.push({ type: 'operator', value: '~', upper: '~', position: start, ...lc(start) });
+      emit('operator', '~', '~', start);
       continue;
     }
 
@@ -511,11 +583,11 @@ export function tokenize(input: string): Token[] {
     if (ch === '&') {
       if (pos + 1 < len && input[pos + 1] === '&') {
         pos += 2;
-        tokens.push({ type: 'operator', value: '&&', upper: '&&', position: start, ...lc(start) });
+        emit('operator', '&&', '&&', start);
         continue;
       }
       pos++;
-      tokens.push({ type: 'operator', value: '&', upper: '&', position: start, ...lc(start) });
+      emit('operator', '&', '&', start);
       continue;
     }
 
@@ -523,46 +595,58 @@ export function tokenize(input: string): Token[] {
     if (ch === '|') {
       if (pos + 1 < len && input[pos + 1] === '|') {
         pos += 2;
-        tokens.push({ type: 'operator', value: '||', upper: '||', position: start, ...lc(start) });
+        emit('operator', '||', '||', start);
         continue;
       }
       pos++;
-      tokens.push({ type: 'operator', value: '|', upper: '|', position: start, ...lc(start) });
+      emit('operator', '|', '|', start);
       continue;
     }
 
     // Remaining simple single-char operators: = + * /
     if ('=+*/'.includes(ch)) {
       pos++;
-      tokens.push({ type: 'operator', value: ch, upper: ch, position: start, ...lc(start) });
+      emit('operator', ch, ch, start);
       continue;
     }
 
     // Punctuation (including [ and ])
     if ('(),;.[]'.includes(ch)) {
       pos++;
-      tokens.push({ type: 'punctuation', value: ch, upper: ch, position: start, ...lc(start) });
+      emit('punctuation', ch, ch, start);
       continue;
     }
 
     // Identifier or keyword
     if (isIdentifierStart(ch)) {
-      while (pos < len && isIdentifierContinuation(input[pos])) pos++;
+      while (pos < len && isIdentifierContinuation(input[pos])) {
+        pos++;
+        // Fail fast: check length inside the loop to avoid consuming a huge identifier
+        if (pos - start > MAX_IDENTIFIER_LENGTH) {
+          const { line: eLine, column: eCol } = lc(start);
+          throw new TokenizeError(
+            `Identifier exceeds maximum length of ${MAX_IDENTIFIER_LENGTH} characters`,
+            start,
+            eLine,
+            eCol,
+          );
+        }
+      }
       const val = input.slice(start, pos);
       const upper = val.toUpperCase();
       if (isKeyword(val)) {
-        tokens.push({ type: 'keyword', value: val, upper, position: start, ...lc(start) });
+        emit('keyword', val, upper, start);
       } else {
-        tokens.push({ type: 'identifier', value: val, upper, position: start, ...lc(start) });
+        emit('identifier', val, upper, start);
       }
       continue;
     }
 
     // Unknown character — just consume it
     pos++;
-    tokens.push({ type: 'identifier', value: ch, upper: ch, position: start, ...lc(start) });
+    emit('identifier', ch, ch, start);
   }
 
-  tokens.push({ type: 'eof', value: '', upper: '', position: pos, ...lc(pos) });
+  emit('eof', '', '', pos);
   return tokens;
 }
