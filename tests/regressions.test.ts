@@ -210,4 +210,18 @@ $func$ LANGUAGE plpgsql;`;
     expect(out).toContain('$func$ LANGUAGE plpgsql;');
     expect(out).not.toContain('$func$\n\nLANGUAGE');
   });
+
+  it('keeps CREATE TABLE definitions with comment-only pseudo-columns idempotent', () => {
+    const sql = `CREATE TABLE shoelace_log (
+    sl_name                CHAR(10),
+    -- shoelace changed    sl_avail INTEGER,
+    -- new available value log_who  name,
+    -- who did it          log_when TIMESTAMP -- when
+);`;
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+    expect(once).toContain('-- shoelace changed');
+    expect(once).toContain('-- new available value');
+  });
 });

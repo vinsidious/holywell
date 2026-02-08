@@ -83,6 +83,13 @@ function parseCreateTableStatement(
   }
 
   ctx.expect('(');
+  if (hasCommentsInCreateTableElements(ctx)) {
+    ctx.setPos(statementStart);
+    const raw = ctx.parseRawStatement('unsupported');
+    if (!raw) throw ctx.parseError('CREATE TABLE statement', ctx.peek());
+    if (comments.length === 0) return raw;
+    return { type: 'raw', text: `${comments.map(c => c.text).join('\n')}\n${raw.text}`.trim(), reason: 'unsupported' };
+  }
   const elements = ctx.parseTableElements();
   ctx.expect(')');
 
@@ -97,6 +104,26 @@ function parseCreateTableStatement(
   }
 
   return { type: 'create_table', tableName: fullName, elements, leadingComments: comments };
+}
+
+function hasCommentsInCreateTableElements(ctx: DdlParser): boolean {
+  const start = ctx.getPos();
+  let depth = 1;
+  let hasComment = false;
+
+  while (!ctx.isAtEnd() && depth > 0) {
+    const token = ctx.advance();
+    if (token.type === 'line_comment' || token.type === 'block_comment') {
+      hasComment = true;
+    } else if (token.value === '(') {
+      depth++;
+    } else if (token.value === ')') {
+      depth--;
+    }
+  }
+
+  ctx.setPos(start);
+  return hasComment;
 }
 
 function parseCreateIndexStatement(

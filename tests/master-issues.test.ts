@@ -3,12 +3,26 @@ import { formatSQL } from '../src/format';
 import { parse } from '../src/parser';
 
 describe('master issue regressions', () => {
+  it('#2 remains idempotent for comments leading into WITH blocks', () => {
+    const sql = 'SELECT 1;\n\n-- mixed srsName\n\nWITH g AS (SELECT 1) SELECT * FROM g;';
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+  });
+
   it('#3 supports psql meta-commands in recovery mode and rejects in strict mode', () => {
     const sql = 'SELECT * FROM users;\n\\d users\nSELECT * FROM orders;';
     const out = formatSQL(sql);
     expect(out).toContain('\\d users');
     expect(out).toContain('SELECT *');
     expect(() => parse(sql, { recover: false })).toThrow();
+  });
+
+  it('#3 handles inline psql meta-commands appended to SQL lines', () => {
+    const sql = "SELECT stats_reset as prev_stats_reset FROM pg_stat_subscription_stats WHERE subname = 'regress_testsub' \\gset\nSELECT :'prev_stats_reset' < stats_reset FROM pg_stat_subscription_stats WHERE subname = 'regress_testsub';";
+    const out = formatSQL(sql);
+    expect(out).toContain('\\gset');
+    expect(out).toContain("SELECT :'prev_stats_reset' < stats_reset");
   });
 
   it('#4 supports COPY FROM stdin blocks terminated by \\.', () => {
@@ -123,5 +137,9 @@ describe('master issue regressions', () => {
   it('#32 avoids blank lines around UNION operators', () => {
     const out = formatSQL('SELECT 1 AS two UNION SELECT 2.2 ORDER BY 1;');
     expect(out).not.toMatch(/\n\s*\n\s*UNION\n\s*\n/);
+  });
+
+  it('#5 parses UESCAPE clauses in strict mode', () => {
+    expect(() => parse("SELECT U&'wrong: +0061' UESCAPE +;", { recover: false })).not.toThrow();
   });
 });

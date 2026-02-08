@@ -156,6 +156,16 @@ function isLineStartOrIndented(input: string, pos: number): boolean {
   return true;
 }
 
+function isInlineMetaCommand(input: string, pos: number): boolean {
+  if (pos <= 0) return false;
+  const prev = input[pos - 1];
+  if (prev !== ' ' && prev !== '\t') return false;
+  const next = input[pos + 1];
+  if (!next) return false;
+  const code = next.charCodeAt(0);
+  return isAsciiLetterCode(code);
+}
+
 function readDollarDelimiter(input: string, start: number): string | null {
   if (input[start] !== '$') return null;
 
@@ -340,7 +350,13 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
         continue;
       }
 
-      if (isLineStartOrIndented(input, start)) {
+      const inlineMetaCommand = isInlineMetaCommand(input, start);
+      if (isLineStartOrIndented(input, start) || inlineMetaCommand) {
+        // Inline psql commands (e.g. "... \gset") implicitly terminate the
+        // SQL statement in psql. Emit a synthetic semicolon to preserve this.
+        if (inlineMetaCommand) {
+          emit('punctuation', ';', ';', start);
+        }
         pos++;
         while (pos < len && input[pos] !== '\n' && input[pos] !== '\r') pos++;
         let end = pos;

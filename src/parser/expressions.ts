@@ -358,6 +358,16 @@ function tryParseLiteralPrimary(ctx: PrimaryExpressionParser, token: Token): AST
   }
   if (token.type === 'string') {
     ctx.advance();
+    if (/^U&/i.test(token.value) && ctx.peekUpperAt(0) === 'UESCAPE') {
+      ctx.advance(); // UESCAPE
+      const escapeToken = ctx.advance();
+      return {
+        type: 'raw',
+        text: `${token.value} UESCAPE ${escapeToken.value}`,
+        reason: 'verbatim',
+      };
+    }
+
     let expr: AST.Expression = { type: 'literal', value: token.value, literalType: 'string' };
     // SQL standard implicit concatenation: 'a' 'b' => 'ab'
     while (ctx.peekTypeAt(0) === 'string') {

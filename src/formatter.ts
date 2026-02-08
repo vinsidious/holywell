@@ -165,7 +165,18 @@ export function formatStatements(nodes: AST.Node[], options: FormatterOptions = 
       throw err;
     }
   }
-  return parts.join('\n\n') + '\n';
+  if (parts.length === 0) return '\n';
+
+  // Top-level statement separation already inserts a blank line. If the next
+  // statement itself starts with blank lines (typically from leading comment
+  // metadata), remove one leading newline to prevent pass-to-pass growth.
+  let out = parts[0];
+  for (let i = 1; i < parts.length; i++) {
+    let next = parts[i];
+    if (next.startsWith('\n')) next = next.slice(1);
+    out += '\n\n' + next;
+  }
+  return out + '\n';
 }
 
 function formatFormatterFallback(node: AST.Node): string {
