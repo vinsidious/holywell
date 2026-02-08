@@ -15,25 +15,215 @@ const CodeMirror = dynamic(() => import('@uiw/react-codemirror'), {
 });
 
 const SAMPLE_QUERIES = [
+  // Style: one-liner — everything crammed on a single line
   `select c.id, c.name, c.email, o.total_orders, o.lifetime_value from customers c inner join (select customer_id, count(*) as total_orders, sum(amount) as lifetime_value from orders where status != 'cancelled' group by customer_id) o on c.id = o.customer_id where c.region = 'US' and o.lifetime_value > 1000 order by o.lifetime_value desc limit 50;`,
 
-  `select department, employee_name, salary, rank() over (partition by department order by salary desc) as dept_rank, salary - lag(salary) over (partition by department order by salary desc) as gap_to_next, round(salary::numeric / sum(salary) over (partition by department) * 100, 2) as pct_of_dept from employees where hire_date >= '2023-01-01' order by department, dept_rank;`,
+  // Style: ALL CAPS keywords, random line breaks mid-clause
+  `SELECT department, employee_name, salary,
+RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS dept_rank,
+salary - LAG(salary) OVER (PARTITION BY department
+ORDER BY salary DESC) AS gap_to_next,
+ROUND(salary::numeric / SUM(salary) OVER (PARTITION BY department) * 100, 2) AS pct_of_dept
+FROM employees WHERE hire_date >= '2023-01-01'
+ORDER BY department, dept_rank;`,
 
-  `with monthly_revenue as (select date_trunc('month', created_at) as month, sum(total) as revenue, count(distinct customer_id) as unique_customers from orders where created_at >= now() - interval '12 months' group by 1), growth as (select month, revenue, unique_customers, lag(revenue) over (order by month) as prev_revenue from monthly_revenue) select month, revenue, unique_customers, round((revenue - prev_revenue) / prev_revenue * 100, 1) as growth_pct from growth order by month;`,
+  // Style: leading commas, inconsistent indentation
+  `with monthly_revenue as (
+select date_trunc('month', created_at) as month
+  , sum(total) as revenue
+  , count(distinct customer_id) as unique_customers
+from orders
+where created_at >= now() - interval '12 months'
+group by 1
+), growth as (
+select month
+  , revenue
+  , unique_customers
+  , lag(revenue) over (order by month) as prev_revenue
+from monthly_revenue
+)
+select month
+  , revenue
+  , unique_customers
+  , round((revenue - prev_revenue) / prev_revenue * 100, 1) as growth_pct
+from growth
+order by month;`,
 
-  `insert into user_preferences (user_id, preferences, updated_at) values (42, '{"theme": "dark", "lang": "en", "notifications": true}'::jsonb, now()) on conflict (user_id) do update set preferences = user_preferences.preferences || excluded.preferences, updated_at = now() where user_preferences.preferences is distinct from user_preferences.preferences || excluded.preferences returning user_id, preferences;`,
+  // Style: over-indented, inconsistent alignment
+  `insert into user_preferences
+        (user_id, preferences, updated_at)
+    values
+        (42, '{"theme": "dark", "lang": "en", "notifications": true}'::jsonb,
+            now())
+    on conflict (user_id) do update
+        set preferences = user_preferences.preferences || excluded.preferences,
+            updated_at = now()
+        where user_preferences.preferences is distinct from
+            user_preferences.preferences || excluded.preferences
+    returning user_id, preferences;`,
 
-  `select product_id, product_name, units_sold, revenue, case when revenue > 100000 then 'platinum' when revenue > 50000 then 'gold' when revenue > 10000 then 'silver' else 'bronze' end as tier, case when units_sold > 0 then round(revenue / units_sold, 2) else 0 end as avg_price from products where category_id in (select id from categories where active = true) order by revenue desc;`,
+  // Style: everything uppercased including identifiers
+  `SELECT PRODUCT_ID, PRODUCT_NAME, UNITS_SOLD, REVENUE, CASE WHEN REVENUE > 100000 THEN 'platinum' WHEN REVENUE > 50000 THEN 'gold' WHEN REVENUE > 10000 THEN 'silver' ELSE 'bronze' END AS TIER, CASE WHEN UNITS_SOLD > 0 THEN ROUND(REVENUE / UNITS_SOLD, 2) ELSE 0 END AS AVG_PRICE FROM PRODUCTS WHERE CATEGORY_ID IN (SELECT ID FROM CATEGORIES WHERE ACTIVE = TRUE) ORDER BY REVENUE DESC;`,
 
-  `select u.id, u.name, u.tags, u.metadata->>'role' as role, u.metadata->'permissions' as perms, array_length(u.tags, 1) as tag_count from users u where u.tags && array['admin', 'moderator'] and u.metadata @> '{"active": true}'::jsonb and u.metadata ? 'email_verified' and not u.tags @> array['banned'] order by u.created_at desc;`,
+  // Style: compact with bad line breaks mid-expression
+  `select u.id, u.name, u.tags,
+u.metadata->>'role' as role, u.metadata
+->'permissions' as perms, array_length(u.tags,
+1) as tag_count from users u where
+u.tags && array['admin', 'moderator'] and u.metadata
+@> '{"active": true}'::jsonb and u.metadata ?
+'email_verified' and not u.tags @> array['banned']
+order by u.created_at desc;`,
 
-  `select 'direct' as channel, count(*) as visits, count(distinct session_id) as unique_sessions, avg(duration) as avg_duration from web_traffic where referrer is null and visit_date = current_date union all select 'organic' as channel, count(*) as visits, count(distinct session_id) as unique_sessions, avg(duration) as avg_duration from web_traffic where referrer like '%google%' or referrer like '%bing%' and visit_date = current_date union all select 'social' as channel, count(*) as visits, count(distinct session_id) as unique_sessions, avg(duration) as avg_duration from web_traffic where referrer like '%twitter%' or referrer like '%facebook%' and visit_date = current_date order by visits desc;`,
+  // Style: tab-indented but poorly structured
+  `select\t'direct' as channel,
+\tcount(*) as visits,
+\tcount(distinct session_id) as unique_sessions,
+\tavg(duration) as avg_duration
+from\tweb_traffic
+where\treferrer is null
+\tand visit_date = current_date
+union all
+select\t'organic' as channel,
+\tcount(*) as visits,
+\tcount(distinct session_id) as unique_sessions,
+\tavg(duration) as avg_duration
+from\tweb_traffic
+where\treferrer like '%google%' or referrer like '%bing%'
+\tand visit_date = current_date
+union all
+select\t'social' as channel,
+\tcount(*) as visits,
+\tcount(distinct session_id) as unique_sessions,
+\tavg(duration) as avg_duration
+from\tweb_traffic
+where\treferrer like '%twitter%' or referrer like '%facebook%'
+\tand visit_date = current_date
+order by\tvisits desc;`,
 
-  `select d.name as department, d.budget, (select count(*) from employees e where e.department_id = d.id) as headcount from departments d where exists (select 1 from employees e inner join projects p on e.id = p.lead_id where e.department_id = d.id and p.status = 'active' and p.deadline < current_date + interval '30 days') and not exists (select 1 from budget_freezes bf where bf.department_id = d.id and bf.active = true) order by d.budget desc;`,
+  // Style: right-aligned keywords
+  `     select d.name as department
+          , d.budget
+          , (select count(*)
+               from employees e
+              where e.department_id = d.id) as headcount
+       from departments d
+      where exists (select 1
+                      from employees e
+                     inner join projects p on e.id = p.lead_id
+                     where e.department_id = d.id
+                       and p.status = 'active'
+                       and p.deadline < current_date + interval '30 days')
+        and not exists (select 1
+                          from budget_freezes bf
+                         where bf.department_id = d.id
+                           and bf.active = true)
+      order by d.budget desc;`,
 
-  `with recursive org_tree as (select id, name, manager_id, title, 1 as depth, name::text as path from employees where manager_id is null union all select e.id, e.name, e.manager_id, e.title, ot.depth + 1, ot.path || ' > ' || e.name from employees e inner join org_tree ot on e.manager_id = ot.id where ot.depth < 10) select id, name, title, depth, path from org_tree order by path;`,
+  // Style: mixed case keywords (Title Case)
+  `With Recursive org_tree As (
+Select id, name, manager_id, title, 1 As depth, name::text As path
+From employees Where manager_id Is Null
+Union All
+Select e.id, e.name, e.manager_id, e.title, ot.depth + 1, ot.path || ' > ' || e.name
+From employees e Inner Join org_tree ot On e.manager_id = ot.id
+Where ot.depth < 10
+) Select id, name, title, depth, path From org_tree Order By path;`,
 
+  // Style: dense one-liner
   `select date_trunc('week', o.created_at)::date as week, p.category, count(distinct o.id) as orders, count(distinct o.customer_id) as customers, sum(oi.quantity) as units, sum(oi.quantity * oi.unit_price)::numeric(12,2) as gross_revenue, sum(oi.quantity * oi.unit_price * coalesce(d.discount_pct, 0) / 100)::numeric(12,2) as total_discounts from orders o inner join order_items oi on o.id = oi.order_id inner join products p on oi.product_id = p.id left join discounts d on o.discount_code = d.code where o.created_at >= now() - interval '3 months' and o.status in ('completed', 'shipped') group by 1, 2 having sum(oi.quantity * oi.unit_price) > 500 order by week desc, gross_revenue desc;`,
+
+  // Style: one-liner — DELETE with subquery
+  `delete from sessions where user_id in (select id from users where last_login < now() - interval '1 year' and status = 'inactive') and created_at < now() - interval '6 months' returning session_id, user_id, created_at;`,
+
+  // Style: ALL CAPS keywords, no line breaks — UPDATE with FROM
+  `UPDATE inventory SET quantity = inventory.quantity - o.qty, last_updated = NOW() FROM (SELECT product_id, SUM(quantity) AS qty FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE status = 'confirmed' AND confirmed_at >= CURRENT_DATE) GROUP BY product_id) o WHERE inventory.product_id = o.product_id AND inventory.warehouse_id = 1 RETURNING inventory.product_id, inventory.quantity;`,
+
+  // Style: leading commas, inconsistent spacing — CREATE TABLE
+  `create table if not exists audit_log (
+  id bigint generated always as identity primary key
+  , table_name text not null
+  , record_id bigint not null
+  , action text not null check (action in ('insert', 'update', 'delete'))
+  , old_values jsonb
+  , new_values jsonb
+  , changed_by integer references users(id)
+  , changed_at timestamptz not null default now()
+  , ip_address inet
+);`,
+
+  // Style: over-indented, inconsistent — window frames with ROWS BETWEEN
+  `select          product_id,
+          sale_date,
+          amount,
+          sum(amount) over (
+              partition by product_id
+              order by sale_date
+              rows between 6 preceding and current row
+          ) as rolling_7d_total,
+          avg(amount) over (
+              partition by product_id
+              order by sale_date
+              rows between 29 preceding and current row
+          ) as rolling_30d_avg,
+          amount - lag(amount, 1) over (
+              partition by product_id
+              order by sale_date
+          ) as day_over_day_change
+  from    daily_sales
+  where   sale_date >= current_date - interval '90 days'
+  order by    product_id, sale_date;`,
+
+  // Style: everything uppercased — LATERAL join
+  `SELECT D.ID, D.NAME, D.BUDGET, LATEST.TITLE AS LATEST_PROJECT, LATEST.STARTED_AT, LATEST.BUDGET AS PROJECT_BUDGET FROM DEPARTMENTS D LEFT JOIN LATERAL (SELECT P.TITLE, P.STARTED_AT, P.BUDGET FROM PROJECTS P WHERE P.DEPARTMENT_ID = D.ID ORDER BY P.STARTED_AT DESC FETCH FIRST 1 ROW ONLY) LATEST ON TRUE WHERE D.ACTIVE = TRUE ORDER BY D.NAME;`,
+
+  // Style: compact, bad line breaks mid-clause — multiple CTEs
+  `with active_users as (select id, name, email from users where
+status = 'active' and last_login >= now() - interval '30 days'),
+user_orders as (select u.id as user_id, count(*) as order_count,
+sum(o.total) as total_spent from active_users u inner join orders o
+on u.id = o.user_id where o.created_at >= now() - interval '90 days'
+group by u.id), user_segments as (select user_id, order_count,
+total_spent, ntile(4) over (order by total_spent desc) as
+spending_quartile from user_orders) select au.name, au.email,
+us.order_count, us.total_spent, us.spending_quartile from
+active_users au inner join user_segments us on au.id = us.user_id
+order by us.spending_quartile, us.total_spent desc;`,
+
+  // Style: mixed case keywords (Title Case) — EXCEPT / INTERSECT
+  `Select id, email, name From users Where role = 'premium' And created_at >= '2024-01-01'
+Except
+Select u.id, u.email, u.name From users u Inner Join refunds r On u.id = r.user_id Where r.amount > 50 And r.created_at >= '2024-01-01'
+Intersect
+Select u.id, u.email, u.name From users u Inner Join logins l On u.id = l.user_id Where l.logged_in_at >= Now() - Interval '7 days';`,
+
+  // Style: tab-indented poorly — string aggregation
+  `select\tt.name as team_name,
+\tcount(e.id) as member_count,
+\tround(avg(e.salary)::numeric, 2) as avg_salary,
+\tstring_agg(e.name, ', ' order by e.name) as members,
+\tarray_agg(distinct e.title) as titles,
+\tmax(e.hire_date) as latest_hire
+from\tteams t
+left join\temployees e on t.id = e.team_id
+where\tt.active = true
+group by\tt.id, t.name
+having\tcount(e.id) >= 3
+order by\tavg_salary desc;`,
+
+  // Style: random line breaks, inconsistent spacing — conditional aggregation with FILTER
+  `select date_trunc('month',  created_at) as month,
+count(*) filter (   where status = 'completed') as completed,
+count(*) filter (where status = 'cancelled')  as cancelled,
+count(*) filter (
+where status = 'refunded') as refunded,
+round(count(*) filter (where status = 'completed')::numeric / nullif(count(*), 0) * 100, 1) as completion_rate,
+sum(total) filter (where status = 'completed') as revenue
+from orders where created_at >= now()  - interval '12 months'
+group by 1 order by 1;`,
+
+  // Style: dense one-liner — correlated subqueries with COALESCE
+  `select p.id, p.name, p.price, p.category_id, coalesce((select avg(r.rating) from reviews r where r.product_id = p.id and r.created_at >= now() - interval '6 months'), 0) as avg_recent_rating, coalesce((select count(*) from order_items oi inner join orders o on oi.order_id = o.id where oi.product_id = p.id and o.status = 'completed'), 0) as total_sales, p.price - coalesce((select min(c.price) from competitors c where c.product_name = p.name), p.price) as price_vs_cheapest from products p where p.active = true and p.stock > 0 order by avg_recent_rating desc, total_sales desc;`,
 ];
 
 export function Playground() {
