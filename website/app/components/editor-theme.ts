@@ -16,7 +16,7 @@ const baseTheme = EditorView.theme(
     '.cm-content': {
       caretColor: '#3ECF8E',
       fontFamily:
-        'var(--font-mono), "JetBrains Mono", "Fira Code", monospace',
+        'var(--font-mono), "IBM Plex Mono", monospace',
       fontSize: '13px',
       lineHeight: '1.7',
       padding: '12px 0',
@@ -37,7 +37,7 @@ const baseTheme = EditorView.theme(
       color: '#2a2a2a',
       borderRight: 'none',
       fontFamily:
-        'var(--font-mono), "JetBrains Mono", "Fira Code", monospace',
+        'var(--font-mono), "IBM Plex Mono", monospace',
       fontSize: '13px',
       paddingLeft: '8px',
     },
@@ -75,7 +75,7 @@ const baseTheme = EditorView.theme(
     },
     '.cm-tooltip-autocomplete > ul': {
       fontFamily:
-        'var(--font-mono), "JetBrains Mono", "Fira Code", monospace',
+        'var(--font-mono), "IBM Plex Mono", monospace',
     },
     '.cm-foldPlaceholder': {
       backgroundColor: 'transparent',

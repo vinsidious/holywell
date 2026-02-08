@@ -5,7 +5,7 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        mono: ['"JetBrains Mono"', '"Fira Code"', 'monospace'],
+        mono: ['"IBM Plex Mono"', 'monospace'],
         sans: ['"Inter"', 'system-ui', 'sans-serif'],
       },
       colors: {

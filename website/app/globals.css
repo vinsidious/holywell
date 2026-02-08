@@ -50,7 +50,7 @@
   /* Code defaults */
   code,
   pre {
-    font-family: var(--font-mono), 'JetBrains Mono', 'Fira Code', monospace;
+    font-family: var(--font-mono), 'IBM Plex Mono', monospace;
   }
 
   pre {
