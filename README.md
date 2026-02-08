@@ -8,6 +8,10 @@
 
 An opinionated SQL formatter that implements [Simon Holywell's SQL Style Guide](https://www.sqlstyle.guide/). It faithfully applies the guide's formatting rules -- including river alignment, keyword uppercasing, and consistent indentation -- to produce deterministic, readable SQL with minimal configuration.
 
+## Why?
+
+The [SQL Style Guide](https://www.sqlstyle.guide/) is an excellent resource for writing readable, maintainable SQL, but no formatter existed to enforce it automatically. holywell was created to fill that gap -- a zero-dependency TypeScript formatter that faithfully implements the guide's river alignment and formatting conventions with minimal configuration.
+
 ```sql
 SELECT e.name,
        e.salary,
@@ -227,7 +231,7 @@ const formatted = formatSQL(sql, {
 ### MySQL (Partial)
 
 - Standard ANSI SQL queries format correctly
-- Backtick identifiers, LIMIT offset syntax, and storage engine clauses are not yet supported
+- Backtick identifiers are tokenized and formatted; LIMIT offset syntax and storage engine clauses are not yet supported
 
 ### SQL Server (Partial)
 
@@ -252,16 +256,18 @@ For the full style guide, see [sqlstyle.guide](https://www.sqlstyle.guide/) or t
 
 ## Why holywell?
 
-| | **holywell** | sql-formatter | prettier-plugin-sql |
-|---|---|---|---|
-| **Formatting style** | River alignment ([sqlstyle.guide](https://www.sqlstyle.guide/)) | Indentation-based | Indentation-based |
-| **Configuration** | Opinionated defaults + small operational config (`.holywellrc.json`) | Configurable | Configurable via Prettier |
-| **PostgreSQL support** | First-class (casts, JSON ops, dollar-quoting, arrays) | Partial | Partial |
-| **Runtime dependencies** | Zero | Several | Prettier + parser |
-| **Idempotent** | Yes | Yes | Yes |
-| **Keyword casing** | Uppercase (enforced) | Configurable | Configurable |
-| **Identifier casing** | Lowercase (enforced) | Not modified | Not modified |
-| **Output** | Deterministic, single style | Depends on config | Depends on config |
+| | **holywell** | sql-formatter | prettier-plugin-sql | pgFormatter | sqlfluff |
+|---|---|---|---|---|---|
+| **Formatting style** | River alignment ([sqlstyle.guide](https://www.sqlstyle.guide/)) | Indentation-based | Indentation-based | Indentation-based | Indentation-based |
+| **Language** | TypeScript/JavaScript | TypeScript/JavaScript | TypeScript/JavaScript | Perl | Python |
+| **Configuration** | Opinionated defaults + small operational config (`.holywellrc.json`) | Configurable | Configurable via Prettier | Highly configurable | Highly configurable |
+| **PostgreSQL support** | First-class (casts, JSON ops, dollar-quoting, arrays) | Partial | Partial | First-class | Broad dialect support |
+| **Runtime dependencies** | Zero | 8 deps | Prettier + parser | Perl runtime | Python + deps |
+| **Idempotent** | Yes | Yes | Yes | Yes | Yes |
+| **Keyword casing** | Uppercase (enforced) | Configurable | Configurable | Configurable | Configurable |
+| **Identifier casing** | Lowercase (enforced) | Not modified | Not modified | Configurable | Not modified |
+| **Output** | Deterministic, single style | Depends on config | Depends on config | Depends on config | Depends on config |
+| **Editor extensions** | In development | Available | Prettier-compatible | VS Code extension | VS Code extension |
 
 holywell is the right choice when you want consistent, readable SQL with minimal setup and deterministic style.
 
@@ -487,7 +493,7 @@ In default (recovery) mode, unrecognized statements are passed through unchanged
 
 **Q: How fast is holywell?**
 
-~30,000+ statements/second on modern hardware. A typical migration file formats in <10ms.
+~23,000 statements/second on modern hardware. A typical migration file formats in <10ms.
 
 **Q: Does holywell modify SQL semantics?**
 
@@ -538,7 +544,7 @@ bun run build
 
 ## Performance
 
-holywell has zero runtime dependencies and formats SQL through a single tokenize-parse-format pass. Typical throughput is 30,000+ statements per second on modern hardware. Input is bounded by default size limits to prevent excessive memory use on untrusted input.
+holywell has zero runtime dependencies and formats SQL through a single tokenize-parse-format pass. Typical throughput is ~23,000 statements per second on modern hardware. Input is bounded by default size limits to prevent excessive memory use on untrusted input.
 
 ## Limitations
 
