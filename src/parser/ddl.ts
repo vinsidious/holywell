@@ -51,6 +51,7 @@ export function parseCreateStatement(ctx: DdlParser, comments: AST.CommentNode[]
   if (kw === 'TABLE') return parseCreateTableStatement(ctx, comments);
   if (kw === 'INDEX') return parseCreateIndexStatement(ctx, comments, unique);
   if (kw === 'VIEW') return parseCreateViewStatement(ctx, comments, orReplace, materialized);
+  if (kw === 'POLICY') return parseCreatePolicyStatement(ctx, comments);
 
   ctx.setPos(statementStart);
   const raw = ctx.parseRawStatement('unsupported');
@@ -175,6 +176,75 @@ function parseCreateViewStatement(
     name,
     query: query as AST.Statement,
     withData,
+    leadingComments: comments,
+  };
+}
+
+function parseCreatePolicyStatement(ctx: DdlParser, comments: AST.CommentNode[]): AST.CreatePolicyStatement {
+  ctx.expect('POLICY');
+  const name = ctx.advance().value;
+
+  ctx.expect('ON');
+  let table = ctx.advance().value;
+  while (ctx.check('.')) {
+    ctx.advance();
+    table += '.' + ctx.advance().value;
+  }
+
+  let permissive: 'PERMISSIVE' | 'RESTRICTIVE' | undefined;
+  if (ctx.peekUpper() === 'AS') {
+    ctx.advance();
+    const val = ctx.advance().upper;
+    if (val === 'PERMISSIVE' || val === 'RESTRICTIVE') {
+      permissive = val;
+    }
+  }
+
+  let command: 'ALL' | 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | undefined;
+  if (ctx.peekUpper() === 'FOR') {
+    ctx.advance();
+    const val = ctx.advance().upper;
+    if (val === 'ALL' || val === 'SELECT' || val === 'INSERT' || val === 'UPDATE' || val === 'DELETE') {
+      command = val;
+    }
+  }
+
+  let roles: string[] | undefined;
+  if (ctx.peekUpper() === 'TO') {
+    ctx.advance();
+    roles = [ctx.advance().value];
+    while (ctx.check(',')) {
+      ctx.advance();
+      roles.push(ctx.advance().value);
+    }
+  }
+
+  let using: AST.Expression | undefined;
+  if (ctx.peekUpper() === 'USING') {
+    ctx.advance();
+    ctx.expect('(');
+    using = ctx.parseExpression();
+    ctx.expect(')');
+  }
+
+  let withCheck: AST.Expression | undefined;
+  if (ctx.peekUpper() === 'WITH') {
+    ctx.advance();
+    ctx.expect('CHECK');
+    ctx.expect('(');
+    withCheck = ctx.parseExpression();
+    ctx.expect(')');
+  }
+
+  return {
+    type: 'create_policy',
+    name,
+    table,
+    permissive,
+    command,
+    roles,
+    using,
+    withCheck,
     leadingComments: comments,
   };
 }

@@ -253,10 +253,19 @@ function deriveRiverWidth(node: AST.Node): number {
       let width = 'ON'.length;
       if (node.using) width = Math.max(width, 'USING'.length);
       if (node.where) width = Math.max(width, 'WHERE'.length);
-      return width;
+      return Math.max(width, DEFAULT_RIVER);
     }
     case 'create_view':
       return deriveRiverWidth(node.query as AST.Node);
+    case 'create_policy': {
+      let width = 'ON'.length;
+      if (node.permissive) width = Math.max(width, 'AS'.length);
+      if (node.command) width = Math.max(width, 'FOR'.length);
+      if (node.roles) width = Math.max(width, 'TO'.length);
+      if (node.using) width = Math.max(width, 'USING'.length);
+      if (node.withCheck) width = Math.max(width, 'WITH'.length);
+      return Math.max(width, DEFAULT_RIVER);
+    }
     default:
       return DEFAULT_RIVER;
   }
@@ -294,6 +303,7 @@ function formatNode(node: AST.Node, ctx: FormatContext): string {
     case 'merge': return formatMerge(node, ctx);
     case 'create_index': return formatCreateIndex(node, ctx);
     case 'create_view': return formatCreateView(node, ctx);
+    case 'create_policy': return formatCreatePolicy(node, ctx);
     case 'grant': return formatGrant(node, ctx);
     case 'truncate': return formatTruncate(node, ctx);
     case 'standalone_values': return formatStandaloneValues(node, ctx);
@@ -1830,6 +1840,28 @@ function formatCreateView(node: AST.CreateViewStatement, ctx: FormatContext): st
     lines.push(node.withData ? '  WITH DATA;' : '  WITH NO DATA;');
   }
 
+  return lines.join('\n');
+}
+
+// ─── CREATE POLICY ───────────────────────────────────────────────────
+
+function formatCreatePolicy(node: AST.CreatePolicyStatement, ctx: FormatContext): string {
+  const policyCtx: FormatContext = {
+    ...ctx,
+    riverWidth: deriveRiverWidth(node),
+  };
+  const lines: string[] = [];
+  for (const c of node.leadingComments) lines.push(c.text);
+
+  lines.push(`CREATE POLICY ${node.name}`);
+  lines.push(rightAlign('ON', policyCtx) + ' ' + node.table);
+  if (node.permissive) lines.push(rightAlign('AS', policyCtx) + ' ' + node.permissive);
+  if (node.command) lines.push(rightAlign('FOR', policyCtx) + ' ' + node.command);
+  if (node.roles) lines.push(rightAlign('TO', policyCtx) + ' ' + node.roles.join(', '));
+  if (node.using) lines.push(rightAlign('USING', policyCtx) + ' (' + formatExpr(node.using) + ')');
+  if (node.withCheck) lines.push(rightAlign('WITH', policyCtx) + ' CHECK (' + formatExpr(node.withCheck) + ')');
+
+  lines[lines.length - 1] += ';';
   return lines.join('\n');
 }
 

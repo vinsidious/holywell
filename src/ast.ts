@@ -15,6 +15,7 @@ export type Statement =
   | MergeStatement
   | CreateIndexStatement
   | CreateViewStatement
+  | CreatePolicyStatement
   | GrantStatement
   | TruncateStatement
   | StandaloneValuesStatement;
@@ -313,6 +314,18 @@ export interface CreateViewStatement {
   readonly name: string;
   readonly query: Statement;
   readonly withData?: boolean;
+  readonly leadingComments: readonly CommentNode[];
+}
+
+export interface CreatePolicyStatement {
+  readonly type: 'create_policy';
+  readonly name: string;
+  readonly table: string;
+  readonly permissive?: 'PERMISSIVE' | 'RESTRICTIVE';
+  readonly command?: 'ALL' | 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE';
+  readonly roles?: readonly string[];
+  readonly using?: Expression;
+  readonly withCheck?: Expression;
   readonly leadingComments: readonly CommentNode[];
 }
 

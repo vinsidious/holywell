@@ -1148,16 +1148,16 @@ describe('Category 36: CREATE INDEX, CREATE VIEW', () => {
   assertFormat('36.1 — CREATE INDEX',
     `create index concurrently if not exists idx_orders_customer_date on orders using btree (customer_id, order_date desc) where status <> 'cancelled';`,
     `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_customer_date
-   ON orders
-USING BTREE (customer_id, order_date DESC)
-WHERE status <> 'cancelled';`
+    ON orders
+ USING BTREE (customer_id, order_date DESC)
+ WHERE status <> 'cancelled';`
   );
 
   assertFormat('36.2 — CREATE INDEX with expression',
     `create unique index idx_users_lower_email on users (lower(email)) where deleted_at is null;`,
     `CREATE UNIQUE INDEX idx_users_lower_email
-   ON users (LOWER(email))
-WHERE deleted_at IS NULL;`
+    ON users (LOWER(email))
+ WHERE deleted_at IS NULL;`
   );
 
   assertFormat('36.3 — CREATE VIEW',
@@ -1311,22 +1311,28 @@ describe('Category 40b: CREATE INDEX River Alignment', () => {
   assertFormat('40b.1 — CREATE INDEX with USING and WHERE — keywords right-align to river',
     `create index idx_test on my_table using gin (data) where active = true;`,
     `CREATE INDEX idx_test
-   ON my_table
-USING GIN (data)
-WHERE active = TRUE;`
+    ON my_table
+ USING GIN (data)
+ WHERE active = TRUE;`
   );
 
   assertFormat('40b.2 — CREATE INDEX without USING — ON and WHERE aligned',
     `create index idx_simple on my_table (col1, col2) where status = 'active';`,
     `CREATE INDEX idx_simple
-   ON my_table (col1, col2)
-WHERE status = 'active';`
+    ON my_table (col1, col2)
+ WHERE status = 'active';`
   );
 
-  assertFormat('40b.3 — CREATE INDEX without WHERE — minimal river',
+  assertFormat('40b.3 — CREATE INDEX without WHERE',
     `create unique index idx_email on users (email);`,
     `CREATE UNIQUE INDEX idx_email
-ON users (email);`
+    ON users (email);`
+  );
+
+  assertFormat('40b.4 — CREATE INDEX IF NOT EXISTS',
+    `create index if not exists waitlist_email_idx on waitlist (email);`,
+    `CREATE INDEX IF NOT EXISTS waitlist_email_idx
+    ON waitlist (email);`
   );
 });
 
@@ -1952,4 +1958,68 @@ describe('production-readiness formatting regressions', () => {
     expect(out.trimEnd()).toBe(sql);
     expect(out).toContain('-- note\nTHEN');
   });
+});
+
+describe('Category 50: CREATE POLICY', () => {
+  assertFormat('50.1 — CREATE POLICY with FOR SELECT and USING',
+    `create policy "Allow admins to read waitlist" on waitlist for select using (auth.role() = 'authenticated');`,
+    `CREATE POLICY "Allow admins to read waitlist"
+    ON waitlist
+   FOR SELECT
+ USING (auth.role() = 'authenticated');`
+  );
+
+  assertFormat('50.2 — CREATE POLICY with FOR INSERT and WITH CHECK',
+    `create policy "Allow anyone to insert into waitlist" on waitlist for insert with check (true);`,
+    `CREATE POLICY "Allow anyone to insert into waitlist"
+    ON waitlist
+   FOR INSERT
+  WITH CHECK (TRUE);`
+  );
+
+  assertFormat('50.3 — CREATE POLICY with both USING and WITH CHECK',
+    `create policy "update_own" on my_table for update using (user_id = current_user) with check (user_id = current_user);`,
+    `CREATE POLICY "update_own"
+    ON my_table
+   FOR UPDATE
+ USING (user_id = current_user)
+  WITH CHECK (user_id = current_user);`
+  );
+
+  assertFormat('50.4 — CREATE POLICY with AS RESTRICTIVE and TO roles',
+    `create policy "strict_read" on my_table as restrictive for select to admin, superuser using (active = true);`,
+    `CREATE POLICY "strict_read"
+    ON my_table
+    AS RESTRICTIVE
+   FOR SELECT
+    TO admin, superuser
+ USING (active = TRUE);`
+  );
+
+  assertFormat('50.5 — CREATE POLICY with schema-qualified table',
+    `create policy "pub_read" on public.my_table for select using (true);`,
+    `CREATE POLICY "pub_read"
+    ON public.my_table
+   FOR SELECT
+ USING (TRUE);`
+  );
+
+  assertFormat('50.6 — CREATE POLICY minimal (just ON, no other clauses)',
+    `create policy "allow_all" on my_table;`,
+    `CREATE POLICY "allow_all"
+    ON my_table;`
+  );
+
+  assertFormat('50.7 — Multiple CREATE POLICY statements in sequence',
+    `create policy "read" on t for select using (true); create policy "write" on t for insert with check (role = 'admin');`,
+    `CREATE POLICY "read"
+    ON t
+   FOR SELECT
+ USING (TRUE);
+
+CREATE POLICY "write"
+    ON t
+   FOR INSERT
+  WITH CHECK (role = 'admin');`
+  );
 });

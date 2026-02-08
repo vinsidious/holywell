@@ -676,4 +676,59 @@ describe('parser recovery metadata', () => {
     expect(stmt.where.condition.type).toBe('is_distinct_from');
     expect(stmt.where.condition.negated).toBe(false);
   });
+
+  it('parses CREATE POLICY with USING clause', () => {
+    const stmt = parseFirst(`CREATE POLICY "read_policy" ON my_table FOR SELECT USING (user_id = current_user);`);
+    expect(stmt.type).toBe('create_policy');
+    expect(stmt.name).toBe('"read_policy"');
+    expect(stmt.table).toBe('my_table');
+    expect(stmt.command).toBe('SELECT');
+    expect(stmt.using).toBeDefined();
+    expect(stmt.using.type).toBe('binary');
+  });
+
+  it('parses CREATE POLICY with WITH CHECK clause', () => {
+    const stmt = parseFirst(`CREATE POLICY "insert_policy" ON my_table FOR INSERT WITH CHECK (true);`);
+    expect(stmt.type).toBe('create_policy');
+    expect(stmt.name).toBe('"insert_policy"');
+    expect(stmt.table).toBe('my_table');
+    expect(stmt.command).toBe('INSERT');
+    expect(stmt.withCheck).toBeDefined();
+    expect(stmt.withCheck.type).toBe('literal');
+  });
+
+  it('parses CREATE POLICY with both USING and WITH CHECK', () => {
+    const stmt = parseFirst(`CREATE POLICY "update_policy" ON my_table FOR UPDATE USING (user_id = current_user) WITH CHECK (user_id = current_user);`);
+    expect(stmt.type).toBe('create_policy');
+    expect(stmt.command).toBe('UPDATE');
+    expect(stmt.using).toBeDefined();
+    expect(stmt.withCheck).toBeDefined();
+  });
+
+  it('parses CREATE POLICY with AS RESTRICTIVE', () => {
+    const stmt = parseFirst(`CREATE POLICY "strict" ON my_table AS RESTRICTIVE FOR SELECT USING (true);`);
+    expect(stmt.type).toBe('create_policy');
+    expect(stmt.permissive).toBe('RESTRICTIVE');
+    expect(stmt.command).toBe('SELECT');
+  });
+
+  it('parses CREATE POLICY with TO roles', () => {
+    const stmt = parseFirst(`CREATE POLICY "admin_only" ON my_table FOR ALL TO admin, superuser USING (true);`);
+    expect(stmt.type).toBe('create_policy');
+    expect(stmt.command).toBe('ALL');
+    expect(stmt.roles).toEqual(['admin', 'superuser']);
+  });
+
+  it('parses CREATE POLICY with schema-qualified table', () => {
+    const stmt = parseFirst(`CREATE POLICY "read" ON public.my_table FOR SELECT USING (true);`);
+    expect(stmt.type).toBe('create_policy');
+    expect(stmt.table).toBe('public.my_table');
+  });
+
+  it('parses CREATE POLICY with function call in USING', () => {
+    const stmt = parseFirst(`CREATE POLICY "auth_check" ON waitlist FOR SELECT USING (auth.role() = 'authenticated');`);
+    expect(stmt.type).toBe('create_policy');
+    expect(stmt.using.type).toBe('binary');
+    expect(stmt.using.left.type).toBe('function_call');
+  });
 });
