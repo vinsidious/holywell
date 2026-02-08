@@ -8,6 +8,20 @@
 
 An opinionated SQL formatter that implements [Simon Holywell's SQL Style Guide](https://www.sqlstyle.guide/). It faithfully applies the guide's formatting rules -- including river alignment, keyword uppercasing, and consistent indentation -- to produce deterministic, readable SQL with minimal configuration.
 
+```sql
+SELECT e.name,
+       e.salary,
+       d.department_name,
+       RANK() OVER (PARTITION BY d.department_name
+                        ORDER BY e.salary DESC) AS dept_rank
+  FROM employees AS e
+       INNER JOIN departments AS d
+       ON e.department_id = d.id
+ WHERE e.start_date >= '2024-01-01'
+   AND d.active = TRUE
+ ORDER BY d.department_name, dept_rank;
+```
+
 > **Disclaimer:** This project is not officially associated with or endorsed by Simon Holywell or sqlstyle.guide. It is an independent, faithful implementation of the SQL formatting rules described in that style guide.
 
 ## Quick Start
@@ -464,28 +478,36 @@ Formatting is idempotent: `formatSQL(formatSQL(x)) === formatSQL(x)` for all val
 ## FAQ
 
 **Q: Can I change the indentation style or keyword casing?**
-A: No. Style output is intentionally fixed. holywell provides operational configuration (line length, strictness/safety), not style customization.
+
+No. Style output is intentionally fixed. holywell provides operational configuration (line length, strictness/safety), not style customization.
 
 **Q: What happens with SQL syntax holywell doesn't understand?**
-A: In default (recovery) mode, unrecognized statements are passed through unchanged. Use `--strict` to fail instead.
+
+In default (recovery) mode, unrecognized statements are passed through unchanged. Use `--strict` to fail instead.
 
 **Q: How fast is holywell?**
-A: ~5,000 statements/second on modern hardware. A typical migration file formats in <10ms.
+
+~30,000+ statements/second on modern hardware. A typical migration file formats in <10ms.
 
 **Q: Does holywell modify SQL semantics?**
-A: No. holywell changes whitespace, uppercases SQL keywords, lowercases unquoted identifiers, and normalizes alias syntax (e.g., inserting AS). Quoted identifiers and string literals are preserved exactly. The semantic meaning is preserved.
+
+No. holywell changes whitespace, uppercases SQL keywords, lowercases unquoted identifiers, and normalizes alias syntax (e.g., inserting AS). Quoted identifiers and string literals are preserved exactly. The semantic meaning is preserved.
 
 **Q: Does holywell respect `.editorconfig`?**
-A: No. holywell does not read `.editorconfig`. It does read `.holywellrc.json` (or `--config`) for operational settings, but style output remains deterministic.
+
+No. holywell does not read `.editorconfig`. It does read `.holywellrc.json` (or `--config`) for operational settings, but style output remains deterministic.
 
 **Q: Can I customize the river width?**
-A: Not directly. River width is derived automatically from statement structure. You can influence wrapping via `maxLineLength`, but keyword alignment behavior itself is fixed.
+
+Not directly. River width is derived automatically from statement structure. You can influence wrapping via `maxLineLength`, but keyword alignment behavior itself is fixed.
 
 **Q: Does formatting change SQL semantics?**
-A: holywell only changes whitespace and casing. Specifically: SQL keywords are uppercased (`select` becomes `SELECT`), unquoted identifiers are lowercased (`MyTable` becomes `mytable`), and quoted identifiers are preserved exactly (`"MyTable"` stays `"MyTable"`). If your database is case-sensitive for unquoted identifiers (rare, but possible), see the [Migration Guide](docs/migration-guide.md) for details.
+
+holywell only changes whitespace and casing. Specifically: SQL keywords are uppercased (`select` becomes `SELECT`), unquoted identifiers are lowercased (`MyTable` becomes `mytable`), and quoted identifiers are preserved exactly (`"MyTable"` stays `"MyTable"`). If your database is case-sensitive for unquoted identifiers (rare, but possible), see the [Migration Guide](docs/migration-guide.md) for details.
 
 **Q: Does holywell work with MySQL / SQL Server / SQLite?**
-A: holywell is PostgreSQL-first, but any query written in standard ANSI SQL will format correctly regardless of your target database. Vendor-specific extensions (stored procedures, MySQL-only syntax) may not be fully parsed. See [SQL Dialect Support](#sql-dialect-support) for details.
+
+holywell is PostgreSQL-first, but any query written in standard ANSI SQL will format correctly regardless of your target database. Vendor-specific extensions (stored procedures, MySQL-only syntax) may not be fully parsed. See [SQL Dialect Support](#sql-dialect-support) for details.
 
 ## Documentation
 
@@ -516,7 +538,7 @@ bun run build
 
 ## Performance
 
-holywell has zero runtime dependencies and formats SQL through a single tokenize-parse-format pass. Typical throughput is 5,000+ statements per second on modern hardware. Input is bounded by default size limits to prevent excessive memory use on untrusted input.
+holywell has zero runtime dependencies and formats SQL through a single tokenize-parse-format pass. Typical throughput is 30,000+ statements per second on modern hardware. Input is bounded by default size limits to prevent excessive memory use on untrusted input.
 
 ## Limitations
 
