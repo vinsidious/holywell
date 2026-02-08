@@ -112,8 +112,11 @@ describe('tokenizer robustness', () => {
     expect(() => tokenize('SELECT "unterminated')).toThrow();
   });
 
-  it('throws on unterminated dollar-quoted string', () => {
-    expect(() => tokenize('SELECT $tag$no end')).toThrow(/expected closing \$tag\$/);
+  it('handles unterminated dollar-quoted string gracefully', () => {
+    // Now emits bare $ as operator tokens instead of throwing
+    const tokens = tokenize('SELECT $tag$no end');
+    const operators = tokens.filter(t => t.type === 'operator' && t.value === '$');
+    expect(operators.length).toBeGreaterThan(0);
   });
 
   it('throws on unexpected control characters', () => {
@@ -209,24 +212,18 @@ describe('tokenizer edge cases', () => {
     expect(stringTokens[0].value).toBe('$$$$');
   });
 
-  it('dollar-quote error includes expected delimiter', () => {
-    try {
-      tokenize('SELECT $mytag$unterminated');
-      throw new Error('should have thrown');
-    } catch (err) {
-      expect(err).toBeInstanceOf(TokenizeError);
-      expect((err as TokenizeError).message).toContain('$mytag$');
-    }
+  it('handles unterminated dollar-quote gracefully', () => {
+    // Now emits bare $ as operator tokens instead of throwing
+    const tokens = tokenize('SELECT $mytag$unterminated');
+    const operators = tokens.filter(t => t.type === 'operator' && t.value === '$');
+    expect(operators.length).toBeGreaterThan(0);
   });
 
-  it('$$ error includes expected delimiter', () => {
-    try {
-      tokenize('SELECT $$unterminated');
-      throw new Error('should have thrown');
-    } catch (err) {
-      expect(err).toBeInstanceOf(TokenizeError);
-      expect((err as TokenizeError).message).toContain('$$');
-    }
+  it('handles unterminated $$ gracefully', () => {
+    // Now emits bare $ as operator tokens instead of throwing
+    const tokens = tokenize('SELECT $$unterminated');
+    const operators = tokens.filter(t => t.type === 'operator' && t.value === '$');
+    expect(operators.length).toBeGreaterThan(0);
   });
 
   it('throws TokenizeError when token count exceeds limit', () => {
@@ -277,32 +274,32 @@ describe('tokenizer quoted identifier length limit', () => {
 });
 
 describe('tokenizer unterminated dollar-quoted string details', () => {
-  it('throws TokenizeError for unterminated $$ string', () => {
-    expect(() => tokenize('SELECT $$unterminated')).toThrow(TokenizeError);
+  it('handles unterminated $$ string gracefully', () => {
+    // Now emits bare $ as operator tokens instead of throwing
+    const tokens = tokenize('SELECT $$unterminated');
+    const operators = tokens.filter(t => t.type === 'operator' && t.value === '$');
+    expect(operators.length).toBeGreaterThan(0);
   });
 
-  it('throws TokenizeError for unterminated $tag$ string', () => {
-    expect(() => tokenize('SELECT $tag$unterminated')).toThrow(TokenizeError);
+  it('handles unterminated $tag$ string gracefully', () => {
+    // Now emits bare $ as operator tokens instead of throwing
+    const tokens = tokenize('SELECT $tag$unterminated');
+    const operators = tokens.filter(t => t.type === 'operator' && t.value === '$');
+    expect(operators.length).toBeGreaterThan(0);
   });
 
-  it('error message for unterminated $$ includes the delimiter', () => {
-    try {
-      tokenize('SELECT $$no close');
-      throw new Error('should have thrown');
-    } catch (err) {
-      expect(err).toBeInstanceOf(TokenizeError);
-      expect((err as TokenizeError).message).toContain('$$');
-    }
+  it('tokenizes unterminated $$ without throwing', () => {
+    // Verifies graceful handling - $ emitted as operator
+    const tokens = tokenize('SELECT $$no close');
+    const operators = tokens.filter(t => t.type === 'operator' && t.value === '$');
+    expect(operators.length).toBeGreaterThan(0);
   });
 
-  it('error message for unterminated $tag$ includes the tag', () => {
-    try {
-      tokenize('SELECT $abc$no close');
-      throw new Error('should have thrown');
-    } catch (err) {
-      expect(err).toBeInstanceOf(TokenizeError);
-      expect((err as TokenizeError).message).toContain('$abc$');
-    }
+  it('tokenizes unterminated $tag$ without throwing', () => {
+    // Verifies graceful handling - $ emitted as operator
+    const tokens = tokenize('SELECT $abc$no close');
+    const operators = tokens.filter(t => t.type === 'operator' && t.value === '$');
+    expect(operators.length).toBeGreaterThan(0);
   });
 });
 

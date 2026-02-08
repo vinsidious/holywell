@@ -96,35 +96,25 @@ describe('error line/column tracking', () => {
 });
 
 describe('unterminated dollar-quoted string error details', () => {
-  it('error message includes expected closing delimiter for $$', () => {
-    try {
-      tokenize('SELECT $$no close');
-      throw new Error('should have thrown');
-    } catch (err) {
-      expect(err).toBeInstanceOf(TokenizeError);
-      expect((err as TokenizeError).message).toContain('$$');
-    }
+  it('handles unterminated $$ gracefully', () => {
+    // Now emits bare $ as operator tokens instead of throwing
+    const tokens = tokenize('SELECT $$no close');
+    const operators = tokens.filter(t => t.type === 'operator' && t.value === '$');
+    expect(operators.length).toBeGreaterThan(0);
   });
 
-  it('error message includes expected closing delimiter for $tag$', () => {
-    try {
-      tokenize('SELECT $custom_tag$no close');
-      throw new Error('should have thrown');
-    } catch (err) {
-      expect(err).toBeInstanceOf(TokenizeError);
-      expect((err as TokenizeError).message).toContain('$custom_tag$');
-    }
+  it('handles unterminated $tag$ gracefully', () => {
+    // Now emits bare $ as operator tokens instead of throwing
+    const tokens = tokenize('SELECT $custom_tag$no close');
+    const operators = tokens.filter(t => t.type === 'operator' && t.value === '$');
+    expect(operators.length).toBeGreaterThan(0);
   });
 
-  it('TokenizeError for unterminated dollar string has correct line', () => {
-    try {
-      tokenize('SELECT 1;\n$$no close');
-      throw new Error('should have thrown');
-    } catch (err) {
-      expect(err).toBeInstanceOf(TokenizeError);
-      const te = err as TokenizeError;
-      expect(te.line).toBe(2);
-    }
+  it('handles unterminated dollar string on line 2 gracefully', () => {
+    // Now emits bare $ as operator tokens instead of throwing
+    const tokens = tokenize('SELECT 1;\n$$no close');
+    const operators = tokens.filter(t => t.type === 'operator' && t.value === '$');
+    expect(operators.length).toBeGreaterThan(0);
   });
 });
 

@@ -278,7 +278,9 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       pos += 2;
       while (pos < len && input[pos] !== '\n') pos++;
       // Trim trailing whitespace from line comments
-      const commentText = input.slice(start, pos).replace(/\s+$/, '');
+      let end = pos;
+      while (end > start && isWhitespaceCode(input.charCodeAt(end - 1))) end--;
+      const commentText = input.slice(start, end);
       emit('line_comment', commentText, '', start);
       continue;
     }
@@ -309,32 +311,32 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
 
       const delim = readDollarDelimiter(input, pos);
       if (delim) {
-        pos += delim.length;
         let close = -1;
         // Scan for the next matching delimiter.
         // This keeps delimiter matching explicit and avoids accidental partial
         // matches when tags are adjacent to other dollar-prefixed tokens.
-        for (let i = pos; i <= len - delim.length; i++) {
+        const bodyStart = pos + delim.length;
+        for (let i = bodyStart; i <= len - delim.length; i++) {
           if (input[i] !== '$') continue;
           if (input.startsWith(delim, i)) {
             close = i;
             break;
           }
         }
-        if (close < 0) {
-          const { line: eLine, column: eCol } = lc(start);
-          throw new TokenizeError(
-            `Unterminated dollar-quoted string (expected closing ${delim})`,
-            start,
-            eLine,
-            eCol,
-          );
+        if (close >= 0) {
+          pos = close + delim.length;
+          const val = input.slice(start, pos);
+          emit('string', val, val, start);
+          continue;
         }
-        pos = close + delim.length;
-        const val = input.slice(start, pos);
-        emit('string', val, val, start);
-        continue;
       }
+
+      // Bare '$' with no valid dollar-quote or positional parameter --
+      // emit as operator so the parser's recovery mode can handle it
+      // gracefully instead of throwing an unrecoverable TokenizeError.
+      pos++;
+      emit('operator', '$', '$', start);
+      continue;
     }
 
     // Unicode-escape prefixed strings: U&'...'
