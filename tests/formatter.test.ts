@@ -1905,6 +1905,19 @@ describe('production-readiness formatting regressions', () => {
     expect(out).toContain('\n WHERE id = 1;');
   });
 
+  it('formats EXPLAIN with bare option names in parentheses', () => {
+    const sql = 'EXPLAIN (ANALYZE, BUFFERS) SELECT 1;';
+    const out = formatSQL(sql);
+    expect(out).toContain('EXPLAIN (ANALYZE, BUFFERS)');
+  });
+
+  it('formats EXPLAIN with mixed bare and explicit options', () => {
+    const sql = 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, FORMAT JSON) SELECT * FROM users;';
+    const out = formatSQL(sql);
+    // Formatter outputs options in canonical order: ANALYZE, VERBOSE, COSTS, BUFFERS, ...
+    expect(out).toContain('EXPLAIN (ANALYZE, COSTS OFF, BUFFERS, FORMAT JSON)');
+  });
+
   it('formats recursive CTE SEARCH/CYCLE clauses', () => {
     const sql = 'WITH RECURSIVE t(n) AS (SELECT 1) SEARCH DEPTH FIRST BY n SET ord CYCLE n SET cyc USING path SELECT * FROM t;';
     const out = formatSQL(sql);

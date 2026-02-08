@@ -93,6 +93,31 @@ WHERE s.user_id = u.id;
     if (stmt.type !== 'insert') return;
     expect(stmt.overriding).toBe('SYSTEM VALUE');
   });
+
+  it('supports qualified column names in MERGE SET clause', () => {
+    const sql = `MERGE INTO target t USING source s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.name = s.name;`;
+    const ast = parse(sql, { recover: false });
+    expect(ast).toHaveLength(1);
+    const stmt = ast[0];
+    expect(stmt.type).toBe('merge');
+    if (stmt.type !== 'merge') return;
+    expect(stmt.whenClauses).toHaveLength(1);
+    const whenClause = stmt.whenClauses[0];
+    if (whenClause.action !== 'update') return;
+    expect(whenClause.setItems).toHaveLength(1);
+    expect(whenClause.setItems[0].column).toBe('t.name');
+  });
+
+  it('supports qualified column names in UPDATE SET clause', () => {
+    const sql = `UPDATE users AS u SET u.status = 'active' WHERE u.id = 1;`;
+    const ast = parse(sql, { recover: false });
+    expect(ast).toHaveLength(1);
+    const stmt = ast[0];
+    expect(stmt.type).toBe('update');
+    if (stmt.type !== 'update') return;
+    expect(stmt.setItems).toHaveLength(1);
+    expect(stmt.setItems[0].column).toBe('u.status');
+  });
 });
 
 describe('ddl + comments resilience', () => {

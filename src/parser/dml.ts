@@ -188,7 +188,11 @@ export function parseUpdateStatement(
 }
 
 export function parseSetItem(ctx: DmlParser): AST.SetItem {
-  const column = ctx.advance().value;
+  let column = ctx.advance().value;
+  while (ctx.check('.')) {
+    ctx.advance(); // consume dot
+    column += '.' + ctx.advance().value;
+  }
   ctx.expect('=');
   const value = ctx.parseExpression();
   return { column, value };

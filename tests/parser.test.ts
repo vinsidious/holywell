@@ -530,6 +530,44 @@ describe('parser production-readiness regressions', () => {
     expect(stmt.statement.type).toBe('select');
   });
 
+  it('parses EXPLAIN with implicit TRUE for bare option names in parentheses', () => {
+    const stmt = parseFirst('EXPLAIN (ANALYZE, BUFFERS) SELECT 1;');
+    expect(stmt.type).toBe('explain');
+    expect(stmt.analyze).toBe(true);
+    expect(stmt.buffers).toBe(true);
+    expect(stmt.statement.type).toBe('select');
+  });
+
+  it('parses EXPLAIN with all boolean options as bare names', () => {
+    const stmt = parseFirst('EXPLAIN (ANALYZE, VERBOSE, COSTS, BUFFERS, TIMING, SUMMARY, SETTINGS, WAL) SELECT 1;');
+    expect(stmt.type).toBe('explain');
+    expect(stmt.analyze).toBe(true);
+    expect(stmt.verbose).toBe(true);
+    expect(stmt.costs).toBe(true);
+    expect(stmt.buffers).toBe(true);
+    expect(stmt.timing).toBe(true);
+    expect(stmt.summary).toBe(true);
+    expect(stmt.settings).toBe(true);
+    expect(stmt.wal).toBe(true);
+  });
+
+  it('parses EXPLAIN with explicit FALSE for boolean options', () => {
+    const stmt = parseFirst('EXPLAIN (ANALYZE FALSE, BUFFERS OFF, TIMING FALSE) SELECT 1;');
+    expect(stmt.type).toBe('explain');
+    expect(stmt.analyze).toBe(false);
+    expect(stmt.buffers).toBe(false);
+    expect(stmt.timing).toBe(false);
+  });
+
+  it('parses EXPLAIN with mixed bare and explicit boolean options', () => {
+    const stmt = parseFirst('EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, FORMAT JSON) SELECT * FROM users;');
+    expect(stmt.type).toBe('explain');
+    expect(stmt.analyze).toBe(true);
+    expect(stmt.buffers).toBe(true);
+    expect(stmt.costs).toBe(false);
+    expect(stmt.format).toBe('JSON');
+  });
+
   it('parses recursive CTE SEARCH/CYCLE clauses', () => {
     const stmt = parseFirst('WITH RECURSIVE t(n) AS (SELECT 1) SEARCH DEPTH FIRST BY n SET ord CYCLE n SET cyc USING path SELECT * FROM t;');
     expect(stmt.type).toBe('cte');
@@ -600,5 +638,42 @@ describe('parser recovery metadata', () => {
     expect(out).toContain('SELECT (;');
     expect(out).toContain('SELECT 2;');
     expect(out.indexOf('SELECT 1;')).toBeLessThan(out.indexOf('SELECT 2;'));
+  });
+
+  it('does not consume IS token when not followed by valid IS-expression pattern', () => {
+    // This tests the fix for the token consumption bug where tryParseIsComparison
+    // would consume the IS token even when it doesn't match any expected pattern.
+    // In this case, "IS" is used as a column alias, not an IS comparison operator.
+    const stmt = parseFirst('SELECT col AS IS FROM t;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].alias).toBe('IS');
+  });
+
+  it('handles valid IS NULL and IS NOT NULL comparisons', () => {
+    // Ensure valid IS comparisons still work after the fix
+    const stmt = parseFirst('SELECT * FROM t WHERE x IS NULL AND y IS NOT NULL;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.where.condition.type).toBe('binary');
+    expect(stmt.where.condition.left.type).toBe('is');
+    expect(stmt.where.condition.left.value).toBe('NULL');
+    expect(stmt.where.condition.right.type).toBe('is');
+    expect(stmt.where.condition.right.value).toBe('NOT NULL');
+  });
+
+  it('handles IS TRUE and IS FALSE comparisons', () => {
+    const stmt = parseFirst('SELECT * FROM t WHERE flag IS TRUE AND disabled IS NOT FALSE;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.where.condition.type).toBe('binary');
+    expect(stmt.where.condition.left.type).toBe('is');
+    expect(stmt.where.condition.left.value).toBe('TRUE');
+    expect(stmt.where.condition.right.type).toBe('is');
+    expect(stmt.where.condition.right.value).toBe('NOT FALSE');
+  });
+
+  it('handles IS DISTINCT FROM comparisons', () => {
+    const stmt = parseFirst('SELECT * FROM t WHERE x IS DISTINCT FROM y;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.where.condition.type).toBe('is_distinct_from');
+    expect(stmt.where.condition.negated).toBe(false);
   });
 });

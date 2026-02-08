@@ -334,12 +334,12 @@ function formatExplain(node: AST.ExplainStatement, ctx: FormatContext): string {
   const options: string[] = [];
   if (node.analyze) options.push('ANALYZE');
   if (node.verbose) options.push('VERBOSE');
-  if (node.costs !== undefined) options.push(`COSTS ${node.costs ? 'ON' : 'OFF'}`);
-  if (node.buffers !== undefined) options.push(`BUFFERS ${node.buffers ? 'ON' : 'OFF'}`);
-  if (node.timing !== undefined) options.push(`TIMING ${node.timing ? 'ON' : 'OFF'}`);
-  if (node.summary !== undefined) options.push(`SUMMARY ${node.summary ? 'ON' : 'OFF'}`);
-  if (node.settings !== undefined) options.push(`SETTINGS ${node.settings ? 'ON' : 'OFF'}`);
-  if (node.wal !== undefined) options.push(`WAL ${node.wal ? 'ON' : 'OFF'}`);
+  if (node.costs !== undefined) options.push(node.costs ? 'COSTS' : 'COSTS OFF');
+  if (node.buffers !== undefined) options.push(node.buffers ? 'BUFFERS' : 'BUFFERS OFF');
+  if (node.timing !== undefined) options.push(node.timing ? 'TIMING' : 'TIMING OFF');
+  if (node.summary !== undefined) options.push(node.summary ? 'SUMMARY' : 'SUMMARY OFF');
+  if (node.settings !== undefined) options.push(node.settings ? 'SETTINGS' : 'SETTINGS OFF');
+  if (node.wal !== undefined) options.push(node.wal ? 'WAL' : 'WAL OFF');
   if (node.format) options.push(`FORMAT ${node.format}`);
 
   let header = 'EXPLAIN';

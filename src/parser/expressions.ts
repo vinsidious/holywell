@@ -11,6 +11,8 @@ export interface ComparisonParser {
   parseExpressionList(): AST.Expression[];
   isRegexOperator(): boolean;
   checkComparisonOperator(): boolean;
+  getPos(): number;
+  setPos(pos: number): void;
 }
 
 export function parseComparisonExpression(ctx: ComparisonParser): AST.Expression {
@@ -45,6 +47,8 @@ export function parseComparisonExpression(ctx: ComparisonParser): AST.Expression
 
 function tryParseIsComparison(ctx: ComparisonParser, left: AST.Expression): AST.Expression | null {
   if (ctx.peekUpper() !== 'IS') return null;
+
+  const checkpoint = ctx.getPos();
   ctx.advance();
 
   if (ctx.peekUpper() === 'NOT') {
@@ -67,6 +71,7 @@ function tryParseIsComparison(ctx: ComparisonParser, left: AST.Expression): AST.
       ctx.advance();
       return { type: 'is', expr: left, value: 'NOT FALSE' };
     }
+    ctx.setPos(checkpoint);
     return null;
   }
 
@@ -89,6 +94,7 @@ function tryParseIsComparison(ctx: ComparisonParser, left: AST.Expression): AST.
     return { type: 'is_distinct_from', left, right, negated: false } as AST.IsDistinctFromExpr;
   }
 
+  ctx.setPos(checkpoint);
   return null;
 }
 

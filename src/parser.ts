@@ -1155,6 +1155,8 @@ export class Parser {
       parseExpressionList: () => this.parseExpressionList(),
       isRegexOperator: () => this.isRegexOperator(),
       checkComparisonOperator: () => this.checkComparisonOperator(),
+      getPos: () => this.pos,
+      setPos: (pos: number) => { this.pos = pos; },
     });
   }
 
@@ -1700,46 +1702,64 @@ export class Parser {
       throw new ParseError('TRUE/FALSE or ON/OFF', this.peek());
     };
 
+    // Parse optional boolean value for EXPLAIN options
+    // If no value is provided (next token is comma or closing paren), defaults to TRUE
+    const parseOptionalExplainBoolean = (): boolean => {
+      const next = this.peekUpper();
+      // If next token is comma, closing paren, or end of input, default to TRUE
+      if (next === ',' || next === ')' || this.isAtEnd()) {
+        return true;
+      }
+      // If next token is TRUE/FALSE or ON/OFF, parse it
+      if (next === 'TRUE' || next === 'ON' || next === 'FALSE' || next === 'OFF') {
+        return parseExplainBoolean();
+      }
+      // Otherwise (e.g., next token is SELECT, WITH, etc.), default to TRUE
+      return true;
+    };
+
     const parseOption = (): boolean => {
       const kw = this.peekUpper();
       if (kw === 'ANALYZE') {
         this.advance();
-        analyze = true;
+        const value = parseOptionalExplainBoolean();
+        if (value) analyze = true;
         return true;
       }
       if (kw === 'VERBOSE') {
         this.advance();
-        verbose = true;
+        const value = parseOptionalExplainBoolean();
+        if (value) verbose = true;
         return true;
       }
       if (kw === 'COSTS') {
         this.advance();
-        costs = parseExplainBoolean();
+        costs = parseOptionalExplainBoolean();
         return true;
       }
       if (kw === 'BUFFERS') {
         this.advance();
-        buffers = parseExplainBoolean();
+        buffers = parseOptionalExplainBoolean();
         return true;
       }
       if (kw === 'TIMING') {
         this.advance();
-        timing = parseExplainBoolean();
+        timing = parseOptionalExplainBoolean();
         return true;
       }
       if (kw === 'SUMMARY') {
         this.advance();
-        summary = parseExplainBoolean();
+        summary = parseOptionalExplainBoolean();
         return true;
       }
       if (kw === 'SETTINGS') {
         this.advance();
-        settings = parseExplainBoolean();
+        settings = parseOptionalExplainBoolean();
         return true;
       }
       if (kw === 'WAL') {
         this.advance();
-        wal = parseExplainBoolean();
+        wal = parseOptionalExplainBoolean();
         return true;
       }
       if (kw === 'FORMAT') {
