@@ -73,6 +73,37 @@ describe('cli flags and UX', () => {
     expect(res.err).toContain('broken.sql');
   });
 
+  it('reads UTF-16LE SQL files with BOM', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
+    const file = join(dir, 'utf16le.sql');
+    const raw = Buffer.concat([
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from('select 1;', 'utf16le'),
+    ]);
+    writeFileSync(file, raw);
+
+    const res = runCli(['--write', 'utf16le.sql'], dir);
+    expect(res.code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toBe('SELECT 1;\n');
+  });
+
+  it('reads UTF-16BE SQL files with BOM', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
+    const file = join(dir, 'utf16be.sql');
+    const le = Buffer.from('select 1;', 'utf16le');
+    const be = Buffer.from(le);
+    for (let i = 0; i + 1 < be.length; i += 2) {
+      const a = be[i];
+      be[i] = be[i + 1];
+      be[i + 1] = a;
+    }
+    writeFileSync(file, Buffer.concat([Buffer.from([0xfe, 0xff]), be]));
+
+    const res = runCli(['--write', 'utf16be.sql'], dir);
+    expect(res.code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toBe('SELECT 1;\n');
+  });
+
   it('supports --check with normalized edge whitespace', () => {
     const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
     const file = join(dir, 'normalized.sql');
@@ -165,6 +196,17 @@ describe('glob pattern expansion', () => {
     const res = runCli([join(dir, '*.sql')]);
     expect(res.code).toBe(1);
     expect(res.err).toContain('No files matched pattern');
+  });
+
+  it('ignores directory matches from glob expansion', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-glob-'));
+    mkdirSync(join(dir, 'folder.sql'));
+    writeFileSync(join(dir, 'query.sql'), 'select 1;', 'utf8');
+
+    const res = runCli(['--check', join(dir, '**/*.sql')]);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('query.sql');
+    expect(res.err).not.toContain('EISDIR');
   });
 });
 

@@ -70,6 +70,14 @@ export interface FormatOptions {
    * Optional SQL dialect extensions used during tokenization/parsing.
    */
   dialect?: SQLDialect;
+
+  /**
+   * Maximum token count allowed during tokenization.
+   *
+   * Useful for formatting very large SQL dumps where the default tokenizer
+   * ceiling is too low.
+   */
+  maxTokenCount?: number;
 }
 
 /**
@@ -111,6 +119,7 @@ export function formatSQL(input: string, options: FormatOptions = {}): string {
   const statements = parse(trimmed, {
     recover: options.recover ?? true,
     maxDepth: options.maxDepth,
+    maxTokenCount: options.maxTokenCount,
     onRecover: options.onRecover,
     onDropStatement: options.onDropStatement,
     dialect: options.dialect,

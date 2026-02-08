@@ -32,6 +32,7 @@ interface CLIOptions {
   configPath: string | null;
   completionShell: 'bash' | 'zsh' | 'fish' | null;
   maxLineLength?: number;
+  maxTokenCount?: number;
   files: string[];
 }
 
@@ -40,12 +41,14 @@ interface RuntimeFormatOptions {
   maxLineLength?: number;
   maxDepth?: number;
   maxInputSize?: number;
+  maxTokenCount?: number;
 }
 
 interface CLIConfigFile {
   maxLineLength?: number;
   maxDepth?: number;
   maxInputSize?: number;
+  maxTokenCount?: number;
   strict?: boolean;
   recover?: boolean;
 }
@@ -145,6 +148,7 @@ Formatting:
   -w, --write           Write formatted output back to input file(s)
   -l, --list-different  Print only filenames that need formatting
   --max-line-length <n> Preferred output line width (default: 80)
+  --max-token-count <n> Tokenizer ceiling for very large SQL files
   --strict              Disable parser recovery; exit 2 on parse errors
                         (recommended for CI)
 
@@ -211,6 +215,7 @@ function parseArgs(args: string[]): CLIOptions {
     configPath: null,
     completionShell: null,
     maxLineLength: undefined,
+    maxTokenCount: undefined,
     files: [],
   };
 
@@ -259,6 +264,19 @@ function parseArgs(args: string[]): CLIOptions {
         throw new CLIUsageError('--max-line-length must be an integer >= 40');
       }
       opts.maxLineLength = parsed;
+      i++;
+      continue;
+    }
+    if (arg === '--max-token-count') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('-')) {
+        throw new CLIUsageError('--max-token-count requires a numeric argument');
+      }
+      const parsed = Number(next);
+      if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1) {
+        throw new CLIUsageError('--max-token-count must be an integer >= 1');
+      }
+      opts.maxTokenCount = parsed;
       i++;
       continue;
     }
@@ -377,7 +395,7 @@ function parseArgs(args: string[]): CLIOptions {
 function renderCompletionScript(shell: 'bash' | 'zsh' | 'fish'): string {
   const options = [
     '--help', '--version', '--check', '--diff', '--dry-run', '--preview',
-    '--write', '--list-different', '--max-line-length', '--strict', '--ignore',
+    '--write', '--list-different', '--max-line-length', '--max-token-count', '--strict', '--ignore',
     '--config', '--stdin-filepath', '--verbose', '--quiet', '--no-color',
     '--color', '--completion',
     '-h', '-V', '-w', '-l', '-v',
@@ -431,6 +449,14 @@ function shouldExcludeFromGlob(filepath: string): boolean {
   return EXCLUDED_PATH_RE.test(filepath) || DOTFILE_SEGMENT_RE.test(filepath);
 }
 
+function isDirectoryPath(filepath: string): boolean {
+  try {
+    return lstatSync(filepath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 // Cap total file count from glob expansion to prevent runaway matches
 const MAX_GLOB_FILES = 10_000;
 
@@ -442,7 +468,7 @@ function expandGlobs(files: string[]): string[] {
       continue;
     }
     try {
-      const matches = globSync(f).filter(m => !shouldExcludeFromGlob(m));
+      const matches = globSync(f).filter(m => !shouldExcludeFromGlob(m) && !isDirectoryPath(m));
       if (matches.length === 0) {
         throw new NoFilesMatchedError(f);
       }
@@ -580,6 +606,13 @@ function validateConfigShape(raw: unknown, sourcePath: string): CLIConfigFile {
       throw new CLIUsageError(`${sourcePath}: maxInputSize must be an integer >= 1`);
     }
     cfg.maxInputSize = value;
+  }
+  if (obj.maxTokenCount !== undefined) {
+    const value = obj.maxTokenCount;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+      throw new CLIUsageError(`${sourcePath}: maxTokenCount must be an integer >= 1`);
+    }
+    cfg.maxTokenCount = value;
   }
   if (obj.strict !== undefined) {
     if (typeof obj.strict !== 'boolean') {
@@ -742,6 +775,64 @@ function normalizeForComparison(input: string): string {
   return trimmed + '\n';
 }
 
+function decodeSqlText(raw: Buffer): string {
+  // UTF-16LE with BOM.
+  if (raw.length >= 2 && raw[0] === 0xff && raw[1] === 0xfe) {
+    return raw.subarray(2).toString('utf16le');
+  }
+
+  // UTF-16BE with BOM.
+  if (raw.length >= 2 && raw[0] === 0xfe && raw[1] === 0xff) {
+    const body = Buffer.from(raw.subarray(2));
+    for (let i = 0; i + 1 < body.length; i += 2) {
+      const a = body[i];
+      body[i] = body[i + 1];
+      body[i + 1] = a;
+    }
+    return body.toString('utf16le');
+  }
+
+  // UTF-8 with BOM.
+  if (raw.length >= 3 && raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf) {
+    return raw.subarray(3).toString('utf8');
+  }
+
+  // Heuristic fallback for UTF-16 without BOM (common in exported SQL scripts).
+  const sampleLen = Math.min(raw.length, 4096);
+  let zeroEven = 0;
+  let zeroOdd = 0;
+  for (let i = 0; i < sampleLen; i++) {
+    if (raw[i] !== 0x00) continue;
+    if (i % 2 === 0) zeroEven++;
+    else zeroOdd++;
+  }
+
+  const oddRatio = sampleLen > 0 ? zeroOdd / sampleLen : 0;
+  const evenRatio = sampleLen > 0 ? zeroEven / sampleLen : 0;
+  if (oddRatio > 0.2 && evenRatio < 0.05) {
+    return raw.toString('utf16le');
+  }
+  if (evenRatio > 0.2 && oddRatio < 0.05) {
+    const swapped = Buffer.from(raw);
+    for (let i = 0; i + 1 < swapped.length; i += 2) {
+      const a = swapped[i];
+      swapped[i] = swapped[i + 1];
+      swapped[i + 1] = a;
+    }
+    return swapped.toString('utf16le');
+  }
+
+  return raw.toString('utf8');
+}
+
+function readSqlTextFile(path: string): string {
+  return decodeSqlText(readFileSync(path));
+}
+
+function readSqlTextFd(fd: number): string {
+  return decodeSqlText(readFileSync(fd));
+}
+
 function toLines(text: string): string[] {
   const lines = text.split('\n');
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
@@ -803,6 +894,7 @@ function formatOneInput(input: string, options: RuntimeFormatOptions): { output:
     maxLineLength: options.maxLineLength,
     maxDepth: options.maxDepth,
     maxInputSize: options.maxInputSize,
+    maxTokenCount: options.maxTokenCount,
     onRecover: (error: ParseError, raw: RawExpression | null, context) => {
       if (!raw) return;
       recoveries.push({
@@ -954,6 +1046,7 @@ function main(): void {
       maxLineLength: opts.maxLineLength ?? config.maxLineLength,
       maxDepth: config.maxDepth,
       maxInputSize: config.maxInputSize,
+      maxTokenCount: opts.maxTokenCount ?? config.maxTokenCount,
     };
 
     let expandedFiles = expandGlobs(opts.files);
@@ -973,7 +1066,7 @@ function main(): void {
 
     if (expandedFiles.length === 0 && opts.files.length === 0) {
       // stdin mode
-      const input = readFileSync(0, 'utf-8');
+      const input = readSqlTextFd(0);
       let output: string;
       let recoveries: RecoveryEvent[];
       try {
@@ -1013,7 +1106,14 @@ function main(): void {
           }
         }
 
-        const input = readFileSync(file, 'utf-8');
+        if (isDirectoryPath(file)) {
+          if (!opts.quiet) {
+            console.error(red(`Warning: skipping directory '${file}'`));
+          }
+          continue;
+        }
+
+        const input = readSqlTextFile(file);
 
         let output: string;
         let recoveries: RecoveryEvent[];
