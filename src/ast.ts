@@ -53,6 +53,7 @@ export type Expression =
   | SubqueryExpr
   | CaseExpr
   | BetweenExpr
+  | QuantifiedComparisonExpr
   | InExpr
   | IsExpr
   | LikeExpr
@@ -134,8 +135,10 @@ export interface UpdateStatement {
 
 export interface DeleteStatement {
   readonly type: 'delete';
+  readonly targets?: readonly string[];
   readonly from: string;
   readonly alias?: string;
+  readonly fromJoins?: readonly JoinClause[];
   readonly using?: readonly FromClause[];
   readonly usingJoins?: readonly JoinClause[];
   readonly where?: WhereClause;
@@ -145,9 +148,11 @@ export interface DeleteStatement {
 
 export interface CreateTableStatement {
   readonly type: 'create_table';
+  readonly orReplace?: boolean;
   readonly tableName: string;
   readonly elements: readonly TableElement[];
   readonly trailingComma?: boolean;
+  readonly tableOptions?: string;
   readonly asQuery?: QueryExpression;
   readonly leadingComments: readonly CommentNode[];
 }
@@ -230,7 +235,7 @@ export interface DropTableStatement {
   readonly concurrently?: boolean;
   readonly ifExists: boolean;
   readonly objectName: string;
-  readonly behavior?: 'CASCADE' | 'RESTRICT' | 'CASCADE CONSTRAINTS';
+  readonly behavior?: 'CASCADE' | 'RESTRICT' | 'CASCADE CONSTRAINT' | 'CASCADE CONSTRAINTS';
   readonly leadingComments: readonly CommentNode[];
 }
 
@@ -291,7 +296,7 @@ export interface MergeWhenClause {
   readonly matched: boolean;
   readonly condition?: Expression;
   readonly action: 'delete' | 'update' | 'insert';
-  readonly setItems?: readonly { readonly column: string; readonly value: Expression }[];
+  readonly setItems?: readonly SetItem[];
   readonly columns?: readonly string[];
   readonly values?: readonly Expression[];
 }
@@ -316,11 +321,14 @@ export interface CreateIndexStatement {
   readonly unique?: boolean;
   readonly concurrently?: boolean;
   readonly ifNotExists?: boolean;
-  readonly name: string;
+  readonly name?: string;
   readonly table: string;
+  readonly only?: boolean;
   readonly using?: string;
   readonly columns: readonly Expression[];
+  readonly include?: readonly Expression[];
   readonly where?: Expression;
+  readonly options?: string;
   readonly leadingComments: readonly CommentNode[];
 }
 
@@ -330,8 +338,13 @@ export interface CreateViewStatement {
   readonly materialized?: boolean;
   readonly ifNotExists?: boolean;
   readonly name: string;
+  readonly columnList?: readonly string[];
+  readonly toTable?: string;
+  readonly toColumns?: readonly string[];
+  readonly comment?: string;
   readonly query: Statement;
   readonly withData?: boolean;
+  readonly withClause?: string;
   readonly leadingComments: readonly CommentNode[];
 }
 
@@ -421,7 +434,7 @@ export interface IntervalExpr {
 
 export interface TypedStringExpr {
   readonly type: 'typed_string';
-  readonly dataType: 'DATE' | 'TIME' | 'TIMESTAMP' | 'TIMESTAMPTZ';
+  readonly dataType: string;
   readonly value: string;
 }
 
@@ -472,6 +485,28 @@ export interface BetweenExpr {
   readonly low: Expression;
   readonly high: Expression;
   readonly negated: boolean;
+}
+
+export type QuantifiedComparisonExpr =
+  | QuantifiedComparisonSubqueryExpr
+  | QuantifiedComparisonListExpr;
+
+export interface QuantifiedComparisonSubqueryExpr {
+  readonly type: 'quantified_comparison';
+  readonly kind: 'subquery';
+  readonly left: Expression;
+  readonly operator: string;
+  readonly quantifier: 'ALL' | 'ANY' | 'SOME';
+  readonly subquery: SubqueryExpr;
+}
+
+export interface QuantifiedComparisonListExpr {
+  readonly type: 'quantified_comparison';
+  readonly kind: 'list';
+  readonly left: Expression;
+  readonly operator: string;
+  readonly quantifier: 'ALL' | 'ANY' | 'SOME';
+  readonly values: readonly Expression[];
 }
 
 // InExpr discriminated union: list vs subquery
@@ -682,6 +717,7 @@ export interface FromClause {
   readonly table: Expression;
   readonly alias?: string;
   readonly aliasColumns?: readonly string[];
+  readonly pivotClause?: string;
   readonly lateral?: boolean;
   readonly ordinality?: boolean;
   readonly tablesample?: { readonly method: string; readonly args: readonly Expression[]; readonly repeatable?: Expression };
@@ -693,6 +729,7 @@ export interface JoinClause {
   readonly table: Expression;
   readonly alias?: string;
   readonly aliasColumns?: readonly string[];
+  readonly pivotClause?: string;
   readonly lateral?: boolean;
   readonly ordinality?: boolean;
   readonly on?: Expression;
@@ -708,6 +745,7 @@ export interface WhereClause {
 export interface GroupByClause {
   readonly items: readonly Expression[];
   readonly groupingSets?: readonly { readonly type: 'grouping_sets' | 'rollup' | 'cube'; readonly sets: readonly (readonly Expression[])[] }[];
+  readonly withRollup?: boolean;
 }
 
 export interface HavingClause {
@@ -738,6 +776,7 @@ export interface OffsetClause {
 export interface SetItem {
   readonly column: string;
   readonly value: Expression;
+  readonly methodCall?: boolean;
 }
 
 export interface ValuesList {
@@ -813,6 +852,7 @@ export interface ColumnConstraintGeneratedIdentity {
   readonly type: 'generated_identity';
   readonly name?: string;
   readonly always: boolean;
+  readonly onNull?: boolean;
   readonly options?: string;
 }
 

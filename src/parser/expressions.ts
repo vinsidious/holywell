@@ -189,6 +189,38 @@ function tryParseRegexComparison(ctx: ComparisonParser, left: AST.Expression): A
 function tryParseBinaryComparison(ctx: ComparisonParser, left: AST.Expression): AST.Expression | null {
   if (!ctx.checkComparisonOperator()) return null;
   const op = ctx.advance().value;
+
+  if (
+    (ctx.peekUpper() === 'ALL' || ctx.peekUpper() === 'ANY' || ctx.peekUpper() === 'SOME')
+    && ctx.peekUpperAt(1) === '('
+  ) {
+    const quantifier = ctx.advance().upper as 'ALL' | 'ANY' | 'SOME';
+    ctx.expect('(');
+    const query = ctx.tryParseQueryExpressionAtCurrent();
+    if (query) {
+      ctx.expect(')');
+      return {
+        type: 'quantified_comparison',
+        kind: 'subquery',
+        left,
+        operator: op,
+        quantifier,
+        subquery: { type: 'subquery', query },
+      } as AST.QuantifiedComparisonSubqueryExpr;
+    }
+
+    const values = ctx.parseExpressionList();
+    ctx.expect(')');
+    return {
+      type: 'quantified_comparison',
+      kind: 'list',
+      left,
+      operator: op,
+      quantifier,
+      values,
+    } as AST.QuantifiedComparisonListExpr;
+  }
+
   const right = ctx.parseAddSub();
   return { type: 'binary', left, operator: op, right };
 }
@@ -201,6 +233,9 @@ export interface PrimaryExpressionParser {
   advance(): Token;
   check(value: string): boolean;
   expect(value: string): Token;
+  getPos(): number;
+  setPos(pos: number): void;
+  tokensToSql(tokens: Token[]): string;
   parseSubquery(): AST.SubqueryExpr;
   tryParseSubqueryAtCurrent(): AST.SubqueryExpr | null;
   parseExpression(): AST.Expression;
@@ -323,20 +358,82 @@ function tryParseParenOrSubqueryPrimary(ctx: PrimaryExpressionParser, token: Tok
   const subquery = ctx.tryParseSubqueryAtCurrent();
   if (subquery) return subquery;
   ctx.advance();
-  ctx.consumeComments?.();
+
+  const innerStart = ctx.getPos();
+  consumeCommentTokens(ctx);
   const firstExpr = ctx.parseExpression();
+  const trailingComments = consumeCommentTokens(ctx);
+
   if (ctx.check(',')) {
     const items: AST.Expression[] = [firstExpr];
     while (ctx.check(',')) {
       ctx.advance();
-      ctx.consumeComments?.();
+      consumeCommentTokens(ctx);
       items.push(ctx.parseExpression());
+      consumeCommentTokens(ctx);
     }
     ctx.expect(')');
     return { type: 'tuple', items };
   }
+
+  if (trailingComments.length > 0 && isExpressionContinuationToken(ctx.peek())) {
+    const rawInner = parseParenthesizedInnerAsRaw(ctx, innerStart);
+    ctx.expect(')');
+    return { type: 'paren', expr: rawInner };
+  }
+
   ctx.expect(')');
   return { type: 'paren', expr: firstExpr };
+}
+
+function consumeCommentTokens(ctx: PrimaryExpressionParser): Token[] {
+  const tokens: Token[] = [];
+  while (ctx.peekTypeAt(0) === 'line_comment' || ctx.peekTypeAt(0) === 'block_comment') {
+    tokens.push(ctx.advance());
+  }
+  return tokens;
+}
+
+function parseParenthesizedInnerAsRaw(ctx: PrimaryExpressionParser, startPos: number): AST.RawExpression {
+  ctx.setPos(startPos);
+  const tokens: Token[] = [];
+  let depth = 0;
+
+  while (ctx.peekTypeAt(0) !== 'eof') {
+    const next = ctx.peek();
+    if (next.value === ')' && depth === 0) break;
+
+    const token = ctx.advance();
+    tokens.push(token);
+    if (token.value === '(') {
+      depth++;
+    } else if (token.value === ')') {
+      depth = Math.max(0, depth - 1);
+    }
+  }
+
+  return {
+    type: 'raw',
+    text: ctx.tokensToSql(tokens),
+    reason: 'verbatim',
+  };
+}
+
+const KEYWORD_CONTINUATIONS = new Set([
+  'IS',
+  'IN',
+  'LIKE',
+  'ILIKE',
+  'SIMILAR',
+  'BETWEEN',
+  'NOT',
+  'COLLATE',
+]);
+
+function isExpressionContinuationToken(token: Token): boolean {
+  if (token.type === 'operator') return true;
+  if (token.type === 'keyword') return KEYWORD_CONTINUATIONS.has(token.upper);
+  return false;
 }
 
 function tryParseLiteralPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
@@ -420,6 +517,11 @@ function isCompactDurationUnit(token: Token | undefined): boolean {
 }
 
 function tryParseTypedStringPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
+  if (token.upper === 'TIME' || token.upper === 'TIMESTAMP') {
+    const tzLiteral = tryParseTimeZoneTypedLiteral(ctx, token.upper as 'TIME' | 'TIMESTAMP');
+    if (tzLiteral) return tzLiteral;
+  }
+
   if (
     !(
       (
@@ -448,9 +550,106 @@ function tryParseTypedStringPrimary(ctx: PrimaryExpressionParser, token: Token):
 
   return {
     type: 'typed_string',
-    dataType: token.upper as 'DATE' | 'TIME' | 'TIMESTAMP' | 'TIMESTAMPTZ',
+    dataType: token.upper,
     value: strToken.value,
   };
+}
+
+const GENERIC_TYPED_LITERAL_TYPE_CONTINUATIONS: Record<string, Set<string>> = {
+  DOUBLE: new Set(['PRECISION']),
+  CHARACTER: new Set(['VARYING']),
+  CHAR: new Set(['VARYING']),
+  NATIONAL: new Set(['CHARACTER']),
+  TIME: new Set(['WITH', 'WITHOUT']),
+  TIMESTAMP: new Set(['WITH', 'WITHOUT']),
+  WITH: new Set(['TIME']),
+  WITHOUT: new Set(['TIME']),
+  LOCAL: new Set(['TIME']),
+};
+
+const GENERIC_TYPED_LITERAL_DISALLOWED = new Set([
+  'SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'FROM', 'WHERE', 'GROUP', 'ORDER',
+  'HAVING', 'LIMIT', 'OFFSET', 'FETCH', 'CASE', 'CAST', 'EXTRACT', 'POSITION', 'SUBSTRING',
+  'OVERLAY', 'TRIM', 'ARRAY', 'ROW', 'INTERVAL', 'EXISTS', 'NOT', 'AND', 'OR', 'NULL',
+  'TRUE', 'FALSE', 'IN', 'IS', 'LIKE', 'ILIKE', 'SIMILAR', 'BETWEEN',
+]);
+
+function tryParseGenericTypedStringPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
+  if (ctx.peekTypeAt(1) !== 'string') return null;
+  if (token.value.startsWith('_')) return null;
+
+  const firstTypeWord = token.upper || token.value.toUpperCase();
+  if (GENERIC_TYPED_LITERAL_DISALLOWED.has(firstTypeWord)) return null;
+
+  const typeParts: string[] = [];
+  let offset = 0;
+
+  while (true) {
+    const current = ctx.peekAt(offset);
+    if (current.type !== 'identifier' && current.type !== 'keyword') break;
+
+    const currentPart = current.type === 'keyword' ? current.upper : current.value;
+    typeParts.push(currentPart);
+
+    const next = ctx.peekAt(offset + 1);
+    if (next.type !== 'identifier' && next.type !== 'keyword') break;
+
+    const allowNext = GENERIC_TYPED_LITERAL_TYPE_CONTINUATIONS[currentPart];
+    if (!allowNext || !allowNext.has(next.upper)) break;
+    offset++;
+  }
+
+  const literalToken = ctx.peekAt(offset + 1);
+  if (literalToken.type !== 'string' || typeParts.length === 0) return null;
+  const lastTypeToken = ctx.peekAt(offset);
+  if (literalToken.position === lastTypeToken.position + lastTypeToken.value.length) {
+    return null;
+  }
+
+  for (let i = 0; i <= offset; i++) {
+    ctx.advance();
+  }
+  const valueToken = ctx.advance();
+  return {
+    type: 'typed_string',
+    dataType: typeParts.join(' '),
+    value: valueToken.value,
+  };
+}
+
+function tryParseTimeZoneTypedLiteral(
+  ctx: PrimaryExpressionParser,
+  dataType: 'TIME' | 'TIMESTAMP',
+): AST.Expression | null {
+  const variants: Array<{ parts: string[]; stringOffset: number }> = [
+    { parts: ['WITH', 'TIME', 'ZONE'], stringOffset: 4 },
+    { parts: ['WITHOUT', 'TIME', 'ZONE'], stringOffset: 4 },
+    { parts: ['WITH', 'LOCAL', 'TIME', 'ZONE'], stringOffset: 5 },
+  ];
+
+  for (const variant of variants) {
+    let matches = true;
+    for (let i = 0; i < variant.parts.length; i++) {
+      if (ctx.peekUpperAt(i + 1) !== variant.parts[i]) {
+        matches = false;
+        break;
+      }
+    }
+    if (!matches || ctx.peekTypeAt(variant.stringOffset) !== 'string') continue;
+
+    ctx.advance(); // TIME or TIMESTAMP
+    for (let i = 0; i < variant.parts.length; i++) {
+      ctx.advance();
+    }
+    const literalToken = ctx.advance();
+    return {
+      type: 'raw',
+      text: `${dataType} ${variant.parts.join(' ')} ${literalToken.value}`,
+      reason: 'verbatim',
+    };
+  }
+
+  return null;
 }
 
 function tryParseCurrentDatetimePrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
@@ -466,6 +665,8 @@ function tryParseCurrentDatetimePrimary(ctx: PrimaryExpressionParser, token: Tok
 }
 
 function tryParseIdentifierPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
+  const genericTypedLiteral = tryParseGenericTypedStringPrimary(ctx, token);
+  if (genericTypedLiteral) return genericTypedLiteral;
   if (token.type === 'identifier' || token.type === 'keyword') {
     return ctx.parseIdentifierOrFunction();
   }

@@ -15,6 +15,7 @@ export interface DmlParser {
   parseReturningList(): AST.Expression[];
   parseFromItem(): AST.FromClause;
   parseQueryExpression(): AST.QueryExpression;
+  consumeComments?: () => AST.CommentNode[];
 }
 
 export function parseInsertStatement(
@@ -60,17 +61,19 @@ export function parseInsertStatement(
     ctx.advance();
     ctx.advance();
     defaultValues = true;
-  } else if (ctx.peekUpper() === 'VALUES') {
+  } else if (ctx.peekUpper() === 'VALUES' || ctx.peekUpper() === 'VALUE') {
     ctx.advance();
     values = [];
+    ctx.consumeComments?.();
     values.push(parseValuesTuple(ctx));
-    while (ctx.check(',')) {
+    ctx.consumeComments?.();
+    while (true) {
+      ctx.consumeComments?.();
+      if (!ctx.check(',')) break;
       ctx.advance();
+      ctx.consumeComments?.();
       values.push(parseValuesTuple(ctx));
-    }
-    // VALUES and SELECT are mutually exclusive — force a ParseError
-    if (ctx.peekUpper() === 'SELECT' || ctx.peekUpper() === 'WITH') {
-      ctx.expect(';');
+      ctx.consumeComments?.();
     }
   } else if (ctx.peekUpper() === 'SELECT' || ctx.peekUpper() === 'WITH' || ctx.check('(')) {
     selectQuery = ctx.parseQueryExpression();
@@ -195,6 +198,31 @@ export function parseSetItem(ctx: DmlParser): AST.SetItem {
     ctx.advance(); // consume dot
     column += '.' + ctx.advance().value;
   }
+
+   // T-SQL XML method syntax in SET: column.method(...)
+  if (ctx.check('(')) {
+    ctx.advance();
+    const args: AST.Expression[] = [];
+    if (!ctx.check(')')) {
+      args.push(ctx.parseExpression());
+      while (ctx.check(',')) {
+        ctx.advance();
+        args.push(ctx.parseExpression());
+      }
+    }
+    ctx.expect(')');
+    return {
+      column,
+      methodCall: true,
+      value: {
+        type: 'function_call',
+        name: column,
+        args,
+        distinct: false,
+      },
+    };
+  }
+
   ctx.expect('=');
   const value = ctx.parseExpression();
   return { column, value };
@@ -205,13 +233,26 @@ export function parseDeleteStatement(
   comments: AST.CommentNode[]
 ): AST.DeleteStatement {
   ctx.expect('DELETE');
-  ctx.expect('FROM');
-  let table = ctx.advance().value;
-  while (ctx.check('.')) {
-    ctx.advance(); // consume dot
-    table += '.' + ctx.advance().value;
+  let targets: string[] | undefined;
+  if (ctx.peekUpper() !== 'FROM') {
+    targets = [parseDottedName(ctx)];
+    while (ctx.check(',')) {
+      ctx.advance();
+      targets.push(parseDottedName(ctx));
+    }
   }
+  ctx.expect('FROM');
+  const table = parseDottedName(ctx);
   const alias = parseOptionalTableAlias(ctx, new Set(['USING', 'WHERE', 'RETURNING']));
+
+  let fromJoins: AST.JoinClause[] | undefined;
+  {
+    const joins: AST.JoinClause[] = [];
+    while (ctx.isJoinKeyword()) {
+      joins.push(ctx.parseJoin());
+    }
+    if (joins.length > 0) fromJoins = joins;
+  }
 
   let using: AST.FromClause[] | undefined;
   let usingJoins: AST.JoinClause[] | undefined;
@@ -237,7 +278,7 @@ export function parseDeleteStatement(
 
   const returning = parseOptionalReturning(ctx);
 
-  return { type: 'delete', from: table, alias, using, usingJoins, where, returning, leadingComments: comments };
+  return { type: 'delete', targets, from: table, alias, fromJoins, using, usingJoins, where, returning, leadingComments: comments };
 }
 
 function parseParenthesizedIdentifierList(ctx: DmlParser): string[] {
@@ -271,6 +312,7 @@ function parseOptionalTableAlias(ctx: DmlParser, stopKeywords: Set<string>): str
     ctx.advance();
     return ctx.advance().value;
   }
+  if (ctx.isJoinKeyword()) return undefined;
   const upper = ctx.peekUpper();
   if (stopKeywords.has(upper)) return undefined;
   if (ctx.check(',') || ctx.check(')') || ctx.check(';')) return undefined;
@@ -279,4 +321,13 @@ function parseOptionalTableAlias(ctx: DmlParser, stopKeywords: Set<string>): str
   if (token.type === 'identifier') return token.value;
   if (token.type === 'keyword' && !stopKeywords.has(token.upper)) return token.value;
   return undefined;
+}
+
+function parseDottedName(ctx: DmlParser): string {
+  let name = ctx.advance().value;
+  while (ctx.check('.')) {
+    ctx.advance();
+    name += '.' + ctx.advance().value;
+  }
+  return name;
 }

@@ -22,6 +22,7 @@ export interface DdlParser {
   collectTokensUntilTopLevelKeyword(stopKeywords: Set<string>): Token[];
   tokensToSql(tokens: Token[]): string;
   consumeTokensUntilActionBoundary(): Token[];
+  hasImplicitStatementBoundary?: () => boolean;
 }
 
 export function parseCreateStatement(ctx: DdlParser, comments: AST.CommentNode[]): AST.Node {
@@ -48,7 +49,7 @@ export function parseCreateStatement(ctx: DdlParser, comments: AST.CommentNode[]
   }
 
   const kw = ctx.peekUpper();
-  if (kw === 'TABLE') return parseCreateTableStatement(ctx, comments, statementStart);
+  if (kw === 'TABLE') return parseCreateTableStatement(ctx, comments, statementStart, orReplace);
   if (kw === 'INDEX') return parseCreateIndexStatement(ctx, comments, unique);
   if (kw === 'VIEW') return parseCreateViewStatement(ctx, comments, orReplace, materialized);
   if (kw === 'POLICY') return parseCreatePolicyStatement(ctx, comments);
@@ -63,6 +64,7 @@ function parseCreateTableStatement(
   ctx: DdlParser,
   comments: AST.CommentNode[],
   statementStart: number,
+  orReplace: boolean,
 ): AST.Node {
   ctx.expect('TABLE');
   const ifNotExists = ctx.consumeIfNotExists();
@@ -82,6 +84,7 @@ function parseCreateTableStatement(
     }
     return {
       type: 'create_table',
+      orReplace: orReplace || undefined,
       tableName: fullName,
       elements: [],
       asQuery: query,
@@ -108,21 +111,23 @@ function parseCreateTableStatement(
   const { elements, trailingComma } = ctx.parseTableElements();
   ctx.expect(')');
 
-  // PostgreSQL storage parameters and related trailing clauses are currently
-  // preserved verbatim to avoid strict-mode failures.
+  let tableOptions: string | undefined;
   if (!ctx.isAtEnd() && !ctx.check(';')) {
-    ctx.setPos(statementStart);
-    const raw = ctx.parseRawStatement('unsupported');
-    if (!raw) throw ctx.parseError('CREATE TABLE statement', ctx.peek());
-    if (comments.length === 0) return raw;
-    return { type: 'raw', text: `${comments.map(c => c.text).join('\n')}\n${raw.text}`.trim(), reason: 'unsupported' };
+    const optionTokens: Token[] = [];
+    while (!ctx.isAtEnd() && !ctx.check(';')) {
+      if (ctx.hasImplicitStatementBoundary?.()) break;
+      optionTokens.push(ctx.advance());
+    }
+    tableOptions = ctx.tokensToSql(optionTokens) || undefined;
   }
 
   return {
     type: 'create_table',
+    orReplace: orReplace || undefined,
     tableName: fullName,
     elements,
     trailingComma: trailingComma || undefined,
+    tableOptions,
     leadingComments: comments,
   };
 }
@@ -153,37 +158,82 @@ function parseCreateIndexStatement(
   unique: boolean
 ): AST.CreateIndexStatement {
   ctx.advance(); // INDEX
+  skipInlineComments(ctx);
 
   let concurrently = false;
   if (ctx.peekUpper() === 'CONCURRENTLY') {
     ctx.advance();
     concurrently = true;
+    skipInlineComments(ctx);
   }
 
   const ifNotExists = ctx.consumeIfNotExists();
-  const name = ctx.advance().value;
+  skipInlineComments(ctx);
+  let name: string | undefined;
+  if (ctx.peekUpper() !== 'ON') {
+    name = parseDottedName(ctx);
+    skipInlineComments(ctx);
+  }
 
   ctx.expect('ON');
-  const table = ctx.advance().value;
+  skipInlineComments(ctx);
+  let only = false;
+  if (ctx.peekUpper() === 'ONLY') {
+    ctx.advance();
+    only = true;
+    skipInlineComments(ctx);
+  }
+  const table = parseDottedName(ctx);
+  skipInlineComments(ctx);
 
   let using: string | undefined;
   if (ctx.peekUpper() === 'USING') {
     ctx.advance();
     using = ctx.advance().upper;
+    skipInlineComments(ctx);
   }
 
   ctx.expect('(');
   const columns: AST.Expression[] = [parseIndexColumn(ctx)];
   while (ctx.check(',')) {
     ctx.advance();
+    skipInlineComments(ctx);
     columns.push(parseIndexColumn(ctx));
   }
   ctx.expect(')');
+  skipInlineComments(ctx);
+
+  let include: AST.Expression[] | undefined;
+  if (ctx.peekUpper() === 'INCLUDE') {
+    ctx.advance();
+    skipInlineComments(ctx);
+    ctx.expect('(');
+    skipInlineComments(ctx);
+    include = [ctx.parseExpression()];
+    skipInlineComments(ctx);
+    while (ctx.check(',')) {
+      ctx.advance();
+      skipInlineComments(ctx);
+      include.push(ctx.parseExpression());
+      skipInlineComments(ctx);
+    }
+    ctx.expect(')');
+    skipInlineComments(ctx);
+  }
 
   let where: AST.Expression | undefined;
   if (ctx.peekUpper() === 'WHERE') {
     ctx.advance();
     where = ctx.parseExpression();
+  }
+
+  let options: string | undefined;
+  if (!ctx.isAtEnd() && !ctx.check(';')) {
+    const optionTokens: Token[] = [];
+    while (!ctx.isAtEnd() && !ctx.check(';')) {
+      optionTokens.push(ctx.advance());
+    }
+    options = ctx.tokensToSql(optionTokens) || undefined;
   }
 
   return {
@@ -193,9 +243,12 @@ function parseCreateIndexStatement(
     ifNotExists,
     name,
     table,
+    only,
     using,
     columns,
+    include,
     where,
+    options,
     leadingComments: comments,
   };
 }
@@ -246,7 +299,46 @@ function parseCreateViewStatement(
   ctx.advance(); // VIEW
 
   const ifNotExists = ctx.consumeIfNotExists();
-  const name = ctx.advance().value;
+  const name = parseDottedName(ctx);
+  skipInlineComments(ctx);
+
+  let columnList: string[] | undefined;
+  if (ctx.check('(')) {
+    columnList = parseParenthesizedIdentifierList(ctx);
+    skipInlineComments(ctx);
+  }
+
+  let toTable: string | undefined;
+  let toColumns: string[] | undefined;
+  if (ctx.peekUpper() === 'TO') {
+    ctx.advance();
+    toTable = parseDottedName(ctx);
+    skipInlineComments(ctx);
+    if (ctx.check('(')) {
+      toColumns = parseParenthesizedIdentifierList(ctx);
+      skipInlineComments(ctx);
+    }
+  }
+
+  let comment: string | undefined;
+  if (ctx.peekUpper() === 'COMMENT') {
+    ctx.advance();
+    skipInlineComments(ctx);
+    ctx.expect('=');
+    skipInlineComments(ctx);
+
+    const commentTokens: Token[] = [];
+    let depth = 0;
+    while (!ctx.isAtEnd()) {
+      if (depth === 0 && ctx.peekUpper() === 'AS') break;
+      const token = ctx.advance();
+      commentTokens.push(token);
+      if (token.value === '(' || token.value === '[' || token.value === '{') depth++;
+      else if (token.value === ')' || token.value === ']' || token.value === '}') depth = Math.max(0, depth - 1);
+    }
+    comment = ctx.tokensToSql(commentTokens) || undefined;
+    skipInlineComments(ctx);
+  }
 
   ctx.expect('AS');
   const query = ctx.parseStatement();
@@ -255,7 +347,9 @@ function parseCreateViewStatement(
   }
 
   let withData: boolean | undefined;
+  let withClause: string | undefined;
   if (ctx.peekUpper() === 'WITH') {
+    const startPos = ctx.getPos();
     ctx.advance();
     if (ctx.peekUpper() === 'DATA') {
       ctx.advance();
@@ -264,6 +358,13 @@ function parseCreateViewStatement(
       ctx.advance();
       ctx.advance();
       withData = false;
+    } else {
+      const tokens: Token[] = [];
+      ctx.setPos(startPos);
+      while (!ctx.isAtEnd() && !ctx.check(';')) {
+        tokens.push(ctx.advance());
+      }
+      withClause = ctx.tokensToSql(tokens) || undefined;
     }
   }
 
@@ -273,10 +374,46 @@ function parseCreateViewStatement(
     materialized,
     ifNotExists,
     name,
+    columnList,
+    toTable,
+    toColumns,
+    comment,
     query: query as AST.Statement,
     withData,
+    withClause,
     leadingComments: comments,
   };
+}
+
+function parseDottedName(ctx: DdlParser): string {
+  let name = ctx.advance().value;
+  while (ctx.check('.')) {
+    ctx.advance();
+    name += '.' + ctx.advance().value;
+  }
+  return name;
+}
+
+function parseParenthesizedIdentifierList(ctx: DdlParser): string[] {
+  ctx.expect('(');
+  const columns: string[] = [];
+  skipInlineComments(ctx);
+  while (!ctx.isAtEnd() && !ctx.check(')')) {
+    columns.push(ctx.advance().value);
+    skipInlineComments(ctx);
+    if (ctx.check(',')) {
+      ctx.advance();
+      skipInlineComments(ctx);
+    }
+  }
+  ctx.expect(')');
+  return columns;
+}
+
+function skipInlineComments(ctx: DdlParser): void {
+  while (ctx.peekType() === 'line_comment' || ctx.peekType() === 'block_comment') {
+    ctx.advance();
+  }
 }
 
 function parseCreatePolicyStatement(ctx: DdlParser, comments: AST.CommentNode[]): AST.CreatePolicyStatement {
@@ -634,12 +771,15 @@ export function parseDropStatement(ctx: DdlParser, comments: AST.CommentNode[]):
     throw ctx.parseError('object name', ctx.peek());
   }
 
-  let behavior: 'CASCADE' | 'RESTRICT' | 'CASCADE CONSTRAINTS' | undefined;
+  let behavior: 'CASCADE' | 'RESTRICT' | 'CASCADE CONSTRAINT' | 'CASCADE CONSTRAINTS' | undefined;
   if (ctx.peekUpper() === 'CASCADE') {
     ctx.advance();
     if (ctx.peekUpper() === 'CONSTRAINTS') {
       ctx.advance();
       behavior = 'CASCADE CONSTRAINTS';
+    } else if (ctx.peekUpper() === 'CONSTRAINT') {
+      ctx.advance();
+      behavior = 'CASCADE CONSTRAINT';
     } else {
       behavior = 'CASCADE';
     }

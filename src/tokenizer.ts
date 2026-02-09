@@ -145,6 +145,16 @@ function isIdentifierContinuation(ch: string): boolean {
   return IDENT_CONT_RE.test(ch);
 }
 
+function isBoxDrawingChar(ch: string): boolean {
+  const cp = ch.codePointAt(0);
+  if (cp === undefined) return false;
+  return (
+    (cp >= 0x2500 && cp <= 0x257F) // Box Drawing
+    || (cp >= 0x2580 && cp <= 0x259F) // Block Elements
+    || (cp >= 0x25A0 && cp <= 0x25FF) // Geometric shapes often used in ASCII-art dumps
+  );
+}
+
 function isLineStartOrIndented(input: string, pos: number): boolean {
   let i = pos - 1;
   while (i >= 0) {
@@ -166,11 +176,38 @@ function isInlineMetaCommand(input: string, pos: number): boolean {
   return isAsciiLetterCode(code);
 }
 
+function isBindParameterBoundaryChar(ch: string | undefined): boolean {
+  if (!ch) return true;
+  const code = ch.charCodeAt(0);
+  if (isWhitespaceCode(code)) return true;
+  return '([,{=<>!+-*/%|&^:;'.includes(ch);
+}
+
 function previousSignificantToken(tokens: Token[]): Token | undefined {
   for (let i = tokens.length - 1; i >= 0; i--) {
     if (tokens[i].type !== 'whitespace') return tokens[i];
   }
   return undefined;
+}
+
+function shouldPreferHashIdentifierAtLineStart(prev: Token | undefined): boolean {
+  if (!prev) return false;
+  if (prev.value === '.') return true;
+  if (prev.type !== 'keyword') return false;
+  return (
+    prev.upper === 'FROM'
+    || prev.upper === 'JOIN'
+    || prev.upper === 'INTO'
+    || prev.upper === 'UPDATE'
+    || prev.upper === 'TABLE'
+    || prev.upper === 'DELETE'
+    || prev.upper === 'TRUNCATE'
+    || prev.upper === 'LOCK'
+    || prev.upper === 'UNLOCK'
+    || prev.upper === 'AS'
+    || prev.upper === 'USING'
+    || prev.upper === 'ON'
+  );
 }
 
 function readDollarDelimiter(input: string, start: number): string | null {
@@ -197,13 +234,23 @@ function readQuotedString(
   while (pos < input.length) {
     const ch = input[pos];
     if (allowBackslashEscapes && ch === '\\') {
-      // E-strings treat backslash as an escape introducer.
       if (pos + 1 < input.length) {
         pos += 2;
       } else {
-        pos++;
+        pos += 1;
       }
       continue;
+    }
+
+    if (ch === '\\' && pos + 1 < input.length && input[pos + 1] === "'") {
+      
+      // Compatibility mode for MySQL dumps: treat \' as an escaped quote only
+      // when another quote exists later to terminate the string.
+      const hasLaterQuote = input.indexOf("'", pos + 2) >= 0;
+      if (hasLaterQuote) {
+        pos += 2;
+        continue;
+      }
     }
     if (ch === "'") {
       if (pos + 1 < input.length && input[pos + 1] === "'") {
@@ -364,6 +411,52 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       continue;
     }
 
+    // Oracle SQL*Plus line comment: REM ...
+    if (
+      isLineStartOrIndented(input, start)
+      && (ch === 'R' || ch === 'r')
+      && start + 3 <= len
+      && input.slice(start, start + 3).toUpperCase() === 'REM'
+    ) {
+      const afterRem = input[start + 3];
+      const isCommentPrefix =
+        afterRem === undefined
+        || afterRem === ' '
+        || afterRem === '\t'
+        || afterRem === '\n'
+        || afterRem === '\r';
+      if (isCommentPrefix) {
+        pos += 3;
+        while (pos < len && input[pos] !== '\n') pos++;
+        let end = pos;
+        while (end > start && isWhitespaceCode(input.charCodeAt(end - 1))) end--;
+        const commentText = input.slice(start, end);
+        emit('line_comment', commentText, '', start);
+        continue;
+      }
+    }
+
+    // MySQL line comment: # ...
+    // Treat # as a comment at line starts even without an extra space, while
+    // preserving SQL Server #temp identifiers in common table-name contexts.
+    if (ch === '#') {
+      const next = input[pos + 1];
+      const prev = previousSignificantToken(tokens);
+      const startsMySqlComment =
+        isLineStartOrIndented(input, start)
+        && next !== '>'
+        && !shouldPreferHashIdentifierAtLineStart(prev);
+      if (startsMySqlComment) {
+        pos += 1;
+        while (pos < len && input[pos] !== '\n') pos++;
+        let end = pos;
+        while (end > start && isWhitespaceCode(input.charCodeAt(end - 1))) end--;
+        const commentText = input.slice(start, end);
+        emit('line_comment', commentText, '', start);
+        continue;
+      }
+    }
+
     // Block comment: /* ... */
     if (ch === '/' && pos + 1 < len && input[pos + 1] === '*') {
       pos += 2;
@@ -375,6 +468,19 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
         throw new TokenizeError('Unterminated block comment', start, eLine, eCol);
       }
       emit('block_comment', input.slice(start, pos), '', start);
+      continue;
+    }
+
+    // Template placeholders commonly used by BI/reporting tools: {{var}}
+    if (ch === '{' && pos + 1 < len && input[pos + 1] === '{') {
+      const close = input.indexOf('}}', pos + 2);
+      if (close >= 0) {
+        pos = close + 2;
+      } else {
+        pos = len;
+      }
+      const val = input.slice(start, pos);
+      emit('parameter', val, val, start);
       continue;
     }
 
@@ -522,10 +628,22 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
     if (ch === '[') {
       const prev = previousSignificantToken(tokens);
       const hasGapFromPrev = !!prev && start > (prev.position + prev.value.length);
+      const prevCanStartSubscript =
+        !!prev
+        && (
+          prev.type === 'identifier'
+          || prev.type === 'keyword'
+          || prev.type === 'number'
+          || prev.type === 'string'
+          || prev.type === 'parameter'
+          || prev.value === ')'
+          || prev.value === ']'
+        );
       const canStartBracketIdentifier =
         !prev
         || prev.value === '.'
-        || hasGapFromPrev;
+        || hasGapFromPrev
+        || !prevCanStartSubscript;
 
       if (canStartBracketIdentifier) {
         pos++;
@@ -652,6 +770,34 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       pos += 2;
       emit('operator', '::', '::', start);
       continue;
+    }
+
+    // Oracle/SQL*Plus bind parameters: :name, :1, :schema.object
+    if (ch === ':' && input[pos + 1] !== ':') {
+      const next = input[pos + 1];
+      const prevChar = start > 0 ? input[start - 1] : undefined;
+      const startsBind = !!next && (isIdentifierStart(next) || isDigit(next));
+      if (startsBind && isBindParameterBoundaryChar(prevChar)) {
+        pos++;
+        while (pos < len) {
+          const curr = input[pos];
+          if (isIdentifierContinuation(curr) || isDigit(curr)) {
+            pos++;
+            continue;
+          }
+          if (
+            curr === '.'
+            && (isIdentifierStart(input[pos + 1] ?? '') || isDigit(input[pos + 1]))
+          ) {
+            pos++;
+            continue;
+          }
+          break;
+        }
+        const val = input.slice(start, pos);
+        emit('parameter', val, val, start);
+        continue;
+      }
     }
 
     // ! operators: !~* then !~ then !=
@@ -925,8 +1071,39 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
 
     // Identifier or keyword
     if (isIdentifierStart(ch)) {
-      while (pos < len && isIdentifierContinuation(input[pos])) {
-        pos++;
+      const prev = previousSignificantToken(tokens);
+      const allowTrailingDollar = prev?.value === '.';
+      while (pos < len) {
+        const curr = input[pos];
+        if (isIdentifierContinuation(curr)) {
+          pos++;
+          continue;
+        }
+
+        // Oracle-style identifier chars: $, #.
+        if (curr === '$') {
+          const next = input[pos + 1];
+          // Preserve $$ delimiter handling (dollar-quoted strings).
+          if (next === '$') break;
+          if (next && (isIdentifierContinuation(next) || next === '$' || next === '#')) {
+            pos++;
+            continue;
+          }
+          if (allowTrailingDollar) pos++;
+          break;
+        }
+        if (curr === '#') {
+          const next = input[pos + 1];
+          if (next === '>') break; // preserve #> / #>> operators
+          if (next && (isIdentifierContinuation(next) || next === '$' || next === '#')) {
+            pos++;
+            continue;
+          }
+          // Allow trailing # (e.g. Oracle SERIAL#).
+          pos++;
+          break;
+        }
+        break;
       }
       // Single check after loop instead of N checks for N-character identifiers
       if (pos - start > MAX_IDENTIFIER_LENGTH) {
@@ -945,6 +1122,15 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       } else {
         emit('identifier', val, upper, start);
       }
+      continue;
+    }
+
+    // Box-drawing and similar decorative glyphs are often pasted into SQL files
+    // as result separators. Treat the whole line as a comment to avoid fatal errors.
+    if (isBoxDrawingChar(ch)) {
+      pos += 1;
+      while (pos < len && input[pos] !== '\n') pos++;
+      emit('line_comment', input.slice(start, pos), '', start);
       continue;
     }
 
