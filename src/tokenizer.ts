@@ -1095,6 +1095,13 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
 
     // ? operators: ?| then ?& then ?
     if (ch === '?') {
+      if (isDigit(input[pos + 1])) {
+        pos++;
+        while (pos < len && isDigit(input[pos])) pos++;
+        const val = input.slice(start, pos);
+        emit('parameter', val, val, start);
+        continue;
+      }
       if (pos + 1 < len) {
         const next = input[pos + 1];
         if (next === '|') {
