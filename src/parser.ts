@@ -24,6 +24,7 @@ const BASE_CLAUSE_KEYWORDS = new Set([
   'DROP', 'WITH', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR',
   'RETURNING', 'FETCH', 'WINDOW', 'LATERAL', 'FOR', 'USING', 'ESCAPE',
   'PIVOT', 'UNPIVOT', 'GO',
+  'START', 'CONNECT', 'BY', 'PRIOR', 'NOCYCLE',
 ]);
 const FUNCTION_KEYWORD_OVERRIDES = new Set([
   // Can appear as join keywords and as scalar functions.
@@ -56,6 +57,18 @@ const TYPE_CONTINUATIONS: Record<string, Set<string>> = {
   TIME: new Set(['WITH', 'WITHOUT', 'ZONE']),
   WITH: new Set(['TIME']),
   WITHOUT: new Set(['TIME']),
+  TINYINT: new Set(['UNSIGNED', 'SIGNED']),
+  SMALLINT: new Set(['UNSIGNED', 'SIGNED']),
+  MEDIUMINT: new Set(['UNSIGNED', 'SIGNED']),
+  INT: new Set(['UNSIGNED', 'SIGNED']),
+  INTEGER: new Set(['UNSIGNED', 'SIGNED']),
+  BIGINT: new Set(['UNSIGNED', 'SIGNED']),
+  DECIMAL: new Set(['UNSIGNED', 'SIGNED']),
+  NUMERIC: new Set(['UNSIGNED', 'SIGNED']),
+  FLOAT: new Set(['UNSIGNED', 'SIGNED']),
+  REAL: new Set(['UNSIGNED', 'SIGNED']),
+  UNSIGNED: new Set(['ZEROFILL']),
+  SIGNED: new Set(['ZEROFILL']),
 };
 
 /**
@@ -377,6 +390,7 @@ export class Parser {
     if (this.pos <= 0 || this.pos >= this.tokens.length) return false;
     const previous = this.tokens[this.pos - 1];
     if (!previous || previous.type === 'eof') return false;
+    if (previous.value === '\\') return false;
 
     let lookahead = this.pos;
     while (
@@ -419,6 +433,11 @@ export class Parser {
       };
     }
 
+    if (this.isStandaloneSlashTerminator()) {
+      this.advance();
+      return null;
+    }
+
     // Parenthesized top-level query expression
     if (this.check('(')) {
       const query = this.tryParseQueryExpressionAtCurrent(comments);
@@ -442,6 +461,13 @@ export class Parser {
         allowPreBeginSemicolons,
       });
     }
+    if (kw === 'ALTER' && this.looksLikeAlterRoutineStatement()) {
+      const allowPreBeginSemicolons = this.hasKeywordAhead('BEGIN');
+      return this.parseStatementUntilEndBlock(comments, 'unsupported', {
+        normalizeKeywords: true,
+        allowPreBeginSemicolons,
+      });
+    }
     if (kw === 'BEGIN' && this.hasKeywordAhead('END')) {
       return this.parseStatementUntilEndBlock(comments, 'unsupported');
     }
@@ -450,12 +476,7 @@ export class Parser {
     }
 
     if (kw === 'WITH') return this.parseCTE(comments);
-    if (kw === 'SELECT') {
-      if (this.hasKeywordAhead('CONNECT') && this.hasKeywordAhead('BY')) {
-        return this.parseVerbatimStatement(comments, 'unsupported', true);
-      }
-      return this.parseUnionOrSelect(comments);
-    }
+    if (kw === 'SELECT') return this.parseUnionOrSelect(comments);
     if (kw === 'EXPLAIN') return this.parseExplain(comments);
     if (kw === 'INSERT') {
       if (this.peekUpperAt(1) === 'ALL') {
@@ -486,7 +507,10 @@ export class Parser {
     if (kw === 'ACCEPT' || kw === 'DESCRIBE' || kw === 'REM' || kw === 'DEFINE' || kw === 'PROMPT') {
       return this.parseSingleLineStatement(comments, 'unsupported');
     }
-    if (kw === 'PRAGMA' || kw === 'SHOW' || kw === 'FLUSH' || kw === 'LOCK' || kw === 'UNLOCK') {
+    if (kw === 'SHOW') {
+      return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
+    }
+    if (kw === 'PRAGMA' || kw === 'FLUSH' || kw === 'LOCK' || kw === 'UNLOCK') {
       return this.parseVerbatimStatement(comments, 'unsupported', true);
     }
     if (kw === 'COMMENT' || kw === 'CALL') {
@@ -495,6 +519,10 @@ export class Parser {
 
     if (this.peekType() === 'identifier' && this.peekUpper() === 'SP_RENAME') {
       return this.parseVerbatimStatement(comments, 'unsupported', true);
+    }
+
+    if (kw === 'DECLARE' && this.hasKeywordAhead('BEGIN') && this.hasKeywordAhead('END')) {
+      return this.parseStatementUntilEndBlock(comments, 'unsupported', { allowPreBeginSemicolons: true });
     }
 
     if (
@@ -547,10 +575,12 @@ export class Parser {
       }
       if (
         token.upper === 'PROCEDURE'
+        || token.upper === 'PROC'
         || token.upper === 'FUNCTION'
         || token.upper === 'TRIGGER'
         || token.upper === 'EVENT'
       ) {
+        if (token.upper === 'PROC') return 'PROCEDURE';
         return token.upper as 'PROCEDURE' | 'FUNCTION' | 'TRIGGER' | 'EVENT';
       }
     }
@@ -559,6 +589,32 @@ export class Parser {
 
   private looksLikeCreateRoutineStatement(): boolean {
     return this.getCreateRoutineKind() !== null;
+  }
+
+  private looksLikeAlterRoutineStatement(): boolean {
+    return this.getAlterRoutineKind() !== null;
+  }
+
+  private getAlterRoutineKind(): 'PROCEDURE' | 'FUNCTION' | 'TRIGGER' | 'EVENT' | null {
+    if (this.peekUpper() !== 'ALTER') return null;
+    for (let i = 1; i < 40; i++) {
+      const token = this.peekAt(i);
+      if (token.type === 'eof' || token.value === ';') break;
+      if (token.upper === 'TABLE' || token.upper === 'INDEX' || token.upper === 'VIEW' || token.upper === 'DATABASE') {
+        return null;
+      }
+      if (
+        token.upper === 'PROCEDURE'
+        || token.upper === 'PROC'
+        || token.upper === 'FUNCTION'
+        || token.upper === 'TRIGGER'
+        || token.upper === 'EVENT'
+      ) {
+        if (token.upper === 'PROC') return 'PROCEDURE';
+        return token.upper as 'PROCEDURE' | 'FUNCTION' | 'TRIGGER' | 'EVENT';
+      }
+    }
+    return null;
   }
 
   private hasKeywordAhead(keyword: string, maxLookahead: number = 500): boolean {
@@ -619,7 +675,13 @@ export class Parser {
 
     if (options.normalizeKeywords) {
       const statementTokens = this.tokens.slice(startIndex, this.pos);
-      const text = this.tokensToSqlKeywordNormalized(statementTokens);
+      let text = this.tokensToSqlKeywordNormalized(statementTokens);
+      text = text
+        .replace(/\bCREATE\s+OR\s+REPLACE\b/g, 'CREATE OR REPLACE')
+        .replace(/\bCREATE\s+OR\s+ALTER\b/g, 'CREATE OR ALTER')
+        .replace(/\bALTER\s+PROCEDURE\b/g, 'ALTER PROCEDURE')
+        .replace(/\bALTER\s+FUNCTION\b/g, 'ALTER FUNCTION')
+        .replace(/\bALTER\s+TRIGGER\b/g, 'ALTER TRIGGER');
       const raw = text
         ? ({ type: 'raw', text, reason } as AST.RawExpression)
         : null;
@@ -666,6 +728,37 @@ export class Parser {
     allowImplicitBoundary: boolean = false,
   ): AST.RawExpression | null {
     const raw = this.parseRawStatement(reason, { allowImplicitBoundary });
+    return this.combineCommentsWithRaw(comments, raw, reason);
+  }
+
+  private parseKeywordNormalizedStatement(
+    comments: AST.CommentNode[],
+    reason: AST.RawReason = 'unsupported',
+    allowImplicitBoundary: boolean = false,
+  ): AST.RawExpression | null {
+    const start = this.pos;
+    let depth = 0;
+    while (!this.isAtEnd() && !this.check(';')) {
+      if (
+        allowImplicitBoundary
+        && depth === 0
+        && this.pos > start
+        && this.hasImplicitStatementBoundary()
+      ) {
+        break;
+      }
+      const token = this.advance();
+      if (this.isOpenGroupToken(token)) depth++;
+      else if (this.isCloseGroupToken(token)) depth = Math.max(0, depth - 1);
+    }
+    if (this.check(';')) {
+      this.advance();
+    }
+
+    const tokens = this.tokens.slice(start, this.pos);
+    if (tokens.length === 0) return this.combineCommentsWithRaw(comments, null, reason);
+    const text = this.tokensToSqlKeywordNormalized(tokens).trim();
+    const raw = text ? ({ type: 'raw', text, reason } as AST.RawExpression) : null;
     return this.combineCommentsWithRaw(comments, raw, reason);
   }
 
@@ -776,6 +869,7 @@ export class Parser {
       sliceEndPos = last.position + last.value.length;
     }
     let hasSemicolon = false;
+    let trailingSemicolonComment: Token | undefined;
     if (this.check(';')) {
       const semi = this.advance();
       sliceEndPos = semi.position + semi.value.length;
@@ -786,6 +880,11 @@ export class Parser {
         sliceEndPos = semi.position;
       }
       hasSemicolon = true;
+
+      if (this.peekType() === 'line_comment' && this.peek().line === semi.line) {
+        trailingSemicolonComment = this.advance();
+        sliceEndPos = trailingSemicolonComment.position + trailingSemicolonComment.value.length;
+      }
     }
 
     if (this.source) {
@@ -808,6 +907,9 @@ export class Parser {
     if (hasSemicolon) {
       if (text) text += ';';
       else text = ';';
+    }
+    if (trailingSemicolonComment) {
+      text += (text ? ' ' : '') + trailingSemicolonComment.value;
     }
 
     if (!text) return null;
@@ -1107,6 +1209,8 @@ export class Parser {
     let additionalFromItems: AST.FromClause[] | undefined;
     const joins: AST.JoinClause[] = [];
     let where: AST.WhereClause | undefined;
+    let startWith: AST.Expression | undefined;
+    let connectBy: { condition: AST.Expression; noCycle?: boolean } | undefined;
     let groupBy: AST.GroupByClause | undefined;
     let having: AST.HavingClause | undefined;
     let orderBy: AST.OrderByClause | undefined;
@@ -1135,24 +1239,64 @@ export class Parser {
         joins.push(this.parseJoin());
       }
 
-      const trailingFromComments = this.consumeComments();
-      if (trailingFromComments.length > 0) {
-        if (joins.length > 0) {
-          const last = joins[joins.length - 1];
-          if (!last.trailingComment) {
-            joins[joins.length - 1] = { ...last, trailingComment: trailingFromComments[0] };
+      if (!this.hasImplicitStatementBoundary()) {
+        const trailingFromComments = this.consumeComments();
+        if (trailingFromComments.length > 0) {
+          if (joins.length > 0) {
+            const last = joins[joins.length - 1];
+            if (!last.trailingComment) {
+              joins[joins.length - 1] = { ...last, trailingComment: trailingFromComments[0] };
+            }
+          } else if (from) {
+            from = {
+              ...from,
+              trailingComments: [
+                ...(from.trailingComments ?? []),
+                ...trailingFromComments,
+              ],
+            };
           }
-        } else if (from) {
-          from = {
-            ...from,
-            trailingComments: [
-              ...(from.trailingComments ?? []),
-              ...trailingFromComments,
-            ],
-          };
         }
       }
     }
+
+    const parseStartWithClause = (): void => {
+      this.expect('START');
+      this.expect('WITH');
+      this.consumeComments();
+      startWith = this.parseExpression();
+    };
+
+    const parseConnectByClause = (): void => {
+      this.expect('CONNECT');
+      this.expect('BY');
+      let noCycle = false;
+      if (this.peekUpper() === 'NOCYCLE') {
+        this.advance();
+        noCycle = true;
+      }
+      this.consumeComments();
+      const condition = this.parseExpression();
+      connectBy = { condition, noCycle: noCycle || undefined };
+    };
+
+    const parseHierarchicalClauses = (): void => {
+      let advanced = true;
+      while (advanced) {
+        advanced = false;
+        if (!startWith && this.peekUpper() === 'START' && this.peekUpperAt(1) === 'WITH') {
+          parseStartWithClause();
+          advanced = true;
+          continue;
+        }
+        if (!connectBy && this.peekUpper() === 'CONNECT' && this.peekUpperAt(1) === 'BY') {
+          parseConnectByClause();
+          advanced = true;
+        }
+      }
+    };
+
+    parseHierarchicalClauses();
 
     if (this.peekUpper() === 'WHERE') {
       this.advance();
@@ -1165,6 +1309,8 @@ export class Parser {
       }
       where = { condition, trailingComment: whereComment };
     }
+
+    parseHierarchicalClauses();
 
     if (this.peekUpper() === 'GROUP' && this.peekUpperAt(1) === 'BY') {
       this.advance(); this.advance();
@@ -1228,6 +1374,8 @@ export class Parser {
       additionalFromItems,
       joins,
       where,
+      startWith,
+      connectBy,
       groupBy,
       having,
       orderBy,
@@ -1299,6 +1447,7 @@ export class Parser {
         this.peekType() === 'identifier'
         || (this.peekType() === 'keyword' && !this.clauseKeywords.has(this.peekUpper()))
       )
+      && !this.clauseKeywords.has(this.peekUpper())
       && !this.isJoinKeyword()
       && !this.check(',')
       && !this.check(')')
@@ -1877,7 +2026,16 @@ export class Parser {
     if (this.peekUpper() === 'NOT') {
       this.advance();
 
-      if (this.peekUpper() === 'IN' || this.peekUpper() === 'LIKE' || this.peekUpper() === 'ILIKE' || this.peekUpper() === 'BETWEEN' || this.peekUpper() === 'EXISTS' || this.peekUpper() === 'SIMILAR') {
+      if (
+        this.peekUpper() === 'IN'
+        || this.peekUpper() === 'LIKE'
+        || this.peekUpper() === 'ILIKE'
+        || this.peekUpper() === 'RLIKE'
+        || this.peekUpper() === 'REGEXP'
+        || this.peekUpper() === 'BETWEEN'
+        || this.peekUpper() === 'EXISTS'
+        || this.peekUpper() === 'SIMILAR'
+      ) {
         this.pos--;
         return this.parseComparison();
       }
@@ -2001,6 +2159,11 @@ export class Parser {
       this.advance();
       const operand = this.parsePrimary();
       return { type: 'unary', operator: '~', operand };
+    }
+    if (this.peekUpper() === 'PRIOR') {
+      this.advance();
+      const operand = this.parsePrimary();
+      return { type: 'unary', operator: 'PRIOR', operand };
     }
     return this.parsePrimaryWithPostfix();
   }
@@ -2176,7 +2339,21 @@ export class Parser {
       }
 
       const args: AST.Expression[] = [];
-      if (!this.check(')')) {
+      const parseFunctionBodyAsRaw =
+        upperName === 'JSON_TABLE'
+        || upperName === 'XMLELEMENT'
+        || (upperName === 'ARRAY' && (this.peekUpper() === 'SELECT' || this.peekUpper() === 'WITH'))
+        || (upperName === 'TRANSLATE' && this.hasTopLevelKeywordBeforeFunctionClose('USING'));
+      if (parseFunctionBodyAsRaw) {
+        const bodyTokens = this.consumeTokensUntilTopLevelFunctionClose();
+        if (bodyTokens.length > 0) {
+          args.push({
+            type: 'raw',
+            text: this.tokensToSqlPreserveCase(bodyTokens),
+            reason: 'verbatim',
+          });
+        }
+      } else if (!this.check(')')) {
         if (this.check('*')) {
           this.advance();
           args.push({ type: 'star' });
@@ -2349,6 +2526,7 @@ export class Parser {
     const str = this.parseExpression();
     let start: AST.Expression;
     let len: AST.Expression | undefined;
+    let style: 'from_for' | 'comma' = 'from_for';
 
     if (this.peekUpper() === 'FROM') {
       this.advance();
@@ -2364,6 +2542,7 @@ export class Parser {
       len = this.parseExpression();
     } else if (this.check(',')) {
       this.advance();
+      style = 'comma';
       start = this.parseExpression();
       if (this.check(',')) {
         this.advance();
@@ -2374,7 +2553,7 @@ export class Parser {
     }
 
     this.expect(')');
-    return { type: 'substring', source: str, start, length: len } as AST.SubstringExpr;
+    return { type: 'substring', source: str, start, length: len, style } as AST.SubstringExpr;
   }
 
   private parseOverlayExpr(): AST.Expression {
@@ -3092,14 +3271,17 @@ export class Parser {
     this.expect('PRIMARY');
     this.expect('KEY');
 
-    let keyName: string | undefined;
-    if (!this.check('(') && (this.peekType() === 'identifier' || this.peekType() === 'keyword')) {
-      keyName = this.advance().value;
+    const keyDetailTokens: Token[] = [];
+    while (!this.check('(') && !this.isAtEnd()) {
+      if (this.peekType() !== 'identifier' && this.peekType() !== 'keyword') break;
+      keyDetailTokens.push(this.advance());
     }
+    const keyDetails = this.tokensToSql(keyDetailTokens);
 
     const columns = this.parseTableElementColumnList();
+    const tail = this.normalizeTableElementTailText(this.consumeTableElementTailText());
     const cols = columns.length > 0 ? ` (${columns.join(', ')})` : '';
-    const body = `PRIMARY KEY${keyName ? ' ' + keyName : ''}${cols}`;
+    const body = `PRIMARY KEY${keyDetails ? ' ' + keyDetails : ''}${cols}${tail ? ' ' + tail : ''}`;
 
     if (constraintName) {
       return {
@@ -3131,8 +3313,9 @@ export class Parser {
     }
 
     const columns = this.parseTableElementColumnList();
+    const tail = this.normalizeTableElementTailText(this.consumeTableElementTailText());
     const cols = columns.length > 0 ? ` (${columns.join(', ')})` : '';
-    const body = `UNIQUE${keyKeyword ? ' ' + keyKeyword : ''}${keyName ? ' ' + keyName : ''}${cols}`;
+    const body = `UNIQUE${keyKeyword ? ' ' + keyKeyword : ''}${keyName ? ' ' + keyName : ''}${cols}${tail ? ' ' + tail : ''}`;
 
     if (constraintName) {
       return {
@@ -3162,6 +3345,15 @@ export class Parser {
     const refCols = this.parseTableElementColumnList();
 
     const actions: string[] = [];
+    if (this.peekUpper() === 'MATCH') {
+      this.advance();
+      const matchType = this.peekUpper();
+      if (matchType === 'SIMPLE' || matchType === 'FULL' || matchType === 'PARTIAL') {
+        actions.push(`MATCH ${this.advance().upper}`);
+      } else {
+        throw new ParseError('SIMPLE, FULL, or PARTIAL', this.peek());
+      }
+    }
     while (this.peekUpper() === 'ON' && (this.peekUpperAt(1) === 'DELETE' || this.peekUpperAt(1) === 'UPDATE')) {
       this.advance(); // ON
       const event = this.advance().upper;
@@ -3203,6 +3395,24 @@ export class Parser {
     }
     this.expect(')');
     return cols;
+  }
+
+  private consumeTableElementTailText(): string {
+    const tailTokens: Token[] = [];
+    let depth = 0;
+    while (!this.isAtEnd()) {
+      if (depth === 0 && (this.check(',') || this.check(')'))) break;
+      const token = this.advance();
+      tailTokens.push(token);
+      if (this.isOpenGroupToken(token)) depth++;
+      else if (this.isCloseGroupToken(token)) depth = Math.max(0, depth - 1);
+    }
+    return this.tokensToSql(tailTokens);
+  }
+
+  private normalizeTableElementTailText(text: string): string {
+    if (!text) return text;
+    return text.replace(/\bWITH\(/g, 'WITH (');
   }
 
   private parseReferentialActionText(): string {
@@ -3372,10 +3582,19 @@ export class Parser {
     }
 
     const actions: AST.ReferentialAction[] = [];
+    let matchType: AST.ColumnConstraintReferences['matchType'];
     let deferrable: AST.ColumnConstraintReferences['deferrable'];
     let initially: AST.ColumnConstraintReferences['initially'];
 
     while (!this.check(',') && !this.check(')') && !this.isAtEnd()) {
+      if (this.peekUpper() === 'MATCH') {
+        this.advance();
+        if (this.peekUpper() === 'SIMPLE' || this.peekUpper() === 'FULL' || this.peekUpper() === 'PARTIAL') {
+          matchType = this.advance().upper as AST.ColumnConstraintReferences['matchType'];
+          continue;
+        }
+        throw new ParseError('SIMPLE, FULL, or PARTIAL', this.peek());
+      }
       if (this.peekUpper() === 'ON' && (this.peekUpperAt(1) === 'DELETE' || this.peekUpperAt(1) === 'UPDATE')) {
         this.advance();
         const event = this.advance().upper as AST.ReferentialAction['event'];
@@ -3432,6 +3651,7 @@ export class Parser {
       name,
       table,
       columns,
+      matchType,
       actions: actions.length > 0 ? actions : undefined,
       deferrable,
       initially,
@@ -3918,10 +4138,36 @@ export class Parser {
     while (!this.isAtEnd() && !this.check(';')) {
       const t = this.peek();
       if (depth === 0 && t.value === ',') break;
+      if (depth === 0 && tokens.length > 0 && this.hasImplicitStatementBoundary()) break;
       this.advance();
       tokens.push(t);
       if (this.isOpenGroupToken(t)) depth++;
       else if (this.isCloseGroupToken(t)) depth = Math.max(0, depth - 1);
+    }
+    return tokens;
+  }
+
+  private hasTopLevelKeywordBeforeFunctionClose(keyword: string): boolean {
+    let depth = 0;
+    for (let i = this.pos; i < this.tokens.length; i++) {
+      const token = this.tokens[i];
+      if (depth === 0 && token.value === ')') return false;
+      if (depth === 0 && token.upper === keyword) return true;
+      if (this.isOpenGroupToken(token)) depth++;
+      else if (this.isCloseGroupToken(token)) depth = Math.max(0, depth - 1);
+    }
+    return false;
+  }
+
+  private consumeTokensUntilTopLevelFunctionClose(): Token[] {
+    const tokens: Token[] = [];
+    let depth = 0;
+    while (!this.isAtEnd()) {
+      if (depth === 0 && this.check(')')) break;
+      const token = this.advance();
+      tokens.push(token);
+      if (this.isOpenGroupToken(token)) depth++;
+      else if (this.isCloseGroupToken(token)) depth = Math.max(0, depth - 1);
     }
     return tokens;
   }
@@ -3937,6 +4183,15 @@ export class Parser {
   private tokenToSqlValue(token: Token): string {
     if (token.upper === 'TABLES') return 'TABLES';
     return token.type === 'keyword' ? token.upper : token.value;
+  }
+
+  private isStandaloneSlashTerminator(): boolean {
+    const token = this.peek();
+    if (token.value !== '/') return false;
+    if (token.column !== 1) return false;
+    const next = this.peekAt(1);
+    if (next.type === 'eof') return true;
+    return next.line > token.line;
   }
 
   private tokensToSqlPreserveCase(tokens: Token[]): string {

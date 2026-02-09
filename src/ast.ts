@@ -90,6 +90,11 @@ export interface SelectStatement {
   readonly additionalFromItems?: readonly FromClause[];
   readonly joins: readonly JoinClause[];
   readonly where?: WhereClause;
+  readonly startWith?: Expression;
+  readonly connectBy?: {
+    readonly condition: Expression;
+    readonly noCycle?: boolean;
+  };
   readonly groupBy?: GroupByClause;
   readonly having?: HavingClause;
   readonly orderBy?: OrderByClause;
@@ -104,9 +109,11 @@ export interface SelectStatement {
 
 export interface InsertStatement {
   readonly type: 'insert';
+  readonly ignore?: boolean;
   readonly table: string;
   readonly columns: readonly string[];
   readonly overriding?: 'SYSTEM VALUE' | 'USER VALUE';
+  readonly valueClauseLeadingComments?: readonly CommentNode[];
   readonly defaultValues?: boolean;
   readonly values?: readonly ValuesList[];
   readonly selectQuery?: QueryExpression;
@@ -151,6 +158,7 @@ export interface CreateTableStatement {
   readonly type: 'create_table';
   readonly orReplace?: boolean;
   readonly tableName: string;
+  readonly likeTable?: string;
   readonly elements: readonly TableElement[];
   readonly trailingComma?: boolean;
   readonly tableOptions?: string;
@@ -632,6 +640,7 @@ export interface SubstringExpr {
   readonly source: Expression;
   readonly start: Expression;
   readonly length?: Expression;
+  readonly style?: 'from_for' | 'comma';
 }
 
 export interface OverlayExpr {
@@ -784,6 +793,8 @@ export interface SetItem {
 
 export interface ValuesList {
   readonly values: readonly Expression[];
+  readonly leadingComments?: readonly CommentNode[];
+  readonly trailingComments?: readonly CommentNode[];
 }
 
 export interface TableElement {
@@ -841,6 +852,7 @@ export interface ColumnConstraintReferences {
   readonly name?: string;
   readonly table: string;
   readonly columns?: readonly string[];
+  readonly matchType?: 'SIMPLE' | 'FULL' | 'PARTIAL';
   readonly actions?: readonly ReferentialAction[];
   readonly deferrable?: 'DEFERRABLE' | 'NOT DEFERRABLE';
   readonly initially?: 'DEFERRED' | 'IMMEDIATE';

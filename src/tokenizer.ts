@@ -92,8 +92,9 @@ export class TokenizeError extends Error {
 
 // \p{L} matches any Unicode letter (Latin, CJK, Cyrillic, Greek, etc.)
 const IDENT_START_RE = /[\p{L}_]/u;
-// \p{L} = Unicode letter, \p{N} = Unicode number (digits in any script)
-const IDENT_CONT_RE = /[\p{L}\p{N}_]/u;
+// \p{L} = Unicode letter, \p{N} = Unicode number (digits in any script),
+// \p{M} = combining marks (needed for locale-sensitive case mappings, e.g. i + dot-above)
+const IDENT_CONT_RE = /[\p{L}\p{N}\p{M}_]/u;
 
 function isAsciiDigitCode(code: number): boolean {
   return code >= 48 && code <= 57;
@@ -361,6 +362,8 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
   const tokens: Token[] = [];
   let pos = 0;
   const len = input.length;
+  let statementStartTokenIndex = 0;
+  let inCopyFromStdinData = false;
   const lineOffsets = buildLineOffsets(input);
   const allowMetaCommands = options.allowMetaCommands ?? false;
   const maxTokenCount = options.maxTokenCount ?? MAX_TOKEN_COUNT;
@@ -386,6 +389,37 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
     }
     const { line, column } = lc(position);
     tokens.push({ type, value, upper, position, line, column });
+
+    if (type === 'punctuation' && value === ';') {
+      const statementTokens = tokens.slice(statementStartTokenIndex, tokens.length);
+      if (isCopyFromStdinStatement(statementTokens)) {
+        inCopyFromStdinData = true;
+      }
+      statementStartTokenIndex = tokens.length;
+    }
+  }
+
+  function isCopyFromStdinStatement(statementTokens: Token[]): boolean {
+    let sawCopy = false;
+    let sawFrom = false;
+    for (const token of statementTokens) {
+      if (token.type === 'line_comment' || token.type === 'block_comment' || token.type === 'whitespace') {
+        continue;
+      }
+      if (token.value === ';') break;
+      if (!sawCopy) {
+        if (token.upper === 'COPY') sawCopy = true;
+        continue;
+      }
+      if (token.upper === 'FROM') {
+        sawFrom = true;
+        continue;
+      }
+      if (sawFrom) {
+        return token.upper === 'STDIN';
+      }
+    }
+    return false;
   }
 
   while (pos < len) {
@@ -396,6 +430,16 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
     if (isWhitespaceCode(ch.charCodeAt(0))) {
       while (pos < len && isWhitespaceCode(input.charCodeAt(pos))) pos++;
       emit('whitespace', input.slice(start, pos), '', start);
+      continue;
+    }
+
+    if (inCopyFromStdinData) {
+      while (pos < len && input[pos] !== '\n' && input[pos] !== '\r') pos++;
+      const lineText = input.slice(start, pos);
+      emit('line_comment', lineText, '', start);
+      if (lineText.trim() === '\\.') {
+        inCopyFromStdinData = false;
+      }
       continue;
     }
 
@@ -458,6 +502,19 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
     }
 
     // Block comment: /* ... */
+    // SQL*Plus statement terminator: slash on its own line.
+    if (ch === '/' && isLineStartOrIndented(input, start)) {
+      let lookahead = pos + 1;
+      while (lookahead < len && (input[lookahead] === ' ' || input[lookahead] === '\t')) {
+        lookahead++;
+      }
+      if (lookahead >= len || input[lookahead] === '\n' || input[lookahead] === '\r') {
+        pos = lookahead;
+        emit('punctuation', ';', ';', start);
+        continue;
+      }
+    }
+
     if (ch === '/' && pos + 1 < len && input[pos + 1] === '*') {
       pos += 2;
       while (pos < len && !(input[pos] === '*' && pos + 1 < len && input[pos + 1] === '/')) pos++;
