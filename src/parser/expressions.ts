@@ -46,6 +46,15 @@ export function parseComparisonExpression(ctx: ComparisonParser): AST.Expression
 }
 
 function tryParseIsComparison(ctx: ComparisonParser, left: AST.Expression): AST.Expression | null {
+  if (ctx.peekUpper() === 'ISNULL') {
+    ctx.advance();
+    return { type: 'is', expr: left, value: 'NULL' };
+  }
+  if (ctx.peekUpper() === 'NOTNULL') {
+    ctx.advance();
+    return { type: 'is', expr: left, value: 'NOT NULL' };
+  }
+
   if (ctx.peekUpper() !== 'IS') return null;
 
   const checkpoint = ctx.getPos();
@@ -304,12 +313,15 @@ const INTERVAL_UNITS = new Set([
 ]);
 
 function tryParseIntervalPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
-  if (!(token.upper === 'INTERVAL' && ctx.peekTypeAt(1) === 'string')) return null;
-  ctx.advance();
-  const strToken = ctx.advance();
-  let value = strToken.value;
+  if (token.upper !== 'INTERVAL') return null;
+  const nextType = ctx.peekTypeAt(1);
+  if (nextType !== 'string' && nextType !== 'number') return null;
 
-  // INTERVAL '1' DAY, INTERVAL '1' DAY TO SECOND
+  ctx.advance();
+  const valueToken = ctx.advance();
+  let value = valueToken.value;
+
+  // INTERVAL '1' DAY, INTERVAL '1' DAY TO SECOND, INTERVAL 30 DAY
   if (INTERVAL_UNITS.has(ctx.peek().upper)) {
     value += ' ' + ctx.advance().upper;
     if (ctx.peek().upper === 'TO' && INTERVAL_UNITS.has(ctx.peekUpperAt(1))) {

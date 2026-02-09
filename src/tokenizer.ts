@@ -560,6 +560,40 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       continue;
     }
 
+    // Oracle alternative quoting: q'[...]', q'{...}', q'(...)', q'<...>', q'!...!'
+    if ((ch === 'Q' || ch === 'q') && input[pos + 1] === "'") {
+      const open = input[pos + 2];
+      if (!open) {
+        const { line: eLine, column: eCol } = lc(start);
+        throw new TokenizeError('Unterminated string literal', start, eLine, eCol);
+      }
+
+      const closeMap: Record<string, string> = {
+        '[': ']',
+        '{': '}',
+        '(': ')',
+        '<': '>',
+      };
+      const close = closeMap[open] ?? open;
+      pos += 3; // q'X
+      let closed = false;
+      while (pos < len) {
+        if (input[pos] === close && input[pos + 1] === "'") {
+          pos += 2;
+          closed = true;
+          break;
+        }
+        pos++;
+      }
+      if (!closed) {
+        const { line: eLine, column: eCol } = lc(start);
+        throw new TokenizeError('Unterminated string literal', start, eLine, eCol);
+      }
+      const val = input.slice(start, pos);
+      emit('string', val, val, start);
+      continue;
+    }
+
     // Prefixed strings: E'...', B'...', X'...', N'...'
     if ('EeBbXxNn'.includes(ch) && input[pos + 1] === "'") {
       const allowBackslashEscapes = ch === 'E' || ch === 'e';
@@ -775,6 +809,30 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
     // Oracle/SQL*Plus bind parameters: :name, :1, :schema.object
     if (ch === ':' && input[pos + 1] !== ':') {
       const next = input[pos + 1];
+      if (next === "'" || next === '"') {
+        const quote = next;
+        pos += 2;
+        let closed = false;
+        while (pos < len) {
+          if (input[pos] === quote) {
+            if (input[pos + 1] === quote) {
+              pos += 2;
+              continue;
+            }
+            pos++;
+            closed = true;
+            break;
+          }
+          pos++;
+        }
+        if (!closed) {
+          const { line: eLine, column: eCol } = lc(start);
+          throw new TokenizeError('Unterminated parameter interpolation', start, eLine, eCol);
+        }
+        const val = input.slice(start, pos);
+        emit('parameter', val, val, start);
+        continue;
+      }
       const prevChar = start > 0 ? input[start - 1] : undefined;
       const startsBind = !!next && (isIdentifierStart(next) || isDigit(next));
       if (startsBind && isBindParameterBoundaryChar(prevChar)) {
@@ -820,6 +878,14 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       // bare ! (not standard SQL but consume it)
       pos++;
       emit('operator', '!', '!', start);
+      continue;
+    }
+
+    // Bare backslashes can appear in COPY ... FROM stdin data rows and should
+    // not terminate tokenization.
+    if (ch === '\\') {
+      pos++;
+      emit('operator', '\\', '\\', start);
       continue;
     }
 
