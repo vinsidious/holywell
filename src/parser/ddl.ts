@@ -92,6 +92,24 @@ function parseCreateTableStatement(
     };
   }
 
+  // MySQL: CREATE TABLE new_table LIKE existing_table;
+  if (ctx.peekUpper() === 'LIKE') {
+    ctx.advance(); // LIKE
+    let likeTable = ctx.advance().value;
+    while (ctx.check('.')) {
+      ctx.advance();
+      likeTable += '.' + ctx.advance().value;
+    }
+    return {
+      type: 'create_table',
+      orReplace: orReplace || undefined,
+      tableName: fullName,
+      likeTable,
+      elements: [],
+      leadingComments: comments,
+    };
+  }
+
   if (!ctx.check('(')) {
     ctx.setPos(statementStart);
     const raw = ctx.parseRawStatement('unsupported');
@@ -518,11 +536,20 @@ export function parseAlterStatement(ctx: DdlParser, comments: AST.CommentNode[])
 
   const objectType = ctx.advance().upper;
   const objectNameTokens: Token[] = [];
+  const actionStarters = new Set([
+    'ADD',
+    'DROP',
+    'RENAME',
+    'SET',
+    'ALTER',
+    'CHANGE',
+    'MODIFY',
+  ]);
   while (!ctx.isAtEnd() && !ctx.check(';')) {
     const upper = ctx.peekUpper();
     if (
       objectNameTokens.length > 0
-      && (upper === 'ADD' || upper === 'DROP' || upper === 'RENAME' || upper === 'SET' || upper === 'ALTER')
+      && actionStarters.has(upper)
     ) {
       break;
     }
@@ -535,6 +562,20 @@ export function parseAlterStatement(ctx: DdlParser, comments: AST.CommentNode[])
 
   const actions: AST.AlterAction[] = [];
   while (!ctx.isAtEnd() && !ctx.check(';')) {
+    if (
+      ctx.hasImplicitStatementBoundary?.()
+      && !(
+        ctx.peekUpper() === 'ADD'
+        || ctx.peekUpper() === 'DROP'
+        || ctx.peekUpper() === 'RENAME'
+        || ctx.peekUpper() === 'SET'
+        || ctx.peekUpper() === 'ALTER'
+        || ctx.peekUpper() === 'CHANGE'
+        || ctx.peekUpper() === 'MODIFY'
+      )
+    ) {
+      break;
+    }
     actions.push(parseAlterAction(ctx));
     if (ctx.check(',')) {
       ctx.advance();
@@ -578,6 +619,12 @@ function tryParseAlterAddNonColumnAction(ctx: DdlParser): AST.AlterAction | null
     && !(ctx.peekUpper() === 'FOREIGN' && ctx.peekUpperAt(1) === 'KEY')
     && ctx.peekUpper() !== 'UNIQUE'
     && ctx.peekUpper() !== 'CHECK'
+    && ctx.peekUpper() !== 'DEFAULT'
+    && ctx.peekUpper() !== 'KEY'
+    && ctx.peekUpper() !== 'INDEX'
+    && ctx.peekUpper() !== 'FULLTEXT'
+    && ctx.peekUpper() !== 'SPATIAL'
+    && ctx.peekUpper() !== 'VALUE'
   ) {
     ctx.setPos(start);
     return null;
@@ -605,6 +652,7 @@ function tryParseAlterAddColumnAction(ctx: DdlParser): AST.AlterAction | null {
       || (ctx.peekUpper() === 'FOREIGN' && ctx.peekUpperAt(1) === 'KEY')
       || ctx.peekUpper() === 'UNIQUE'
       || ctx.peekUpper() === 'CHECK'
+      || ctx.peekUpper() === 'DEFAULT'
     )
   ) {
     ctx.setPos(start);

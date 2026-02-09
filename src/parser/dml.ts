@@ -23,6 +23,11 @@ export function parseInsertStatement(
   comments: AST.CommentNode[]
 ): AST.InsertStatement {
   ctx.expect('INSERT');
+  let ignore = false;
+  if (ctx.peekUpper() === 'IGNORE') {
+    ctx.advance();
+    ignore = true;
+  }
   if (ctx.peekUpper() === 'INTO') {
     ctx.advance();
   }
@@ -54,6 +59,7 @@ export function parseInsertStatement(
   }
 
   let defaultValues = false;
+  const valueClauseLeadingComments: AST.CommentNode[] = ctx.consumeComments?.() ?? [];
   let values: AST.ValuesList[] | undefined;
   let selectQuery: AST.QueryExpression | undefined;
 
@@ -64,16 +70,12 @@ export function parseInsertStatement(
   } else if (ctx.peekUpper() === 'VALUES' || ctx.peekUpper() === 'VALUE') {
     ctx.advance();
     values = [];
-    ctx.consumeComments?.();
-    values.push(parseValuesTuple(ctx));
-    ctx.consumeComments?.();
+    values.push(parseValuesTuple(ctx, ctx.consumeComments?.() ?? []));
     while (true) {
       ctx.consumeComments?.();
       if (!ctx.check(',')) break;
       ctx.advance();
-      ctx.consumeComments?.();
-      values.push(parseValuesTuple(ctx));
-      ctx.consumeComments?.();
+      values.push(parseValuesTuple(ctx, ctx.consumeComments?.() ?? []));
     }
   } else if (ctx.peekUpper() === 'SELECT' || ctx.peekUpper() === 'WITH' || ctx.check('(')) {
     selectQuery = ctx.parseQueryExpression();
@@ -90,9 +92,11 @@ export function parseInsertStatement(
 
   return {
     type: 'insert',
+    ignore: ignore || undefined,
     table,
     columns,
     overriding,
+    valueClauseLeadingComments: valueClauseLeadingComments.length > 0 ? valueClauseLeadingComments : undefined,
     defaultValues,
     values,
     selectQuery,
@@ -139,11 +143,19 @@ export function parseInsertOnConflictClause(ctx: DmlParser): AST.InsertStatement
   return { columns: conflictColumns, constraintName, action: 'update', setItems, where };
 }
 
-export function parseValuesTuple(ctx: DmlParser): AST.ValuesList {
+export function parseValuesTuple(
+  ctx: DmlParser,
+  leadingComments: AST.CommentNode[] = [],
+): AST.ValuesList {
   ctx.expect('(');
   const values = ctx.parseExpressionList();
   ctx.expect(')');
-  return { values };
+  const trailingComments = ctx.consumeComments?.() ?? [];
+  return {
+    values,
+    leadingComments: leadingComments.length > 0 ? leadingComments : undefined,
+    trailingComments: trailingComments.length > 0 ? trailingComments : undefined,
+  };
 }
 
 function parseInsertReturningClause(

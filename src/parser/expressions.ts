@@ -33,6 +33,12 @@ export function parseComparisonExpression(ctx: ComparisonParser): AST.Expression
   const ilikeExpr = tryParseLikeFamilyComparison(ctx, left, 'ILIKE');
   if (ilikeExpr) return ilikeExpr;
 
+  const rlikeExpr = tryParseLikeFamilyComparison(ctx, left, 'RLIKE');
+  if (rlikeExpr) return rlikeExpr;
+
+  const regexpExpr = tryParseLikeFamilyComparison(ctx, left, 'REGEXP');
+  if (regexpExpr) return regexpExpr;
+
   const similarExpr = tryParseSimilarToComparison(ctx, left);
   if (similarExpr) return similarExpr;
 
@@ -151,7 +157,7 @@ function tryParseInComparison(ctx: ComparisonParser, left: AST.Expression): AST.
 function tryParseLikeFamilyComparison(
   ctx: ComparisonParser,
   left: AST.Expression,
-  keyword: 'LIKE' | 'ILIKE'
+  keyword: 'LIKE' | 'ILIKE' | 'RLIKE' | 'REGEXP'
 ): AST.Expression | null {
   let negated = false;
   if (ctx.peekUpper() === 'NOT' && ctx.peekUpperAt(1) === keyword) {
@@ -171,7 +177,11 @@ function tryParseLikeFamilyComparison(
   if (keyword === 'LIKE') {
     return { type: 'like', expr: left, pattern, negated, escape };
   }
-  return { type: 'ilike', expr: left, pattern, negated, escape };
+  if (keyword === 'ILIKE') {
+    return { type: 'ilike', expr: left, pattern, negated, escape };
+  }
+  const op = negated ? `NOT ${keyword}` : keyword;
+  return { type: 'binary', left, operator: op, right: pattern };
 }
 
 function tryParseSimilarToComparison(ctx: ComparisonParser, left: AST.Expression): AST.Expression | null {
