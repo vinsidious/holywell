@@ -7,6 +7,6 @@ describe('Unicode identifier idempotency', () => {
     const once = formatSQL(sql);
     const twice = formatSQL(once);
     expect(twice).toBe(once);
-    expect(once).toContain('AS i̇sim;');
+    expect(once).toContain('AS İsim;');
   });
 });

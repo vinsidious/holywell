@@ -798,7 +798,7 @@ export interface ValuesList {
 }
 
 export interface TableElement {
-  readonly elementType: 'column' | 'primary_key' | 'constraint' | 'foreign_key';
+  readonly elementType: 'column' | 'primary_key' | 'constraint' | 'foreign_key' | 'comment';
   readonly raw: string;
   readonly name?: string;
   readonly dataType?: string;

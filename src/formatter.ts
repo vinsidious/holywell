@@ -640,7 +640,7 @@ function buildFormattedColumnParts(columns: readonly AST.ColumnExpr[], ctx: Form
   return columns.map(col => {
     let text = formatExprInSelect(col.expr, contentCol(ctx), ctx, ctx.outerColumnOffset || 0, ctx.depth);
     if (col.alias && !isRedundantAlias(col.expr, col.alias)) {
-      text += ' AS ' + formatAlias(col.alias);
+      text += ' AS ' + formatProjectionAlias(col.alias);
     }
     return {
       text,
@@ -1860,7 +1860,7 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
 
-  lines.push(rightAlign('UPDATE', dmlCtx) + ' ' + node.table);
+  lines.push(rightAlign('UPDATE', dmlCtx) + ' ' + lowerIdent(node.table));
   if (node.alias) {
     lines[lines.length - 1] += ' AS ' + formatAlias(node.alias);
   }
@@ -1882,13 +1882,14 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
       continue;
     }
 
+    const columnName = lowerIdent(item.column);
     const valueCol = i === 0
-      ? setKw.length + 1 + item.column.length + 3
-      : setContentCol + item.column.length + 3;
+      ? setKw.length + 1 + columnName.length + 3
+      : setContentCol + columnName.length + 3;
     const valExpr = item.value.type === 'subquery'
       ? formatSubqueryAtColumn(item.value, valueCol, dmlCtx.runtime)
       : formatExpr(item.value);
-    const val = item.column + ' = ' + valExpr;
+    const val = columnName + ' = ' + valExpr;
     if (i === 0) {
       lines.push(setKw + ' ' + val + comma);
     } else {
@@ -2420,7 +2421,7 @@ function normalizeRawColumnConstraint(text: string): string {
 }
 
 function wrapTextByWords(text: string, maxWidth: number): string[] {
-  const words = splitWordsPreservingQuotedLiterals(text.trim());
+  const words = packConstraintWordGroups(splitWordsPreservingQuotedLiterals(text.trim()));
   if (words.length === 0) return [];
   if (maxWidth < 8) return [words.join(' ')];
 
@@ -2438,6 +2439,33 @@ function wrapTextByWords(text: string, maxWidth: number): string[] {
   }
   lines.push(current);
   return lines;
+}
+
+function packConstraintWordGroups(words: string[]): string[] {
+  const packed: string[] = [];
+  let i = 0;
+
+  while (i < words.length) {
+    if (
+      words[i] === 'ON'
+      && (words[i + 1] === 'DELETE' || words[i + 1] === 'UPDATE')
+      && words[i + 2]
+    ) {
+      let take = 3;
+      const actionHead = words[i + 2];
+      const actionTail = words[i + 3];
+      if (actionHead === 'NO' && actionTail === 'ACTION') take = 4;
+      if (actionHead === 'SET' && (actionTail === 'NULL' || actionTail === 'DEFAULT')) take = 4;
+      packed.push(words.slice(i, i + take).join(' '));
+      i += take;
+      continue;
+    }
+
+    packed.push(words[i]);
+    i++;
+  }
+
+  return packed;
 }
 
 function splitWordsPreservingQuotedLiterals(text: string): string[] {
@@ -2523,10 +2551,24 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
   }
   maxTypeLen = Math.min(maxTypeLen, ctx.runtime.layoutPolicy.createTableTypeAlignMax);
 
+  const hasDataElementAfter = (index: number): boolean => {
+    for (let j = index + 1; j < node.elements.length; j++) {
+      if (node.elements[j].elementType !== 'comment') return true;
+    }
+    return false;
+  };
+
   for (let i = 0; i < node.elements.length; i++) {
     const elem = node.elements[i];
-    const isLast = i === node.elements.length - 1;
-    const comma = (!isLast || node.trailingComma) ? ',' : '';
+    const hasFollowingData = hasDataElementAfter(i);
+    const comma = elem.elementType !== 'comment' && (hasFollowingData || (!!node.trailingComma && !hasFollowingData))
+      ? ','
+      : '';
+
+    if (elem.elementType === 'comment') {
+      lines.push('    ' + elem.raw);
+      continue;
+    }
 
     if (elem.elementType === 'primary_key') {
       lines.push('    ' + elem.raw + comma);
@@ -2556,14 +2598,31 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
         continue;
       }
 
-      lines.push(head);
-      const continuationIndentWidth = stringDisplayWidth('    ' + name + ' ' + type + ' ');
+      const defaultContinuationWidth = stringDisplayWidth('    ' + name + ' ' + ' '.repeat(maxTypeLen) + ' ');
+      const actualContinuationWidth = stringDisplayWidth('    ' + name + ' ' + type + ' ');
+      const continuationIndentWidth = Math.min(actualContinuationWidth, defaultContinuationWidth);
       const continuationIndent = ' '.repeat(Math.max(5, continuationIndentWidth));
       const wrapped = wrapTextByWords(
         constraints,
         Math.max(20, ctx.runtime.maxLineLength - continuationIndentWidth),
       );
-      for (let j = 0; j < wrapped.length; j++) {
+
+      if (wrapped.length === 0) {
+        lines.push(head + comma);
+        continue;
+      }
+
+      const firstInline = head + ' ' + wrapped[0];
+      let wrappedStartIndex = 0;
+      if (stringDisplayWidth(firstInline) <= ctx.runtime.maxLineLength) {
+        const firstIsOnly = wrapped.length === 1;
+        lines.push(firstInline + (firstIsOnly ? comma : ''));
+        wrappedStartIndex = 1;
+      } else {
+        lines.push(head);
+      }
+
+      for (let j = wrappedStartIndex; j < wrapped.length; j++) {
         const isLastWrapped = j === wrapped.length - 1;
         lines.push(continuationIndent + wrapped[j] + (isLastWrapped ? comma : ''));
       }
@@ -3067,7 +3126,7 @@ function formatExpr(expr: AST.Expression, depth: number = 0): string {
       return out + ')';
     }
     case 'aliased':
-      return formatExpr(expr.expr, d) + ' AS ' + formatAlias(expr.alias);
+      return formatExpr(expr.expr, d) + ' AS ' + formatProjectionAlias(expr.alias);
     case 'array_subscript': {
       const lower = expr.lower ? formatExpr(expr.lower, d) : '';
       const upper = expr.upper ? formatExpr(expr.upper, d) : '';
@@ -3203,15 +3262,19 @@ function formatAlias(alias: string): string {
   return alias.toLowerCase();
 }
 
+function formatProjectionAlias(alias: string): string {
+  return alias;
+}
+
 function formatFunctionName(name: string): string {
-  const parts = name.split('.');
+  const parts = splitQualifiedIdentifier(name);
   const last = parts[parts.length - 1];
-  if (last.startsWith('"')) return lowerIdent(name);
+  if (isQuotedIdentifierPart(last)) return lowerIdent(name);
   const upperLast = last.toUpperCase();
   if (FUNCTION_KEYWORDS.has(upperLast)) {
     parts[parts.length - 1] = upperLast;
     for (let i = 0; i < parts.length - 1; i++) {
-      if (!parts[i].startsWith('"')) parts[i] = parts[i].toLowerCase();
+      if (!isQuotedIdentifierPart(parts[i]) && !parts[i].startsWith('@')) parts[i] = parts[i].toLowerCase();
     }
     return parts.join('.');
   }
@@ -3220,8 +3283,58 @@ function formatFunctionName(name: string): string {
 
 // Lowercase identifiers, preserving qualified name dots and quoted identifiers
 function lowerIdent(name: string): string {
-  return name.split('.').map(p => {
-    if (p.startsWith('"')) return p;
+  return splitQualifiedIdentifier(name).map(p => {
+    if (p.startsWith('@')) return p;
+    if (isQuotedIdentifierPart(p)) return p;
     return p.toLowerCase();
   }).join('.');
+}
+
+function isQuotedIdentifierPart(part: string): boolean {
+  return part.startsWith('"') || part.startsWith('`') || part.startsWith('[');
+}
+
+function splitQualifiedIdentifier(name: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let quote: '"' | '`' | '[' | null = null;
+
+  for (let i = 0; i < name.length; i++) {
+    const ch = name[i];
+    if (quote) {
+      current += ch;
+      if (quote === '[') {
+        if (ch === ']') {
+          if (name[i + 1] === ']') {
+            current += ']';
+            i++;
+          } else {
+            quote = null;
+          }
+        }
+      } else if (ch === quote) {
+        if (name[i + 1] === quote) {
+          current += quote;
+          i++;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+
+    if (ch === '.') {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+
+    if (ch === '"' || ch === '`' || ch === '[') {
+      quote = ch === '[' ? '[' : ch;
+    }
+    current += ch;
+  }
+
+  parts.push(current);
+  return parts;
 }
