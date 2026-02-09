@@ -556,14 +556,27 @@ export class Parser {
     if (kw === 'DELETE') return this.parseDelete(comments);
     if (kw === 'CREATE') {
       if (CREATE_KEYWORD_NORMALIZED_TYPES.has(this.peekUpperAt(1))) {
-        return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
+        const createType = this.peekUpperAt(1);
+        const allowImplicitBoundary = createType !== 'ROLE' && createType !== 'USER';
+        return this.parseKeywordNormalizedStatement(comments, 'unsupported', allowImplicitBoundary);
       }
       if (this.peekUpperAt(1) === 'SCHEMA') {
         return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
       }
       return this.parseCreate(comments);
     }
-    if (kw === 'ALTER') return this.parseAlter(comments);
+    if (kw === 'ALTER') {
+      if (this.peekUpperAt(1) === 'DEFAULT' && this.peekUpperAt(2) === 'PRIVILEGES') {
+        return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
+      }
+      if (
+        (this.peekUpperAt(1) === 'SESSION' || this.peekUpperAt(1) === 'SYSTEM' || this.peekUpperAt(1) === 'DATABASE')
+        && this.peekUpperAt(2) === 'SET'
+      ) {
+        return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
+      }
+      return this.parseAlter(comments);
+    }
     if (kw === 'DROP') return this.parseDrop(comments);
     if (kw === 'MERGE') {
       if (this.looksLikeMergeIntoValuesShorthand()) {
@@ -589,7 +602,10 @@ export class Parser {
     if (kw === 'PRAGMA' || kw === 'FLUSH' || kw === 'LOCK' || kw === 'UNLOCK') {
       return this.parseVerbatimStatement(comments, 'unsupported', true);
     }
-    if (kw === 'COMMENT' || kw === 'CALL') {
+    if (kw === 'COMMENT') {
+      return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
+    }
+    if (kw === 'CALL') {
       return this.parseVerbatimStatement(comments, 'unsupported', true);
     }
 
@@ -623,7 +639,7 @@ export class Parser {
     // Transaction control — consume tokens without the semicolon (parseStatements handles it)
     if (kw === 'BEGIN' || kw === 'COMMIT' || kw === 'ROLLBACK' || kw === 'SAVEPOINT' || kw === 'RELEASE'
         || (kw === 'START' && this.peekUpperAt(1) === 'TRANSACTION')) {
-      return this.parseVerbatimStatement(comments, 'transaction_control');
+      return this.parseKeywordNormalizedStatement(comments, 'transaction_control');
     }
 
     // Unknown statement — in strict mode, fail instead of falling back to raw
@@ -2678,7 +2694,7 @@ export class Parser {
       this.consumeComments();
     }
 
-    const whenClauses: { condition: AST.Expression; result: AST.Expression }[] = [];
+    const whenClauses: { condition: AST.Expression; result: AST.Expression; trailingComment?: string }[] = [];
     while (true) {
       this.consumeComments();
       if (this.peekUpper() !== 'WHEN') break;
@@ -2687,8 +2703,16 @@ export class Parser {
       this.expect('THEN');
       this.consumeComments();
       const result = this.parseExpression();
+      let trailingComment: string | undefined;
+      if (
+        this.peekType() === 'line_comment'
+        && this.pos > 0
+        && this.peek().line === this.tokens[this.pos - 1].line
+      ) {
+        trailingComment = this.advance().value;
+      }
       this.consumeComments();
-      whenClauses.push({ condition, result });
+      whenClauses.push({ condition, result, trailingComment });
     }
 
     let elseResult: AST.Expression | undefined;
@@ -3750,7 +3774,7 @@ export class Parser {
         if (this.isOpenGroupToken(token)) depth++;
         else if (this.isCloseGroupToken(token)) depth = Math.max(0, depth - 1);
       }
-      const item = this.tokensToSql(itemTokens);
+      const item = this.tokensToSqlPreserveCase(itemTokens);
       if (item) cols.push(item);
       if (this.check(',')) this.advance();
     }
@@ -3801,8 +3825,21 @@ export class Parser {
   private parseColumnConstraints(): AST.ColumnConstraint[] {
     const constraints: AST.ColumnConstraint[] = [];
     while (!this.check(',') && !this.check(')') && !this.isAtEnd()) {
-      if (this.peekType() === 'line_comment' || this.peekType() === 'block_comment') {
+      if (this.peekType() === 'line_comment') {
         break;
+      }
+      if (this.peekType() === 'block_comment') {
+        const inlineWithPreviousToken =
+          this.pos > 0
+          && this.peek().line === this.tokens[this.pos - 1].line;
+        if (!inlineWithPreviousToken) {
+          break;
+        }
+        constraints.push({
+          type: 'raw',
+          text: this.advance().value,
+        });
+        continue;
       }
       let name: string | undefined;
       if (this.peekUpper() === 'CONSTRAINT') {
@@ -4627,12 +4664,64 @@ export class Parser {
 
     let out = '';
     let cursor = tokens[0].position;
-    for (const token of tokens) {
+    let inRoutineSignature = false;
+    let routineParamDepth = 0;
+    let previousSignificant: Token | undefined;
+    const routineParamModes = new Set(['IN', 'OUT', 'INOUT', 'VARIADIC']);
+
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
       if (token.position > cursor) {
         out += this.source.slice(cursor, token.position);
       }
-      out += token.type === 'keyword' ? token.upper : token.value;
+      const prev = i > 0 ? tokens[i - 1] : undefined;
+      const next = i < tokens.length - 1 ? tokens[i + 1] : undefined;
+      const prevSig = previousSignificant;
+      const prevSigValue = prevSig?.value;
+      const prevSigUpper = prevSig?.upper;
+
+      if (routineParamDepth > 0) {
+        if (token.value === '(') routineParamDepth++;
+        else if (token.value === ')') routineParamDepth = Math.max(0, routineParamDepth - 1);
+      } else {
+        if (token.upper === 'FUNCTION' || token.upper === 'PROCEDURE') {
+          inRoutineSignature = true;
+        } else if (
+          inRoutineSignature
+          && (token.upper === 'RETURNS' || token.upper === 'AS' || token.upper === 'IS' || token.upper === 'BEGIN')
+        ) {
+          inRoutineSignature = false;
+        } else if (inRoutineSignature && token.value === '(') {
+          routineParamDepth = 1;
+        }
+      }
+
+      const inQualifiedIdentifier =
+        token.type === 'keyword'
+        && (prev?.value === '.' || next?.value === '.');
+      const keywordLooksLikeRoutineParamName =
+        token.type === 'keyword'
+        && routineParamDepth === 1
+        && (
+          prevSigValue === '('
+          || prevSigValue === ','
+          || prevSigUpper === 'IN'
+          || prevSigUpper === 'OUT'
+          || prevSigUpper === 'INOUT'
+          || prevSigUpper === 'VARIADIC'
+        )
+        && !routineParamModes.has(token.upper);
+
+      out += (
+        token.type === 'keyword'
+        && !inQualifiedIdentifier
+        && !keywordLooksLikeRoutineParamName
+      ) ? token.upper : token.value;
       cursor = token.position + token.value.length;
+
+      if (token.type !== 'line_comment' && token.type !== 'block_comment') {
+        previousSignificant = token;
+      }
     }
     return out.trim();
   }

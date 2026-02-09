@@ -1,6 +1,7 @@
 import * as AST from './ast';
 import { FUNCTION_KEYWORDS } from './keywords';
 import { DEFAULT_MAX_DEPTH, TERMINAL_WIDTH } from './constants';
+import { parse } from './parser';
 
 function isInExprSubquery(expr: AST.InExpr): expr is AST.InExprSubquery {
   return expr.kind === 'subquery';
@@ -337,7 +338,7 @@ function formatNode(node: AST.Node, ctx: FormatContext): string {
     case 'truncate': return formatTruncate(node, ctx);
     case 'standalone_values': return formatStandaloneValues(node, ctx);
     case 'explain': return formatExplain(node, ctx);
-    case 'raw': return node.text;
+    case 'raw': return formatRawTopLevelNode(node.text, ctx);
     case 'comment': return node.text;
     default: {
       const _exhaustive: never = node;
@@ -347,6 +348,55 @@ function formatNode(node: AST.Node, ctx: FormatContext): string {
       );
     }
   }
+}
+
+function formatRawTopLevelNode(text: string, ctx: FormatContext): string {
+  const routine = tryFormatRoutineBlock(text, ctx.runtime);
+  return routine ?? text;
+}
+
+function tryFormatRoutineBlock(text: string, runtime: FormatterRuntime): string | null {
+  const trimmed = text.trim();
+  if (
+    !/^(CREATE|ALTER)\s+(?:OR\s+REPLACE\s+)?(?:PROCEDURE|FUNCTION|TRIGGER|EVENT)\b/i.test(trimmed)
+  ) {
+    return null;
+  }
+
+  const beginMatch = /\bBEGIN\b/i.exec(trimmed);
+  const endMatch = /\bEND\b\s*;?\s*$/i.exec(trimmed);
+  if (!beginMatch || !endMatch || endMatch.index <= beginMatch.index) return null;
+
+  const headerEnd = beginMatch.index + beginMatch[0].length;
+  const header = trimmed.slice(0, headerEnd).trimEnd();
+  const body = trimmed.slice(headerEnd, endMatch.index).trim();
+  const footer = trimmed.slice(endMatch.index).trim();
+
+  if (!body) {
+    return `${header}\n${footer}`;
+  }
+
+  let formattedBody = body;
+  try {
+    const bodyNodes = parse(body, {
+      recover: true,
+      maxDepth: DEFAULT_MAX_DEPTH,
+    });
+    if (bodyNodes.length > 0) {
+      formattedBody = formatStatements(bodyNodes, {
+        maxLineLength: runtime.maxLineLength,
+      }).trim();
+    }
+  } catch {
+    return null;
+  }
+
+  const indentedBody = formattedBody
+    .split('\n')
+    .map(line => (line ? '    ' + line : line))
+    .join('\n');
+
+  return `${header}\n${indentedBody}\n${footer}`;
 }
 
 // Right-align keyword so its last char is at column (indentOffset + riverWidth - 1)
@@ -529,7 +579,10 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
     const current = node.joins[i];
     const joinHasClause = !!(current.on || current.usingClause);
     const prevHasClause = !!(prev && (prev.on || prev.usingClause));
-    const bothPlain = !!prev && prev.joinType === 'JOIN' && current.joinType === 'JOIN';
+    const currentIsFullOuter = /^FULL(?:\s+OUTER)?\s+JOIN$/i.test(current.joinType);
+    const bothPlain = !!prev
+      && prev.joinType === 'JOIN'
+      && (current.joinType === 'JOIN' || currentIsFullOuter);
     const needsBlank = fromHasSubquery || (i > 0 && (joinHasClause || prevHasClause) && !bothPlain);
     const joinLines = formatJoin(node.joins[i], ctx, needsBlank);
     lines.push(joinLines);
@@ -1006,7 +1059,8 @@ function formatCaseCompact(
     const wc = expr.whenClauses[i];
     const condCol = whenCol + 'WHEN '.length;
     const condStr = formatExprColumnAware(wc.condition, condCol, outerOffset, runtime);
-    const thenStr = formatExpr(wc.result);
+    const thenComment = wc.trailingComment ? ' ' + wc.trailingComment : '';
+    const thenStr = formatExpr(wc.result) + thenComment;
     const isMultiLine = condStr.includes('\n');
 
     if (i === 0) {
@@ -1188,6 +1242,9 @@ function formatFromClause(from: AST.FromClause, ctx: FormatContext): string {
   const baseCol = contentCol(ctx);
   const lateralOffset = from.lateral && from.table.type !== 'function_call' ? 'LATERAL '.length : 0;
   let result = formatExprAtColumn(from.table, baseCol + lateralOffset, ctx.runtime);
+  if (from.table.type === 'raw') {
+    result = wrapJoinLikeRawSource(result, baseCol + lateralOffset, ctx.runtime);
+  }
   if (from.lateral) result = 'LATERAL ' + result;
   if (from.tablesample) {
     result += ' TABLESAMPLE ' + from.tablesample.method + '(' + from.tablesample.args.map(formatExpr).join(', ') + ')';
@@ -1205,7 +1262,7 @@ function formatFromClause(from: AST.FromClause, ctx: FormatContext): string {
     }
   }
   if (from.pivotClause) {
-    result += ' ' + from.pivotClause;
+    result += '\n' + ' '.repeat(baseCol) + normalizePivotClauseText(from.pivotClause);
   }
   if (from.trailingComments && from.trailingComments.length > 0) {
     for (const comment of from.trailingComments) {
@@ -1213,6 +1270,32 @@ function formatFromClause(from: AST.FromClause, ctx: FormatContext): string {
     }
   }
   return result;
+}
+
+function wrapJoinLikeRawSource(text: string, startCol: number, runtime: FormatterRuntime): string {
+  const normalized = text.replace(/\bON\(/gi, 'ON (');
+  if (!/\bJOIN\b/i.test(normalized)) return normalized;
+  if (startCol + stringDisplayWidth(normalized) <= runtime.maxLineLength) return normalized;
+
+  const joinPad = ' '.repeat(Math.max(0, startCol));
+  const onPad = ' '.repeat(Math.max(0, startCol + 3));
+
+  let wrapped = normalized
+    .replace(
+      /\s+((?:INNER|LEFT|RIGHT|FULL|CROSS|NATURAL)(?:\s+OUTER)?\s+JOIN|JOIN)\s+/gi,
+      '\n' + joinPad + '$1 ',
+    )
+    .replace(/\s+ON\s+/gi, '\n' + onPad + 'ON ')
+    .replace(/\s+USING\s*\(/gi, '\n' + onPad + 'USING (');
+
+  if (wrapped.startsWith('\n')) wrapped = wrapped.slice(1);
+  return wrapped;
+}
+
+function normalizePivotClauseText(text: string): string {
+  return text
+    .replace(/\b(PIVOT|UNPIVOT)\s*\(/gi, '$1 (')
+    .replace(/\bIN\s*\(/gi, 'IN (');
 }
 
 // ─── JOIN ────────────────────────────────────────────────────────────
@@ -1240,16 +1323,33 @@ function formatJoin(join: AST.JoinClause, ctx: FormatContext, needsBlank: boolea
       lines.push(usingPad + 'USING (' + join.usingClause.join(', ') + ')');
     }
   } else {
-    // Qualified JOIN: indented at content column
-    const indent = ' '.repeat(cCol);
-    let tableStr = formatJoinTable(join, cCol + join.joinType.length + 1, ctx.runtime);
-    lines.push(indent + join.joinType + ' ' + tableStr);
+    const isFullOuter = /^FULL(?:\s+OUTER)?\s+JOIN$/i.test(join.joinType);
+    if (isFullOuter) {
+      const joinTail = join.joinType.replace(/^FULL\s*/i, '').trim();
+      const joinPrefix = rightAlign('FULL', ctx) + (joinTail ? ' ' + joinTail : '');
+      const tableStartCol = stringDisplayWidth(joinPrefix) + 1;
+      const tableStr = formatJoinTable(join, tableStartCol, ctx.runtime);
+      lines.push(joinPrefix + ' ' + tableStr);
+      if (join.on) {
+        const indent = ' '.repeat(cCol);
+        const cond = formatJoinOn(join.on, cCol + 3, ctx.runtime);
+        lines.push(indent + 'ON ' + cond);
+      } else if (join.usingClause && join.usingClause.length > 0) {
+        const indent = ' '.repeat(cCol);
+        lines.push(indent + 'USING (' + join.usingClause.join(', ') + ')');
+      }
+    } else {
+      // Qualified JOIN: indented at content column
+      const indent = ' '.repeat(cCol);
+      const tableStr = formatJoinTable(join, cCol + join.joinType.length + 1, ctx.runtime);
+      lines.push(indent + join.joinType + ' ' + tableStr);
 
-    if (join.on) {
-      const cond = formatJoinOn(join.on, cCol + 3, ctx.runtime); // 3 for "ON "
-      lines.push(indent + 'ON ' + cond);
-    } else if (join.usingClause && join.usingClause.length > 0) {
-      lines.push(indent + 'USING (' + join.usingClause.join(', ') + ')');
+      if (join.on) {
+        const cond = formatJoinOn(join.on, cCol + 3, ctx.runtime); // 3 for "ON "
+        lines.push(indent + 'ON ' + cond);
+      } else if (join.usingClause && join.usingClause.length > 0) {
+        lines.push(indent + 'USING (' + join.usingClause.join(', ') + ')');
+      }
     }
   }
 
@@ -1288,6 +1388,9 @@ function formatSelectOrderByLines(items: readonly AST.OrderByItem[], orderKeywor
 function formatJoinTable(join: AST.JoinClause, tableStartCol: number, runtime: FormatterRuntime): string {
   const lateralOffset = join.lateral && join.table.type !== 'function_call' ? 'LATERAL '.length : 0;
   let result = formatExprAtColumn(join.table, tableStartCol + lateralOffset, runtime);
+  if (join.table.type === 'raw') {
+    result = wrapJoinLikeRawSource(result, tableStartCol + lateralOffset, runtime);
+  }
   if (join.lateral) result = 'LATERAL ' + result;
   if (join.ordinality) result += ' WITH ORDINALITY';
   if (join.alias) {
@@ -1312,9 +1415,17 @@ function formatJoinOn(
   if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
     const left = formatJoinOn(expr.left, baseCol, runtime, depth + 1);
     const indent = ' '.repeat(baseCol);
-    return left + '\n' + indent + expr.operator + ' ' + formatJoinOn(expr.right, baseCol, runtime, depth + 1);
+    const right = formatJoinOn(expr.right, baseCol, runtime, depth + 1);
+    const leadingComment = splitLeadingLineComment(right, baseCol);
+    if (leadingComment) {
+      return left + ' ' + leadingComment.comment + '\n' + indent + expr.operator + ' ' + leadingComment.remainder;
+    }
+    return left + '\n' + indent + expr.operator + ' ' + right;
   }
-  const inline = formatExpr(expr);
+  const rawInline = formatExpr(expr);
+  const inline = expr.type === 'raw'
+    ? normalizeMultilineLogicalOperand(rawInline, baseCol)
+    : rawInline;
   if (baseCol + stringDisplayWidth(inline) <= runtime.maxLineLength) return inline;
   if (expr.type === 'binary') {
     const left = formatJoinOn(expr.left, baseCol, runtime, depth + 1);
@@ -1339,6 +1450,10 @@ function formatConditionInner(expr: AST.Expression, ctx: FormatContext): string 
     const left = formatConditionInner(expr.left, deeper);
     const opKw = rightAlign(expr.operator, ctx);
     const right = formatConditionRight(expr.right, deeper);
+    const leadingComment = splitLeadingLineComment(right, contentCol(ctx));
+    if (leadingComment) {
+      return left + ' ' + leadingComment.comment + '\n' + opKw + ' ' + leadingComment.remainder;
+    }
     return left + '\n' + opKw + ' ' + right;
   }
   return formatExprInCondition(expr, ctx);
@@ -1351,7 +1466,54 @@ function formatConditionRight(expr: AST.Expression, ctx: FormatContext): string 
   if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
     return formatConditionInner(expr, ctx);
   }
-  return formatExprInCondition(expr, ctx);
+  const formatted = formatExprInCondition(expr, ctx);
+  if (expr.type !== 'raw') return formatted;
+  return normalizeMultilineLogicalOperand(formatted, contentCol(ctx));
+}
+
+function normalizeMultilineLogicalOperand(text: string, continuationCol: number): string {
+  if (!text.includes('\n')) return text;
+  const lines = text.split('\n');
+  const first = lines[0].trimEnd();
+  const firstTrimmed = first.trimStart();
+  const continuationPad = ' '.repeat(Math.max(0, continuationCol));
+
+  const out = [first];
+  for (let i = 1; i < lines.length; i++) {
+    const rawLine = lines[i].trim();
+    if (!rawLine) {
+      out.push('');
+      continue;
+    }
+    let line = rawLine;
+    if (
+      (/^--/.test(firstTrimmed) || /^\/\*/.test(firstTrimmed))
+      && /^(AND|OR)\b/i.test(line)
+    ) {
+      line = line.replace(/^(AND|OR)\s+/i, '');
+    }
+    out.push(continuationPad + line);
+  }
+  return out.join('\n');
+}
+
+function splitLeadingLineComment(
+  text: string,
+  continuationCol: number,
+): { comment: string; remainder: string } | null {
+  const match = text.match(/^\s*(--[^\n]*)(?:\n([\s\S]*))$/);
+  if (!match) return null;
+
+  const comment = match[1];
+  let remainder = (match[2] || '').trimStart();
+  if (!remainder) return null;
+  if (/^(AND|OR)\b/i.test(remainder)) {
+    remainder = remainder.replace(/^(AND|OR)\s+/i, '');
+  }
+  return {
+    comment,
+    remainder: normalizeMultilineLogicalOperand(remainder, continuationCol),
+  };
 }
 
 function formatGroupByClause(groupBy: AST.GroupByClause, ctx: FormatContext): string {
@@ -1575,7 +1737,8 @@ function formatCaseAtColumn(expr: AST.CaseExpr, col: number, depth: number = 0):
 
   for (const wc of expr.whenClauses) {
     const thenExpr = formatCaseThenResult(wc.result, col + 'WHEN '.length + formatExpr(wc.condition).length + ' THEN '.length, depth + 1);
-    result += pad + 'WHEN ' + formatExpr(wc.condition) + ' THEN ' + thenExpr + '\n';
+    const thenComment = wc.trailingComment ? ' ' + wc.trailingComment : '';
+    result += pad + 'WHEN ' + formatExpr(wc.condition) + ' THEN ' + thenExpr + thenComment + '\n';
   }
 
   if (expr.elseResult) {
@@ -2472,6 +2635,34 @@ function packConstraintWordGroups(words: string[]): string[] {
   let i = 0;
 
   while (i < words.length) {
+    if (words[i] === 'NOT' && words[i + 1] === 'NULL') {
+      packed.push('NOT NULL');
+      i += 2;
+      continue;
+    }
+
+    if (words[i] === 'NOT' && words[i + 1] === 'DEFERRABLE') {
+      packed.push('NOT DEFERRABLE');
+      i += 2;
+      continue;
+    }
+
+    if (
+      words[i] === 'DEFERRABLE'
+      && words[i + 1] === 'INITIALLY'
+      && (words[i + 2] === 'DEFERRED' || words[i + 2] === 'IMMEDIATE')
+    ) {
+      packed.push(`DEFERRABLE INITIALLY ${words[i + 2]}`);
+      i += 3;
+      continue;
+    }
+
+    if (words[i] === 'INITIALLY' && (words[i + 1] === 'DEFERRED' || words[i + 1] === 'IMMEDIATE')) {
+      packed.push(`INITIALLY ${words[i + 1]}`);
+      i += 2;
+      continue;
+    }
+
     if (
       words[i] === 'ON'
       && (words[i + 1] === 'DELETE' || words[i + 1] === 'UPDATE')
@@ -2537,6 +2728,10 @@ function splitWordsPreservingQuotedLiterals(text: string): string[] {
 
   pushToken();
   return words;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function formatColumnConstraints(constraints: readonly AST.ColumnConstraint[] | undefined): string | undefined {
@@ -2662,7 +2857,11 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
         } else if (elem.constraintBody) {
           lines.push('        ' + elem.constraintBody);
         } else {
-          lines.push('        ' + elem.raw);
+          const pattern = new RegExp(`^CONSTRAINT\\s+${escapeRegExp(elem.constraintName)}\\b\\s*`, 'i');
+          const body = elem.raw.trim().replace(pattern, '').trim();
+          if (body) {
+            lines.push('        ' + body);
+          }
         }
       } else if (elem.constraintType === 'check' && elem.checkExpr) {
         lines.push('    CHECK(' + formatExpr(elem.checkExpr) + ')');
@@ -3295,8 +3494,15 @@ function assertNeverExpr(expr: never): never {
 
 function formatFunctionCall(expr: AST.FunctionCallExpr, depth: number = 0): string {
   const name = formatFunctionName(expr.name);
+  const functionNameParts = splitQualifiedIdentifier(expr.name);
+  const upperSimpleName = functionNameParts[functionNameParts.length - 1]?.toUpperCase() ?? '';
   const distinct = expr.distinct ? 'DISTINCT ' : '';
-  const args = expr.args.map(a => formatExpr(a, depth)).join(', ');
+  const args = expr.args.map((arg, index) => {
+    if (upperSimpleName === 'CONVERT' && index === 0) {
+      return formatConvertTypeArgument(arg, depth);
+    }
+    return formatExpr(arg, depth);
+  }).join(', ');
   let body = distinct + args;
   if (expr.orderBy && expr.orderBy.length > 0) {
     body += ' ORDER BY ' + expr.orderBy.map(formatOrderByItem).join(', ');
@@ -3315,6 +3521,21 @@ function formatFunctionCall(expr: AST.FunctionCallExpr, depth: number = 0): stri
   return out;
 }
 
+function formatConvertTypeArgument(expr: AST.Expression, depth: number = 0): string {
+  if (expr.type === 'identifier') {
+    return expr.quoted ? expr.value : expr.value.toUpperCase();
+  }
+  if (expr.type === 'function_call') {
+    const nameParts = splitQualifiedIdentifier(expr.name);
+    const typeName = nameParts.length === 1
+      ? nameParts[0].toUpperCase()
+      : lowerIdentStrict(expr.name);
+    const args = expr.args.map(arg => formatExpr(arg, depth + 1)).join(', ');
+    return `${typeName}(${args})`;
+  }
+  return formatExpr(expr, depth + 1);
+}
+
 function formatSubquerySimple(expr: AST.SubqueryExpr): string {
   const inner = formatQueryExpressionForSubquery(expr.query, {
     maxLineLength: TERMINAL_WIDTH,
@@ -3328,6 +3549,7 @@ function formatCaseSimple(expr: AST.CaseExpr, depth: number = 0): string {
   if (expr.operand) s += ' ' + formatExpr(expr.operand, depth);
   for (const wc of expr.whenClauses) {
     s += ' WHEN ' + formatExpr(wc.condition, depth) + ' THEN ' + formatExpr(wc.result, depth);
+    if (wc.trailingComment) s += ' ' + wc.trailingComment;
   }
   if (expr.elseResult) s += ' ELSE ' + formatExpr(expr.elseResult, depth);
   s += ' END';
@@ -3390,16 +3612,16 @@ function formatProjectionAlias(alias: string): string {
 function formatFunctionName(name: string): string {
   const parts = splitQualifiedIdentifier(name);
   const last = parts[parts.length - 1];
-  if (isQuotedIdentifierPart(last)) return lowerIdent(name);
+  if (isQuotedIdentifierPart(last)) return lowerIdentStrict(name);
   const upperLast = last.toUpperCase();
-  if (FUNCTION_KEYWORDS.has(upperLast)) {
+  if ((FUNCTION_KEYWORDS.has(upperLast) || upperLast === 'AGE') && parts.length === 1) {
     parts[parts.length - 1] = upperLast;
     for (let i = 0; i < parts.length - 1; i++) {
       if (!isQuotedIdentifierPart(parts[i]) && !parts[i].startsWith('@')) parts[i] = parts[i].toLowerCase();
     }
     return parts.join('.');
   }
-  return lowerIdent(name);
+  return lowerIdentStrict(name);
 }
 
 // Lowercase identifiers, preserving qualified name dots and quoted identifiers
@@ -3407,8 +3629,21 @@ function lowerIdent(name: string): string {
   return splitQualifiedIdentifier(name).map(p => {
     if (p.startsWith('@')) return p;
     if (isQuotedIdentifierPart(p)) return p;
+    if (isMixedCaseIdentifierPart(p)) return p;
     return p.toLowerCase();
   }).join('.');
+}
+
+function lowerIdentStrict(name: string): string {
+  return splitQualifiedIdentifier(name).map(p => {
+    if (p.startsWith('@')) return p;
+    if (isQuotedIdentifierPart(p)) return p;
+    return p.toLowerCase();
+  }).join('.');
+}
+
+function isMixedCaseIdentifierPart(part: string): boolean {
+  return /[A-Z]/.test(part) && /[a-z]/.test(part);
 }
 
 function isQuotedIdentifierPart(part: string): boolean {

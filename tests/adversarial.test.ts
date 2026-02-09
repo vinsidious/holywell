@@ -118,7 +118,7 @@ describe('Identifier edge cases', () => {
 
   it('handles mixed case identifiers', () => {
     const result = formatSQL('SELECT CamelCase, "MixedCase" FROM t;');
-    expect(result).toContain('camelcase');
+    expect(result).toContain('CamelCase');
     expect(result).toContain('"MixedCase"');
   });
 

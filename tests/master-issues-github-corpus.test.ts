@@ -64,7 +64,7 @@ describe('GitHub corpus issue regressions (2026-02-08)', () => {
     const out = formatSQL('CREATE PROCEDURE p() BEGIN DELETE FROM t WHERE id = 1; UPDATE t SET x = 2; END;');
     const createPos = out.indexOf('CREATE PROCEDURE');
     const beginPos = out.indexOf('BEGIN', createPos);
-    const deletePos = out.indexOf('DELETE FROM', beginPos);
+    const deletePos = out.indexOf('DELETE', beginPos);
     const updatePos = out.indexOf('UPDATE t', deletePos);
     const endPos = out.indexOf('END', updatePos);
 

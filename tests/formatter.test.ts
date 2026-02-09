@@ -401,7 +401,7 @@ describe('Category 12: Edge Cases and Stress Tests', () => {
       ``],
     ['12.6 — Mixed case keywords in input',
       `Select First_Name As FN From Staff Where Department = 'Sales' Order By First_Name Asc;`,
-      `SELECT first_name AS FN\n  FROM staff\n WHERE department = 'Sales'\n ORDER BY first_name ASC;`],
+      `SELECT First_Name AS FN\n  FROM Staff\n WHERE Department = 'Sales'\n ORDER BY First_Name ASC;`],
     ['12.7 — String literals containing keywords',
       `select message from logs where message like '%SELECT FROM%' and level = 'ERROR';`,
       `SELECT message\n  FROM logs\n WHERE message LIKE '%SELECT FROM%'\n   AND level = 'ERROR';`],
@@ -1853,8 +1853,8 @@ describe('mixed new features end-to-end', () => {
   it('formats mixed quoted/unquoted identifiers', () => {
     const sql = `SELECT MyCol, "MyCol" FROM t;`;
     const out = formatSQL(sql);
-    // Unquoted identifiers should be lowercased
-    expect(out).toContain('mycol');
+    // Mixed-case unquoted identifiers should preserve their original case.
+    expect(out).toContain('MyCol');
     // Quoted identifiers should preserve case
     expect(out).toContain('"MyCol"');
   });

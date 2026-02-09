@@ -18,4 +18,13 @@ describe('transaction control statements', () => {
     expect(out).toContain('ROLLBACK TO SAVEPOINT sp1;');
     expect(out).toContain('RELEASE SAVEPOINT sp1;');
   });
+
+  it('uppercases lowercase begin and commit statements', () => {
+    const out = formatSQL('begin; insert into t values (1); commit;');
+
+    expect(out).toContain('BEGIN;');
+    expect(out).toContain('COMMIT;');
+    expect(out).not.toContain('begin;');
+    expect(out).not.toContain('commit;');
+  });
 });

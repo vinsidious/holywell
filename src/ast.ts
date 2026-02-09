@@ -487,7 +487,11 @@ export interface SubqueryExpr {
 export interface CaseExpr {
   readonly type: 'case';
   readonly operand?: Expression;  // for simple CASE
-  readonly whenClauses: readonly { readonly condition: Expression; readonly result: Expression }[];
+  readonly whenClauses: readonly {
+    readonly condition: Expression;
+    readonly result: Expression;
+    readonly trailingComment?: string;
+  }[];
   readonly elseResult?: Expression;
 }
 

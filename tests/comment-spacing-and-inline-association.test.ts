@@ -29,5 +29,17 @@ CREATE TABLE t (id INT);`;
     expect(out).toContain('b TEXT -- trailing comment');
     expect(out).not.toContain('b TEXT\n    -- trailing comment');
   });
-});
 
+  it('keeps boolean operators singular when a line comment ends the previous predicate', () => {
+    const sql = `SELECT *
+FROM t
+WHERE ReadingOrder = 'ULD_AF' -- Only Return Values for this ReadingOrder
+AND [Read] BETWEEN DATEADD(MONTH,-6,GETDATE()) AND GETDATE();`;
+
+    const out = formatSQL(sql);
+    expect(out).toContain("WHERE ReadingOrder = 'ULD_AF' -- Only Return Values for this ReadingOrder");
+    expect(out).toContain('AND [Read] BETWEEN DATEADD(MONTH, - 6, GETDATE()) AND GETDATE()');
+    expect(out).not.toMatch(/\n\s*AND\s*--[^\n]*\nAND\b/);
+    expect(out).not.toMatch(/\n\s*OR\s*--[^\n]*\nOR\b/);
+  });
+});
