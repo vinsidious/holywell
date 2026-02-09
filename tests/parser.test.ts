@@ -450,7 +450,7 @@ DROP FUNCTION IF EXISTS public.f();
     expect(nodes[1].type).toBe('drop_table');
   });
 
-  it('treats SQL Server bracket-identifier statements as unsupported without recovery warnings', () => {
+  it('parses SQL Server bracket-identifier CREATE VIEW without recovery warnings', () => {
     const recovered: string[] = [];
     const nodes = parse(`
 CREATE VIEW [dbo].[vw_demo] AS
@@ -462,9 +462,9 @@ SELECT 1 AS id;
 
     expect(recovered).toHaveLength(0);
     expect(nodes).toHaveLength(1);
-    expect(nodes[0].type).toBe('raw');
-    if (nodes[0].type !== 'raw') return;
-    expect(nodes[0].reason).toBe('unsupported');
+    expect(nodes[0].type).toBe('create_view');
+    if (nodes[0].type !== 'create_view') return;
+    expect(nodes[0].name).toBe('[dbo].[vw_demo]');
   });
 
   it('treats T-SQL variable assignment statements as unsupported without recovery warnings', () => {
