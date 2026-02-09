@@ -133,6 +133,7 @@ export interface UpdateStatement {
   readonly type: 'update';
   readonly table: string;
   readonly alias?: string;
+  readonly joinSources?: readonly JoinClause[];
   readonly setItems: readonly SetItem[];
   readonly from?: readonly FromClause[];
   readonly fromJoins?: readonly JoinClause[];
@@ -417,6 +418,7 @@ export interface CommentNode {
   readonly style: 'line' | 'block';
   readonly text: string;
   readonly blankLinesBefore?: number;  // number of blank lines preceding this comment (0 = none)
+  readonly blankLinesAfter?: number;   // number of blank lines before the next non-comment token
 }
 
 // Expressions
@@ -715,7 +717,8 @@ export type RawReason =
   | 'unsupported'
   | 'comment_only'
   | 'verbatim'
-  | 'transaction_control';
+  | 'transaction_control'
+  | 'trailing_semicolon_comment';
 
 // Column expression with optional alias and comment
 export interface ColumnExpr {
@@ -804,6 +807,7 @@ export interface TableElement {
   readonly dataType?: string;
   readonly constraints?: string;
   readonly columnConstraints?: readonly ColumnConstraint[];
+  readonly trailingComment?: string;
   readonly constraintName?: string;
   readonly constraintBody?: string;
   readonly constraintType?: 'check' | 'raw';

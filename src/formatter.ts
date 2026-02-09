@@ -149,6 +149,15 @@ export function formatStatements(nodes: AST.Node[], options: FormatterOptions = 
 
   const parts: string[] = [];
   for (const node of nodes) {
+    if (node.type === 'raw' && node.reason === 'trailing_semicolon_comment') {
+      if (parts.length === 0) {
+        parts.push(node.text);
+      } else {
+        const previous = parts[parts.length - 1].trimEnd();
+        parts[parts.length - 1] = previous + ' ' + node.text;
+      }
+      continue;
+    }
     try {
       parts.push(formatNode(node, {
         indentOffset: 0,
@@ -211,6 +220,7 @@ function deriveRiverWidth(node: AST.Node): number {
     }
     case 'update': {
       let width = Math.max('UPDATE'.length, 'SET'.length);
+      if (node.joinSources && node.joinSources.length > 0) width = Math.max(width, 'JOIN'.length);
       if (node.from && node.from.length > 0) width = Math.max(width, 'FROM'.length);
       if (node.where) width = Math.max(width, 'WHERE'.length);
       if (node.returning && node.returning.length > 0) {
@@ -1865,6 +1875,22 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
     lines[lines.length - 1] += ' AS ' + formatAlias(node.alias);
   }
 
+  if (node.joinSources && node.joinSources.length > 0) {
+    const hasSubqueryJoins = node.joinSources.some(j => j.table.type === 'subquery');
+    for (let i = 0; i < node.joinSources.length; i++) {
+      const prev = i > 0 ? node.joinSources[i - 1] : undefined;
+      const current = node.joinSources[i];
+      const joinHasClause = !!(current.on || current.usingClause);
+      const prevHasClause = !!(prev && (prev.on || prev.usingClause));
+      const bothPlain = !!prev && prev.joinType === 'JOIN' && current.joinType === 'JOIN';
+      const needsBlank = i > 0 && (joinHasClause || prevHasClause) && !bothPlain;
+      lines.push(formatJoin(current, dmlCtx, needsBlank));
+    }
+    if (hasSubqueryJoins && node.joinSources.length > 1) {
+      lines.push('');
+    }
+  }
+
   // SET right-aligned to river
   const setKw = rightAlign('SET', dmlCtx);
   const setContentCol = contentCol(dmlCtx);
@@ -1888,7 +1914,7 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
       : setContentCol + columnName.length + 3;
     const valExpr = item.value.type === 'subquery'
       ? formatSubqueryAtColumn(item.value, valueCol, dmlCtx.runtime)
-      : formatExpr(item.value);
+      : formatExprAtColumn(item.value, valueCol, dmlCtx.runtime);
     const val = columnName + ' = ' + valExpr;
     if (i === 0) {
       lines.push(setKw + ' ' + val + comma);
@@ -2579,9 +2605,10 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       const constraints = formatColumnConstraints(elem.columnConstraints) || elem.constraints;
       const headRaw = '    ' + name + ' ' + type;
       const head = headRaw.trimEnd();
+      const trailingComment = elem.trailingComment ? ' ' + elem.trailingComment : '';
 
       if (!constraints) {
-        lines.push(head + comma);
+        lines.push(head + trailingComment + comma);
         continue;
       }
 
@@ -2594,7 +2621,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       }
       const inline = inlineRaw.trimEnd();
       if (stringDisplayWidth(inline) <= ctx.runtime.maxLineLength) {
-        lines.push(inline + comma);
+        lines.push(inline + trailingComment + comma);
         continue;
       }
 
@@ -2612,11 +2639,11 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
         continue;
       }
 
-      const firstInline = head + ' ' + wrapped[0];
+      const firstInline = headRaw + ' ' + wrapped[0];
       let wrappedStartIndex = 0;
       if (stringDisplayWidth(firstInline) <= ctx.runtime.maxLineLength) {
         const firstIsOnly = wrapped.length === 1;
-        lines.push(firstInline + (firstIsOnly ? comma : ''));
+        lines.push(firstInline.trimEnd() + (firstIsOnly ? trailingComment + comma : ''));
         wrappedStartIndex = 1;
       } else {
         lines.push(head);
@@ -2624,7 +2651,8 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
 
       for (let j = wrappedStartIndex; j < wrapped.length; j++) {
         const isLastWrapped = j === wrapped.length - 1;
-        lines.push(continuationIndent + wrapped[j] + (isLastWrapped ? comma : ''));
+        const maybeComment = isLastWrapped ? trailingComment : '';
+        lines.push(continuationIndent + wrapped[j] + maybeComment + (isLastWrapped ? comma : ''));
       }
     } else if (elem.elementType === 'constraint') {
       if (elem.constraintName) {
@@ -2651,7 +2679,10 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       } else {
         lines.push('    FOREIGN KEY (' + elem.fkColumns + ')');
       }
-      let referenceLine = '        REFERENCES ' + elem.fkRefTable + ' (' + elem.fkRefColumns + ')';
+      let referenceLine = '        REFERENCES ' + elem.fkRefTable;
+      if (elem.fkRefColumns) {
+        referenceLine += ' (' + elem.fkRefColumns + ')';
+      }
       const actionLines = elem.fkActions
         ? elem.fkActions.split(/\n/).map(action => action.trim()).filter(Boolean)
         : [];
@@ -2667,9 +2698,47 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
     }
   }
 
-  const options = node.tableOptions ? ' ' + node.tableOptions : '';
+  const options = node.tableOptions ? formatCreateTableOptions(node.tableOptions) : '';
   lines.push(')' + options + ';');
   return lines.join('\n');
+}
+
+function formatCreateTableOptions(options: string): string {
+  let normalized = options
+    .replace(/\bWITH\(/gi, 'WITH (')
+    .replace(/\bORDER\s+BY\(/gi, 'ORDER BY (');
+
+  if (!/\bENGINE\b/i.test(normalized)) {
+    return ' ' + normalized;
+  }
+
+  const clausePatterns = [
+    /\bPARTITION\s+BY\b/i,
+    /\bORDER\s+BY\b/i,
+    /\bPRIMARY\s+KEY\b/i,
+    /\bSAMPLE\s+BY\b/i,
+    /\bSETTINGS\b/i,
+  ];
+  const matches = clausePatterns
+    .map(pattern => ({ pattern, index: normalized.search(pattern) }))
+    .filter(item => item.index >= 0)
+    .sort((a, b) => a.index - b.index);
+
+  if (matches.length === 0) {
+    return ' ' + normalized;
+  }
+
+  const firstBreak = matches[0].index;
+  const head = normalized.slice(0, firstBreak).trimEnd();
+  const tail = normalized.slice(firstBreak).trim();
+  const tailLines = tail
+    .replace(/\s+(PARTITION\s+BY|ORDER\s+BY|PRIMARY\s+KEY|SAMPLE\s+BY|SETTINGS)\b/gi, '\n$1')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => '  ' + line);
+
+  return ' ' + head + '\n' + tailLines.join('\n');
 }
 
 // ─── ALTER TABLE ─────────────────────────────────────────────────────
@@ -2691,7 +2760,12 @@ function formatAlterTable(node: AST.AlterTableStatement, ctx: FormatContext): st
   lines.push(header);
   for (let i = 0; i < actions.length; i++) {
     const comma = i < actions.length - 1 ? ',' : ';';
-    lines.push(' '.repeat(8) + actions[i] + comma);
+    const actionLines = actions[i].split('\n');
+    lines.push(' '.repeat(8) + actionLines[0]);
+    for (let j = 1; j < actionLines.length; j++) {
+      lines.push(' '.repeat(8) + actionLines[j]);
+    }
+    lines[lines.length - 1] += comma;
   }
 
   return lines.join('\n');
@@ -2731,12 +2805,55 @@ function formatAlterAction(action: AST.AlterAction): string {
     case 'set_tablespace':
       return `SET TABLESPACE ${action.tablespace}`;
     case 'raw':
-      return action.text;
+      return formatRawAlterAction(action.text);
     default: {
       const _exhaustive: never = action;
       throw new Error(`Unknown alter action type: ${(_exhaustive as { type?: string }).type}`);
     }
   }
+}
+
+function formatRawAlterAction(text: string): string {
+  const normalized = normalizeConstraintSpacing(text)
+    .replace(/\bCHARACTER\s+SET\b/gi, 'CHARACTER SET')
+    .trim();
+
+  const fkMatch = normalized.match(
+    /^ADD\s+CONSTRAINT\s+(\S+)\s+FOREIGN\s+KEY\s*\(([^)]*)\)\s+REFERENCES\s+([^\s(]+)(?:\s*\(([^)]*)\))?(.*)$/i
+  );
+  if (fkMatch) {
+    const [, name, fkCols, refTable, refCols, tail] = fkMatch;
+    const lines: string[] = [];
+    lines.push(`ADD CONSTRAINT ${name}`);
+    lines.push(`FOREIGN KEY (${fkCols.trim()})`);
+    let ref = `REFERENCES ${refTable}`;
+    if (refCols && refCols.trim()) ref += ` (${refCols.trim()})`;
+    lines.push(ref);
+
+    const actionTail = tail.trim();
+    if (actionTail) {
+      const packed = packConstraintWordGroups(splitWordsPreservingQuotedLiterals(actionTail));
+      for (const segment of packed) {
+        lines.push(segment);
+      }
+    }
+    return lines.join('\n');
+  }
+
+  return normalized;
+}
+
+function normalizeConstraintSpacing(text: string): string {
+  return text
+    .replace(/\bPRIMARY\s+KEY\s*\(/gi, 'PRIMARY KEY (')
+    .replace(/\bFOREIGN\s+KEY\s*\(/gi, 'FOREIGN KEY (')
+    .replace(/\bUNIQUE\s+KEY\s*\(/gi, 'UNIQUE KEY (')
+    .replace(/\bUNIQUE\s+INDEX\s*\(/gi, 'UNIQUE INDEX (')
+    .replace(/\bKEY\s*\(/gi, 'KEY (')
+    .replace(/\bINDEX\s*\(/gi, 'INDEX (')
+    .replace(/\bKEY\s+([^\s(]+)\s*\(/gi, 'KEY $1 (')
+    .replace(/\bINDEX\s+([^\s(]+)\s*\(/gi, 'INDEX $1 (')
+    .replace(/\bREFERENCES\s+([^\s(]+)\s*\(/gi, 'REFERENCES $1 (');
 }
 
 // ─── DROP TABLE ──────────────────────────────────────────────────────
@@ -2963,6 +3080,10 @@ function emitComments(comments: readonly AST.CommentNode[], lines: string[]): vo
       lines.push('');
     }
     lines.push(c.text);
+    const blanksAfter = c.blankLinesAfter || 0;
+    for (let i = 0; i < blanksAfter; i++) {
+      lines.push('');
+    }
   }
 }
 

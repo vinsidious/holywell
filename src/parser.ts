@@ -55,6 +55,14 @@ const IMPLICIT_STATEMENT_STARTERS = new Set([
   'GO', 'ACCEPT', 'DESCRIBE', 'REM', 'DEFINE', 'PROMPT', 'SP_RENAME',
 ]);
 
+const CREATE_KEYWORD_NORMALIZED_TYPES = new Set([
+  'DATABASE',
+  'ROLE',
+  'USER',
+  'PUBLICATION',
+  'EXTENSION',
+]);
+
 // Lookup table for multi-word SQL type names.
 // Key = last consumed word, value = set of valid next words.
 const TYPE_CONTINUATIONS: Record<string, Set<string>> = {
@@ -349,7 +357,49 @@ export class Parser {
         ) {
           throw new ParseError(';', this.peek());
         }
-        if (stmt) stmts.push(stmt);
+        if (stmt) {
+          stmts.push(stmt);
+          if (stmt.type !== 'raw' && this.check(';')) {
+            const semi = this.advance();
+            if (this.peekType() === 'line_comment' && this.peek().line === semi.line) {
+              const trailing = this.advance();
+              stmts.push({
+                type: 'raw',
+                text: trailing.value,
+                reason: 'trailing_semicolon_comment',
+              });
+            } else if (this.peek().value === '\\' && this.peek().line === semi.line) {
+              const inlineMeta = this.parseSingleLineStatement([], 'trailing_semicolon_comment');
+              if (inlineMeta) stmts.push(inlineMeta);
+            } else if (
+              this.source !== undefined
+              && this.peek().line === semi.line
+              && (
+                this.source[this.peek().position] === '\\'
+                || (this.peek().position > 0 && this.source[this.peek().position - 1] === '\\')
+              )
+            ) {
+              const startPos = this.source[this.peek().position] === '\\'
+                ? this.peek().position
+                : this.peek().position - 1;
+              const metaLine = this.peek().line;
+              let endPos = startPos + 1;
+              while (!this.isAtEnd() && this.peek().line === metaLine) {
+                const token = this.advance();
+                const startsWithBackslash = this.source[token.position] === '\\' ? 1 : 0;
+                endPos = token.position + token.value.length + startsWithBackslash;
+              }
+              const metaText = this.source.slice(startPos, endPos).trim();
+              if (metaText) {
+                stmts.push({
+                  type: 'raw',
+                  text: metaText,
+                  reason: 'trailing_semicolon_comment',
+                });
+              }
+            }
+          }
+        }
       } catch (err) {
         if (!this.recover) throw err;
         if (!(err instanceof ParseError)) throw err;
@@ -490,7 +540,7 @@ export class Parser {
       return this.parseStatementUntilEndBlock(comments, 'unsupported');
     }
     if (kw === 'IF' && this.hasKeywordAhead('BEGIN') && this.hasKeywordAhead('END')) {
-      return this.parseStatementUntilEndBlock(comments, 'unsupported');
+      return this.parseStatementUntilEndBlock(comments, 'unsupported', { normalizeKeywords: true });
     }
 
     if (kw === 'WITH') return this.parseCTE(comments);
@@ -505,6 +555,9 @@ export class Parser {
     if (kw === 'UPDATE') return this.parseUpdate(comments);
     if (kw === 'DELETE') return this.parseDelete(comments);
     if (kw === 'CREATE') {
+      if (CREATE_KEYWORD_NORMALIZED_TYPES.has(this.peekUpperAt(1))) {
+        return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
+      }
       if (this.peekUpperAt(1) === 'SCHEMA') {
         return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
       }
@@ -3091,6 +3144,7 @@ export class Parser {
       collectTokensUntilTopLevelKeyword: (stopKeywords: Set<string>) =>
         this.collectTokensUntilTopLevelKeyword(stopKeywords),
       tokensToSql: (tokens: Token[]) => this.tokensToSql(tokens),
+      tokensToSqlPreserveCase: (tokens: Token[]) => this.tokensToSqlPreserveCase(tokens),
       consumeTokensUntilActionBoundary: () => this.consumeTokensUntilActionBoundary(),
       hasImplicitStatementBoundary: () => this.hasImplicitStatementBoundary(),
     };
@@ -3117,7 +3171,14 @@ export class Parser {
 
   // CREATE TABLE | CREATE INDEX | CREATE VIEW
   private parseCreate(comments: AST.CommentNode[]): AST.Node {
-    return parseCreateStatement(this.createDdlContext(), comments);
+    const stmt = parseCreateStatement(this.createDdlContext(), comments);
+    if (stmt.type !== 'raw' || comments.length === 0) return stmt;
+    const commentPrefix = this.commentsToRaw(comments).text;
+    if (!commentPrefix || stmt.text.startsWith(commentPrefix)) return stmt;
+    return {
+      ...stmt,
+      text: `${commentPrefix}\n${stmt.text}`.trim(),
+    };
   }
 
   private parseMerge(comments: AST.CommentNode[]): AST.MergeStatement {
@@ -3383,7 +3444,19 @@ export class Parser {
       }
 
       const elem = this.parseTableElement();
-      elements.push(elem);
+      let elementWithComment = elem;
+      if (
+        this.peekType() === 'line_comment'
+        && this.pos > 0
+        && this.peek().line === this.tokens[this.pos - 1].line
+      ) {
+        const trailing = this.advance();
+        elementWithComment = {
+          ...elem,
+          trailingComment: trailing.value,
+        };
+      }
+      elements.push(elementWithComment);
       if (this.check(',')) {
         this.advance();
         if (this.check(')')) {
@@ -3407,6 +3480,19 @@ export class Parser {
 
     if (this.peekUpper() === 'UNIQUE') {
       return this.parseUniqueTableElement();
+    }
+
+    if (
+      this.peekUpper() === 'KEY'
+      || this.peekUpper() === 'INDEX'
+      || this.peekUpper() === 'FULLTEXT'
+      || this.peekUpper() === 'SPATIAL'
+    ) {
+      return this.parseKeyLikeTableElement();
+    }
+
+    if (this.peekUpper() === 'EXCLUDE') {
+      return this.parseExcludeTableElement();
     }
 
     if (this.peekUpper() === 'CHECK') {
@@ -3547,6 +3633,68 @@ export class Parser {
     };
   }
 
+  private parseKeyLikeTableElement(constraintName?: string): AST.TableElement {
+    const prefixParts: string[] = [];
+    if (this.peekUpper() === 'FULLTEXT' || this.peekUpper() === 'SPATIAL') {
+      prefixParts.push(this.advance().upper);
+    }
+
+    if (this.peekUpper() === 'KEY' || this.peekUpper() === 'INDEX') {
+      prefixParts.push(this.advance().upper);
+    } else if (prefixParts.length > 0) {
+      this.expect('KEY');
+      prefixParts.push('KEY');
+    } else {
+      throw new ParseError('KEY or INDEX', this.peek());
+    }
+
+    let keyName: string | undefined;
+    if (!this.check('(') && (this.peekType() === 'identifier' || this.peekType() === 'keyword')) {
+      keyName = this.advance().value;
+    }
+
+    const columns = this.parseTableElementColumnList();
+    const tail = this.normalizeTableElementTailText(this.consumeTableElementTailText());
+    const cols = columns.length > 0 ? ` (${columns.join(', ')})` : '';
+    const body = `${prefixParts.join(' ')}${keyName ? ' ' + keyName : ''}${cols}${tail ? ' ' + tail : ''}`;
+
+    if (constraintName) {
+      return {
+        elementType: 'constraint',
+        raw: `CONSTRAINT ${constraintName} ${body}`,
+        constraintName,
+        constraintBody: body,
+        constraintType: 'raw',
+      };
+    }
+
+    return {
+      elementType: 'constraint',
+      raw: body,
+      constraintBody: body,
+      constraintType: 'raw',
+    };
+  }
+
+  private parseExcludeTableElement(): AST.TableElement {
+    const tokens: Token[] = [];
+    let depth = 0;
+    while (!this.isAtEnd()) {
+      if (depth === 0 && (this.check(',') || this.check(')'))) break;
+      const token = this.advance();
+      tokens.push(token);
+      if (this.isOpenGroupToken(token)) depth++;
+      else if (this.isCloseGroupToken(token)) depth = Math.max(0, depth - 1);
+    }
+    const body = this.tokensToSql(tokens);
+    return {
+      elementType: 'constraint',
+      raw: body,
+      constraintBody: body,
+      constraintType: 'raw',
+    };
+  }
+
   private parseForeignKeyTableElement(constraintName?: string): AST.TableElement {
     this.expect('FOREIGN');
     this.expect('KEY');
@@ -3575,14 +3723,15 @@ export class Parser {
     const actionText = actions.join('\n        ');
 
     const prefix = constraintName ? `CONSTRAINT ${constraintName} ` : '';
-    const raw = `${prefix}FOREIGN KEY (${fkCols.join(', ')}) REFERENCES ${refTable} (${refCols.join(', ')})${actionText ? ' ' + actionText : ''}`;
+    const refColText = refCols.length > 0 ? ` (${refCols.join(', ')})` : '';
+    const raw = `${prefix}FOREIGN KEY (${fkCols.join(', ')}) REFERENCES ${refTable}${refColText}${actionText ? ' ' + actionText : ''}`;
     return {
       elementType: 'foreign_key',
       raw,
       constraintName,
       fkColumns: fkCols.join(', '),
       fkRefTable: refTable,
-      fkRefColumns: refCols.join(', '),
+      fkRefColumns: refCols.length > 0 ? refCols.join(', ') : undefined,
       fkActions: actionText || undefined,
     };
   }
@@ -3675,7 +3824,36 @@ export class Parser {
       }
       if (kw === 'DEFAULT') {
         this.advance();
-        constraints.push({ type: 'default', name, expr: this.parseExpression() });
+        if (this.peekUpper() === 'NEXT' && this.peekUpperAt(1) === 'VALUE' && this.peekUpperAt(2) === 'FOR') {
+          this.advance();
+          this.advance();
+          this.advance();
+          const seqParts: string[] = [];
+          if (
+            this.peekType() === 'identifier'
+            || this.peekType() === 'keyword'
+            || this.peekType() === 'string'
+          ) {
+            seqParts.push(this.advance().value);
+            while (this.check('.')) {
+              this.advance();
+              seqParts.push(this.advance().value);
+            }
+          } else {
+            throw new ParseError('sequence name after NEXT VALUE FOR', this.peek());
+          }
+          constraints.push({
+            type: 'default',
+            name,
+            expr: {
+              type: 'raw',
+              text: `NEXT VALUE FOR ${seqParts.join('.')}`,
+              reason: 'verbatim',
+            },
+          });
+        } else {
+          constraints.push({ type: 'default', name, expr: this.parseExpression() });
+        }
         continue;
       }
       if (kw === 'CHECK') {
@@ -4510,6 +4688,13 @@ export class Parser {
         text: t.value,
         blankLinesBefore: this.blankLinesBeforeToken.get(t.position) || 0,
       });
+    }
+    if (comments.length > 0 && !this.isAtEnd()) {
+      const blanksAfter = this.blankLinesBeforeToken.get(this.peek().position) || 0;
+      if (blanksAfter > 0) {
+        const last = comments[comments.length - 1];
+        comments[comments.length - 1] = { ...last, blankLinesAfter: blanksAfter };
+      }
     }
     return comments;
   }
