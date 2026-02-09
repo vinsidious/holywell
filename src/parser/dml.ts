@@ -199,6 +199,15 @@ export function parseUpdateStatement(
   }
   const alias = parseOptionalTableAlias(ctx, new Set(['SET']));
 
+  let joinSources: AST.JoinClause[] | undefined;
+  if (ctx.isJoinKeyword()) {
+    const joins: AST.JoinClause[] = [];
+    while (ctx.isJoinKeyword()) {
+      joins.push(ctx.parseJoin());
+    }
+    if (joins.length > 0) joinSources = joins;
+  }
+
   ctx.expect('SET');
   const setItems: AST.SetItem[] = [];
   setItems.push(parseSetItem(ctx));
@@ -231,7 +240,18 @@ export function parseUpdateStatement(
 
   const returning = parseOptionalReturning(ctx);
 
-  return { type: 'update', table, alias, setItems, from, fromJoins, where, returning, leadingComments: comments };
+  return {
+    type: 'update',
+    table,
+    alias,
+    joinSources,
+    setItems,
+    from,
+    fromJoins,
+    where,
+    returning,
+    leadingComments: comments,
+  };
 }
 
 export function parseSetItem(ctx: DmlParser): AST.SetItem {
