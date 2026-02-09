@@ -21,6 +21,7 @@ export interface DdlParser {
   parseStatement(): AST.Node | null;
   collectTokensUntilTopLevelKeyword(stopKeywords: Set<string>): Token[];
   tokensToSql(tokens: Token[]): string;
+  tokensToSqlPreserveCase(tokens: Token[]): string;
   consumeTokensUntilActionBoundary(): Token[];
   hasImplicitStatementBoundary?: () => boolean;
 }
@@ -58,6 +59,37 @@ export function parseCreateStatement(ctx: DdlParser, comments: AST.CommentNode[]
   const raw = ctx.parseRawStatement('unsupported');
   if (!raw) throw ctx.parseError('CREATE statement', ctx.peek());
   return raw;
+}
+
+const CREATE_TABLE_OPTION_STARTERS = new Set([
+  'WITH',
+  'ENGINE',
+  'PARTITION',
+  'ORDER',
+  'SETTINGS',
+  'COMMENT',
+  'COLLATE',
+  'ROW_FORMAT',
+  'AUTO_INCREMENT',
+  'CHARSET',
+  'CHARACTER',
+  'DEFAULT',
+]);
+
+function isCreateTableOptionStart(ctx: DdlParser): boolean {
+  const kw = ctx.peekUpper();
+  if (!CREATE_TABLE_OPTION_STARTERS.has(kw)) return false;
+  if (kw === 'WITH') {
+    return ctx.check('WITH') && ctx.peekUpperAt(1) === '(';
+  }
+  if (kw === 'CHARACTER') {
+    return ctx.peekUpperAt(1) === 'SET';
+  }
+  if (kw === 'DEFAULT') {
+    const next = ctx.peekUpperAt(1);
+    return next === 'CHARSET' || next === 'CHARACTER' || next === 'COLLATE';
+  }
+  return true;
 }
 
 function parseCreateTableStatement(
@@ -126,7 +158,7 @@ function parseCreateTableStatement(
   if (!ctx.isAtEnd() && !ctx.check(';')) {
     const optionTokens: Token[] = [];
     while (!ctx.isAtEnd() && !ctx.check(';')) {
-      if (ctx.hasImplicitStatementBoundary?.()) break;
+      if (ctx.hasImplicitStatementBoundary?.() && !isCreateTableOptionStart(ctx)) break;
       optionTokens.push(ctx.advance());
     }
     tableOptions = ctx.tokensToSql(optionTokens) || undefined;
@@ -222,6 +254,7 @@ function parseCreateIndexStatement(
   if (!ctx.isAtEnd() && !ctx.check(';')) {
     const optionTokens: Token[] = [];
     while (!ctx.isAtEnd() && !ctx.check(';')) {
+      if (ctx.hasImplicitStatementBoundary?.()) break;
       optionTokens.push(ctx.advance());
     }
     options = ctx.tokensToSql(optionTokens) || undefined;
@@ -520,15 +553,18 @@ export function parseAlterStatement(ctx: DdlParser, comments: AST.CommentNode[])
   ]);
   while (!ctx.isAtEnd() && !ctx.check(';')) {
     const upper = ctx.peekUpper();
+    const previousUpper = objectNameTokens.length > 0 ? objectNameTokens[objectNameTokens.length - 1].upper : '';
+    const startsAction = actionStarters.has(upper) || (objectType === 'DATABASE' && upper === 'CHARACTER');
     if (
       objectNameTokens.length > 0
-      && actionStarters.has(upper)
+      && startsAction
+      && !(objectType === 'DATABASE' && upper === 'SET' && previousUpper === 'CHARACTER')
     ) {
       break;
     }
     objectNameTokens.push(ctx.advance());
   }
-  const objectName = ctx.tokensToSql(objectNameTokens);
+  const objectName = ctx.tokensToSqlPreserveCase(objectNameTokens);
   if (!objectName) {
     throw ctx.parseError('object name', ctx.peek());
   }
@@ -604,7 +640,7 @@ function tryParseAlterAddNonColumnAction(ctx: DdlParser): AST.AlterAction | null
   }
 
   const tokens = ctx.consumeTokensUntilActionBoundary();
-  const text = `ADD ${ctx.tokensToSql(tokens)}`.trim();
+  const text = `ADD ${ctx.tokensToSqlPreserveCase(tokens)}`.trim();
   return { type: 'raw', text };
 }
 
@@ -761,7 +797,7 @@ function parseRawAlterAction(ctx: DdlParser): AST.AlterRawAction {
   const tokens = ctx.consumeTokensUntilActionBoundary();
   return {
     type: 'raw',
-    text: ctx.tokensToSql(tokens),
+    text: ctx.tokensToSqlPreserveCase(tokens),
   };
 }
 

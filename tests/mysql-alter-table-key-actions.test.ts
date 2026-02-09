@@ -5,19 +5,19 @@ import { parse } from '../src/parser';
 describe('MySQL ALTER TABLE key and charset actions', () => {
   it('keeps ADD KEY actions without inserting COLUMN', () => {
     const out = formatSQL('ALTER TABLE t ADD KEY idx (col);');
-    expect(out).toContain('ADD KEY idx(col)');
+    expect(out).toContain('ADD KEY idx (col)');
     expect(out).not.toContain('ADD COLUMN KEY');
   });
 
   it('keeps ADD INDEX actions without inserting COLUMN', () => {
     const out = formatSQL('ALTER TABLE t ADD INDEX idx (col);');
-    expect(out).toContain('ADD INDEX idx(col)');
+    expect(out).toContain('ADD INDEX idx (col)');
     expect(out).not.toContain('ADD COLUMN INDEX');
   });
 
   it('keeps ADD FULLTEXT KEY actions without inserting COLUMN', () => {
     const out = formatSQL('ALTER TABLE t ADD FULLTEXT KEY idx (col);');
-    expect(out).toContain('ADD FULLTEXT KEY idx(col)');
+    expect(out).toContain('ADD FULLTEXT KEY idx (col)');
     expect(out).not.toContain('ADD COLUMN FULLTEXT KEY');
   });
 
