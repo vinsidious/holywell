@@ -340,9 +340,32 @@ function parseCreateViewStatement(
     skipInlineComments(ctx);
   }
 
+  let withOptions: string | undefined;
+  if (ctx.peekUpper() === 'WITH' && ctx.peekUpperAt(1) === '(') {
+    const optionTokens: Token[] = [];
+    optionTokens.push(ctx.advance()); // WITH
+    if (ctx.check('(')) {
+      let depth = 0;
+      do {
+        const token = ctx.advance();
+        optionTokens.push(token);
+        if (token.value === '(') depth++;
+        if (token.value === ')') depth--;
+      } while (!ctx.isAtEnd() && depth > 0);
+    }
+    withOptions = ctx.tokensToSql(optionTokens) || undefined;
+    skipInlineComments(ctx);
+  }
+
   ctx.expect('AS');
   const query = ctx.parseStatement();
-  if (query && query.type !== 'select' && query.type !== 'union' && query.type !== 'cte') {
+  if (
+    query
+    && query.type !== 'select'
+    && query.type !== 'union'
+    && query.type !== 'cte'
+    && query.type !== 'standalone_values'
+  ) {
     throw ctx.parseError('SELECT, UNION, or WITH query in CREATE VIEW', ctx.peek());
   }
 
@@ -378,6 +401,7 @@ function parseCreateViewStatement(
     toTable,
     toColumns,
     comment,
+    withOptions,
     query: query as AST.Statement,
     withData,
     withClause,
@@ -459,7 +483,9 @@ function parseCreatePolicyStatement(ctx: DdlParser, comments: AST.CommentNode[])
   if (ctx.peekUpper() === 'USING') {
     ctx.advance();
     ctx.expect('(');
+    skipInlineComments(ctx);
     using = ctx.parseExpression();
+    skipInlineComments(ctx);
     ctx.expect(')');
   }
 
@@ -468,7 +494,9 @@ function parseCreatePolicyStatement(ctx: DdlParser, comments: AST.CommentNode[])
     ctx.advance();
     ctx.expect('CHECK');
     ctx.expect('(');
+    skipInlineComments(ctx);
     withCheck = ctx.parseExpression();
+    skipInlineComments(ctx);
     ctx.expect(')');
   }
 

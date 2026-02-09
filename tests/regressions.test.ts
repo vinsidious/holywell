@@ -194,7 +194,7 @@ CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');
 CREATE SEQUENCE IF NOT EXISTS seq_test START 1;
 `;
     const out = formatSQL(sql);
-    expect(out).toContain('CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;');
+    expect(out).toContain('CREATE FUNCTION f() RETURNS INT LANGUAGE sql AS $$ SELECT 1 $$;');
     expect(out).toContain('CREATE TRIGGER trg BEFORE INSERT ON t FOR EACH ROW EXECUTE FUNCTION f();');
     expect(out).toContain("CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');");
     expect(out).toContain('CREATE SEQUENCE IF NOT EXISTS seq_test START 1;');

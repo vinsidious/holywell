@@ -436,7 +436,7 @@ export class Parser {
     if (kw === 'CREATE' && this.looksLikeCreateRoutineStatement()) {
       const routineKind = this.getCreateRoutineKind();
       const allowPreBeginSemicolons = this.hasKeywordAhead('BEGIN');
-      const normalizeKeywords = routineKind === 'PROCEDURE' || routineKind === 'TRIGGER';
+      const normalizeKeywords = routineKind === 'PROCEDURE' || routineKind === 'TRIGGER' || routineKind === 'FUNCTION';
       return this.parseStatementUntilEndBlock(comments, 'unsupported', {
         normalizeKeywords,
         allowPreBeginSemicolons,
@@ -481,7 +481,7 @@ export class Parser {
     if (kw === 'DELIMITER') return this.parseDelimiterScript(comments);
     if (kw === 'GO') return this.parseSingleLineStatement(comments, 'unsupported');
     if (kw === 'BACKUP' || kw === 'BULK' || kw === 'CLUSTER') {
-      return this.parseVerbatimStatement(comments, 'unsupported', true);
+      return this.parseVerbatimStatement(comments, 'unsupported');
     }
     if (kw === 'ACCEPT' || kw === 'DESCRIBE' || kw === 'REM' || kw === 'DEFINE' || kw === 'PROMPT') {
       return this.parseSingleLineStatement(comments, 'unsupported');
@@ -2472,22 +2472,41 @@ export class Parser {
 
   private parseColumnList(): AST.ColumnExpr[] {
     const columns: AST.ColumnExpr[] = [];
-    columns.push(this.parseColumnExpr());
+    let leadingComments = this.consumeComments();
+    if (this.isSelectListBoundary()) {
+      throw new ParseError('select expression', this.peek());
+    }
+    columns.push(this.parseColumnExpr(leadingComments));
 
     while (this.check(',')) {
-      this.advance();
-      if (this.peekType() === 'line_comment' && !columns[columns.length - 1].trailingComment) {
+      const commaToken = this.advance();
+      if (
+        this.peekType() === 'line_comment'
+        && this.peek().line === commaToken.line
+        && !columns[columns.length - 1].trailingComment
+      ) {
         const t = this.advance();
         const last = columns[columns.length - 1];
-        columns[columns.length - 1] = { ...last, trailingComment: { type: 'comment', style: 'line', text: t.value } };
+        columns[columns.length - 1] = {
+          ...last,
+          trailingComment: { type: 'comment', style: 'line', text: t.value },
+        };
       }
-      columns.push(this.parseColumnExpr());
+      leadingComments = this.consumeComments();
+      if (this.isSelectListBoundary()) {
+        if (leadingComments.length > 0 && !columns[columns.length - 1].trailingComment) {
+          const last = columns[columns.length - 1];
+          columns[columns.length - 1] = { ...last, trailingComment: leadingComments[0] };
+        }
+        break;
+      }
+      columns.push(this.parseColumnExpr(leadingComments));
     }
 
     return columns;
   }
 
-  private parseColumnExpr(): AST.ColumnExpr {
+  private parseColumnExpr(leadingComments: AST.CommentNode[] = []): AST.ColumnExpr {
     const expr = this.parseExpression();
     let trailingComment: AST.CommentNode | undefined;
 
@@ -2501,7 +2520,33 @@ export class Parser {
       };
     }
 
-    return { expr, alias, trailingComment };
+    return {
+      expr,
+      alias,
+      leadingComments: leadingComments.length > 0 ? leadingComments : undefined,
+      trailingComment,
+    };
+  }
+
+  private isSelectListBoundary(): boolean {
+    if (this.isAtEnd() || this.check(';') || this.check(')')) return true;
+    const kw = this.peekUpper();
+    return (
+      kw === 'FROM'
+      || kw === 'INTO'
+      || kw === 'WHERE'
+      || kw === 'GROUP'
+      || kw === 'HAVING'
+      || kw === 'WINDOW'
+      || kw === 'ORDER'
+      || kw === 'LIMIT'
+      || kw === 'OFFSET'
+      || kw === 'FETCH'
+      || kw === 'FOR'
+      || kw === 'UNION'
+      || kw === 'INTERSECT'
+      || kw === 'EXCEPT'
+    );
   }
 
   private parseExplain(comments: AST.CommentNode[]): AST.ExplainStatement {
@@ -2617,7 +2662,21 @@ export class Parser {
       if (this.check(',')) this.advance();
     }
 
-    const statement = this.parseQueryExpression();
+    const statementComments = this.consumeComments();
+    let statement: AST.ExplainStatement['statement'];
+    const queryStatement = this.tryParseQueryExpressionAtCurrent(statementComments);
+    if (queryStatement) {
+      statement = queryStatement;
+    } else if (this.peekUpper() === 'INSERT') {
+      statement = this.parseInsert(statementComments);
+    } else if (this.peekUpper() === 'UPDATE') {
+      statement = this.parseUpdate(statementComments);
+    } else if (this.peekUpper() === 'DELETE') {
+      statement = this.parseDelete(statementComments);
+    } else {
+      throw new ParseError('query expression, INSERT, UPDATE, or DELETE', this.peek());
+    }
+
     return {
       type: 'explain',
       analyze,
@@ -2718,7 +2777,16 @@ export class Parser {
 
     this.consumeComments();
     this.expect('USING');
-    const sourceTable = this.advance().value;
+    let sourceTable: string | AST.Expression;
+    if (this.check('(')) {
+      const subquery = this.tryParseSubqueryAtCurrent();
+      if (!subquery) {
+        throw new ParseError('subquery in MERGE USING', this.peek());
+      }
+      sourceTable = subquery;
+    } else {
+      sourceTable = this.advance().value;
+    }
     let sourceAlias: string | undefined;
     if (this.peekUpper() === 'AS') {
       this.advance();

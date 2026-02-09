@@ -111,6 +111,7 @@ export interface InsertStatement {
   readonly values?: readonly ValuesList[];
   readonly selectQuery?: QueryExpression;
   readonly returning?: readonly Expression[];
+  readonly returningInto?: readonly string[];
   readonly onConflict?: {
     readonly columns?: readonly string[];
     readonly constraintName?: string;
@@ -286,7 +287,7 @@ export interface CTEDefinition {
 export interface MergeStatement {
   readonly type: 'merge';
   readonly target: { readonly table: string; readonly alias?: string };
-  readonly source: { readonly table: string; readonly alias?: string };
+  readonly source: { readonly table: string | Expression; readonly alias?: string };
   readonly on: Expression;
   readonly whenClauses: readonly MergeWhenClause[];
   readonly leadingComments: readonly CommentNode[];
@@ -312,7 +313,7 @@ export interface ExplainStatement {
   readonly settings?: boolean;
   readonly wal?: boolean;
   readonly format?: 'TEXT' | 'XML' | 'JSON' | 'YAML';
-  readonly statement: QueryExpression;
+  readonly statement: QueryExpression | InsertStatement | UpdateStatement | DeleteStatement;
   readonly leadingComments: readonly CommentNode[];
 }
 
@@ -342,6 +343,7 @@ export interface CreateViewStatement {
   readonly toTable?: string;
   readonly toColumns?: readonly string[];
   readonly comment?: string;
+  readonly withOptions?: string;
   readonly query: Statement;
   readonly withData?: boolean;
   readonly withClause?: string;
@@ -710,6 +712,7 @@ export type RawReason =
 export interface ColumnExpr {
   readonly expr: Expression;
   readonly alias?: string;
+  readonly leadingComments?: readonly CommentNode[];
   readonly trailingComment?: CommentNode;
 }
 

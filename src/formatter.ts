@@ -595,6 +595,7 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
 
 interface FormattedColumnPart {
   text: string;
+  leadingComments?: readonly AST.CommentNode[];
   comment?: AST.CommentNode;
 }
 
@@ -606,11 +607,12 @@ function formatColumnList(columns: readonly AST.ColumnExpr[], firstColStartCol: 
   if (inlineResult) return inlineResult;
 
   const hasMultiLine = parts.some(p => p.text.includes('\n'));
+  const hasLeadingComments = parts.some(p => !!(p.leadingComments && p.leadingComments.length > 0));
   const cCol = contentCol(ctx);
   const indent = ' '.repeat(cCol);
 
   // If any multi-line expression, one-per-line
-  if (hasMultiLine) {
+  if (hasMultiLine || hasLeadingComments) {
     return formatColumnsOnePerLine(parts, indent);
   }
 
@@ -627,7 +629,11 @@ function buildFormattedColumnParts(columns: readonly AST.ColumnExpr[], ctx: Form
     if (col.alias && !isRedundantAlias(col.expr, col.alias)) {
       text += ' AS ' + formatAlias(col.alias);
     }
-    return { text, comment: col.trailingComment };
+    return {
+      text,
+      leadingComments: col.leadingComments,
+      comment: col.trailingComment,
+    };
   });
 }
 
@@ -672,6 +678,7 @@ function tryFormatInlineColumnList(
   firstColStartCol: number,
   ctx: FormatContext
 ): string | null {
+  if (parts.some(p => !!(p.leadingComments && p.leadingComments.length > 0))) return null;
   if (parts.some(p => p.comment)) return null;
   if (parts.some(p => p.text.includes('\n'))) return null;
 
@@ -780,15 +787,18 @@ function formatColumnsOnePerLine(parts: FormattedColumnPart[], indent: string): 
   const result: string[] = [];
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
+    const baseIndent = i === 0 ? '' : indent;
+    const commentIndent = i === 0 ? indent : indent;
+    if (p.leadingComments && p.leadingComments.length > 0) {
+      for (const comment of p.leadingComments) {
+        result.push(commentIndent + comment.text);
+      }
+    }
     const isLast = i === parts.length - 1;
     const comma = isLast ? '' : ',';
     const comment = p.comment ? '  ' + p.comment.text : '';
     const text = p.text + comma + comment;
-    if (i === 0) {
-      result.push(text);
-    } else {
-      result.push(indent + text);
-    }
+    result.push(baseIndent + text);
   }
   return result.join('\n');
 }
@@ -1785,7 +1795,7 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
     }
   }
 
-  if (appendReturningClause(lines, node.returning, dmlCtx)) return lines.join('\n');
+  if (appendReturningClause(lines, node.returning, dmlCtx, node.returningInto)) return lines.join('\n');
   return appendStatementSemicolon(lines.join('\n'));
 }
 
@@ -1944,10 +1954,15 @@ function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
 function appendReturningClause(
   lines: string[],
   returning: readonly AST.Expression[] | undefined,
-  ctx: FormatContext
+  ctx: FormatContext,
+  returningInto?: readonly string[],
 ): boolean {
   if (!returning || returning.length === 0) return false;
-  lines.push(rightAlign('RETURNING', ctx) + ' ' + returning.map(formatExpr).join(', ') + ';');
+  let text = rightAlign('RETURNING', ctx) + ' ' + returning.map(formatExpr).join(', ');
+  if (returningInto && returningInto.length > 0) {
+    text += ' INTO ' + returningInto.join(', ');
+  }
+  lines.push(text + ';');
   return true;
 }
 
@@ -2030,6 +2045,9 @@ function formatCreateView(node: AST.CreateViewStatement, ctx: FormatContext): st
   }
   if (node.comment) {
     header += ' COMMENT = ' + node.comment;
+  }
+  if (node.withOptions) {
+    header += ' ' + node.withOptions.replace(/^WITH\(/i, 'WITH (');
   }
   header += ' AS';
   lines.push(header);
@@ -2251,7 +2269,10 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
   emitComments(node.leadingComments, lines);
 
   const target = node.target.table + (node.target.alias ? ' AS ' + node.target.alias : '');
-  const source = node.source.table + (node.source.alias ? ' AS ' + node.source.alias : '');
+  const sourceTable = typeof node.source.table === 'string'
+    ? node.source.table
+    : formatExpr(node.source.table);
+  const source = sourceTable + (node.source.alias ? ' AS ' + node.source.alias : '');
 
   lines.push(rightAlign('MERGE', mergeCtx) + ' INTO ' + target);
   lines.push(rightAlign('USING', mergeCtx) + ' ' + source);

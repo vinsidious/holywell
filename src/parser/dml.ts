@@ -86,7 +86,7 @@ export function parseInsertStatement(
     onConflict = parseInsertOnConflictClause(ctx);
   }
 
-  const returning = parseOptionalReturning(ctx);
+  const returningClause = parseInsertReturningClause(ctx);
 
   return {
     type: 'insert',
@@ -97,7 +97,8 @@ export function parseInsertStatement(
     values,
     selectQuery,
     onConflict,
-    returning,
+    returning: returningClause.returning,
+    returningInto: returningClause.returningInto,
     leadingComments: comments,
   };
 }
@@ -143,6 +144,35 @@ export function parseValuesTuple(ctx: DmlParser): AST.ValuesList {
   const values = ctx.parseExpressionList();
   ctx.expect(')');
   return { values };
+}
+
+function parseInsertReturningClause(
+  ctx: DmlParser
+): { returning?: AST.Expression[]; returningInto?: string[] } {
+  if (ctx.peekUpper() !== 'RETURNING') return {};
+  ctx.advance();
+  const returning = ctx.parseReturningList();
+
+  let returningInto: string[] | undefined;
+  if (ctx.peekUpper() === 'INTO') {
+    ctx.advance();
+    returningInto = [parseReturningIntoTarget(ctx)];
+    while (ctx.check(',')) {
+      ctx.advance();
+      returningInto.push(parseReturningIntoTarget(ctx));
+    }
+  }
+
+  return { returning, returningInto };
+}
+
+function parseReturningIntoTarget(ctx: DmlParser): string {
+  let target = ctx.advance().value;
+  while (ctx.check('.')) {
+    ctx.advance();
+    target += '.' + ctx.advance().value;
+  }
+  return target;
 }
 
 export function parseUpdateStatement(
