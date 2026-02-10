@@ -358,7 +358,11 @@ function formatNode(node: AST.Node, ctx: FormatContext): string {
 
 function formatRawTopLevelNode(text: string, ctx: FormatContext): string {
   const routine = tryFormatRoutineBlock(text, ctx.runtime);
-  return routine ?? text;
+  if (routine) return routine;
+  const beginEnd = tryFormatBeginEndBlock(text, ctx.runtime);
+  if (beginEnd) return beginEnd;
+  const returnSelect = tryFormatReturnParenthesizedSelect(text, ctx.runtime);
+  return returnSelect ?? text;
 }
 
 function tryFormatRoutineBlock(text: string, runtime: FormatterRuntime): string | null {
@@ -382,18 +386,8 @@ function tryFormatRoutineBlock(text: string, runtime: FormatterRuntime): string 
     return `${header}\n${footer}`;
   }
 
-  let formattedBody = body;
-  try {
-    const bodyNodes = parse(body, {
-      recover: true,
-      maxDepth: DEFAULT_MAX_DEPTH,
-    });
-    if (bodyNodes.length > 0) {
-      formattedBody = formatStatements(bodyNodes, {
-        maxLineLength: runtime.maxLineLength,
-      }).trim();
-    }
-  } catch {
+  const formattedBody = formatBlockBody(body, runtime);
+  if (!formattedBody) {
     return null;
   }
 
@@ -403,6 +397,88 @@ function tryFormatRoutineBlock(text: string, runtime: FormatterRuntime): string 
     .join('\n');
 
   return `${header}\n${indentedBody}\n${footer}`;
+}
+
+function tryFormatBeginEndBlock(text: string, runtime: FormatterRuntime): string | null {
+  const trimmed = text.trim();
+  if (!/^BEGIN\b/i.test(trimmed)) return null;
+
+  const beginMatch = /^BEGIN\b/i.exec(trimmed);
+  const endMatch = /\bEND\b\s*;?\s*$/i.exec(trimmed);
+  if (!beginMatch || !endMatch || endMatch.index <= beginMatch.index) return null;
+
+  const body = trimmed.slice(beginMatch[0].length, endMatch.index).trim();
+  const footer = trimmed.slice(endMatch.index).trim();
+  if (!body) return `BEGIN\n${footer}`;
+
+  const formattedBody = formatBlockBody(body, runtime);
+  if (!formattedBody) return null;
+
+  return `BEGIN\n${formattedBody}\n${footer}`;
+}
+
+function formatBlockBody(body: string, runtime: FormatterRuntime): string | null {
+  try {
+    const bodyNodes = parse(body, {
+      recover: true,
+      maxDepth: DEFAULT_MAX_DEPTH,
+    });
+    if (bodyNodes.length === 0) return body.trim();
+
+    const parts: string[] = [];
+    for (const node of bodyNodes) {
+      if (node.type === 'raw') {
+        const returnSelect = tryFormatReturnParenthesizedSelect(node.text, runtime);
+        if (returnSelect) {
+          parts.push(returnSelect.trim());
+          continue;
+        }
+      }
+      parts.push(formatStatements([node], {
+        maxLineLength: runtime.maxLineLength,
+      }).trim());
+    }
+    return parts.join('\n\n');
+  } catch {
+    return null;
+  }
+}
+
+function tryFormatReturnParenthesizedSelect(text: string, runtime: FormatterRuntime): string | null {
+  const trimmed = text.trim();
+  const match = /^RETURN\s*\(\s*([\s\S]+)\)\s*;?$/i.exec(trimmed);
+  if (!match) return null;
+
+  const inner = match[1].trim().replace(/;$/, '') + ';';
+  let formattedInner: string;
+  try {
+    const innerNodes = parse(inner, {
+      recover: false,
+      maxDepth: DEFAULT_MAX_DEPTH,
+    });
+    if (
+      innerNodes.length !== 1
+      || (
+        innerNodes[0].type !== 'select'
+        && innerNodes[0].type !== 'cte'
+        && innerNodes[0].type !== 'union'
+      )
+    ) {
+      return null;
+    }
+    formattedInner = formatStatements(innerNodes, {
+      maxLineLength: runtime.maxLineLength,
+    }).trim().replace(/;$/, '');
+  } catch {
+    return null;
+  }
+
+  const indentedInner = formattedInner
+    .split('\n')
+    .map(line => (line ? '    ' + line : line))
+    .join('\n');
+  const suffix = trimmed.endsWith(';') ? ';' : '';
+  return `RETURN (\n${indentedInner}\n)${suffix}`;
 }
 
 // Right-align keyword so its last char is at column (indentOffset + riverWidth - 1)
@@ -2098,7 +2174,8 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
       const conflictCtx: FormatContext = { ...dmlCtx, indentOffset: 7 };
       for (let i = 0; i < (node.onConflict.setItems || []).length; i++) {
         const item = node.onConflict.setItems![i];
-        const val = item.column + ' = ' + formatExpr(item.value);
+        const operator = item.assignmentOperator ?? '=';
+        const val = item.column + ' ' + operator + ' ' + formatExpr(item.value);
         const comma = i < node.onConflict.setItems!.length - 1 ? ',' : '';
         if (i === 0) {
           lines.push(rightAlign('SET', conflictCtx) + ' ' + val + comma);
@@ -2172,13 +2249,14 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
     }
 
     const columnName = lowerIdent(item.column);
+    const operator = item.assignmentOperator ?? '=';
     const valueCol = i === 0
-      ? setKw.length + 1 + columnName.length + 3
-      : setContentCol + columnName.length + 3;
+      ? setKw.length + 1 + columnName.length + operator.length + 2
+      : setContentCol + columnName.length + operator.length + 2;
     const valExpr = item.value.type === 'subquery'
       ? formatSubqueryAtColumn(item.value, valueCol, dmlCtx.runtime)
       : formatExprAtColumn(item.value, valueCol, dmlCtx.runtime);
-    const val = columnName + ' = ' + valExpr;
+    const val = columnName + ' ' + operator + ' ' + valExpr;
     if (i === 0) {
       lines.push(setKw + ' ' + val + comma);
     } else {
@@ -2647,7 +2725,7 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
         const comma = i < wc.setItems!.length - 1 ? ',' : '';
         const itemText = item.methodCall
           ? formatExpr(item.value)
-          : item.column + ' = ' + formatExpr(item.value);
+          : item.column + ' ' + (item.assignmentOperator ?? '=') + ' ' + formatExpr(item.value);
         if (i === 0) {
           lines.push(' '.repeat(setOffset) + 'SET ' + itemText + comma);
         } else {
