@@ -573,20 +573,7 @@ export function parseAlterStatement(ctx: DdlParser, comments: AST.CommentNode[])
 
   const actions: AST.AlterAction[] = [];
   while (!ctx.isAtEnd() && !ctx.check(';')) {
-    if (
-      ctx.hasImplicitStatementBoundary?.()
-      && !(
-        ctx.peekUpper() === 'ADD'
-        || ctx.peekUpper() === 'DROP'
-        || ctx.peekUpper() === 'RENAME'
-        || ctx.peekUpper() === 'SET'
-        || ctx.peekUpper() === 'ALTER'
-        || ctx.peekUpper() === 'CHANGE'
-        || ctx.peekUpper() === 'MODIFY'
-        || ctx.peekUpper() === 'CHECK'
-        || ctx.peekUpper() === 'WITH'
-      )
-    ) {
+    if (actions.length > 0 && ctx.hasImplicitStatementBoundary?.()) {
       break;
     }
     actions.push(parseAlterAction(ctx));
