@@ -150,11 +150,15 @@ export function formatStatements(nodes: AST.Node[], options: FormatterOptions = 
 
   const parts: string[] = [];
   for (const node of nodes) {
-    if (node.type === 'raw' && node.reason === 'trailing_semicolon_comment') {
+    if (node.type === 'raw' && (node.reason === 'trailing_semicolon_comment' || node.reason === 'slash_terminator')) {
       if (parts.length === 0) {
         parts.push(node.text);
       } else if (node.text.trim() === '/') {
-        parts[parts.length - 1] = parts[parts.length - 1].trimEnd() + '\n/';
+        const previous = parts[parts.length - 1].trimEnd();
+        const withoutSyntheticSemicolon = node.reason === 'slash_terminator'
+          ? previous.replace(/;$/, '')
+          : previous;
+        parts[parts.length - 1] = withoutSyntheticSemicolon + '\n/';
       } else {
         const previous = parts[parts.length - 1].trimEnd();
         parts[parts.length - 1] = previous + ' ' + node.text;
@@ -891,7 +895,7 @@ function formatExprInSelect(
   depth: number = 0
 ): string {
   if (expr.type === 'case') {
-    return formatCaseAtColumn(expr, colStart, depth + 1);
+    return formatCaseAtColumn(expr, colStart, ctx.runtime, depth + 1);
   }
   if (expr.type === 'subquery') {
     return formatSubqueryAtColumn(expr, colStart, ctx.runtime, depth + 1);
@@ -1219,7 +1223,7 @@ function flattenBinaryChain(expr: AST.Expression, operator: string): AST.Express
 }
 
 function formatExprAtColumn(expr: AST.Expression, colStart: number, runtime: FormatterRuntime): string {
-  if (expr.type === 'case') return formatCaseAtColumn(expr, colStart);
+  if (expr.type === 'case') return formatCaseAtColumn(expr, colStart, runtime);
   if (expr.type === 'subquery') return formatSubqueryAtColumn(expr, colStart, runtime);
   if (expr.type === 'window_function') return formatWindowFunctionAtColumn(expr, colStart, runtime);
   if (expr.type === 'function_call') {
@@ -1571,7 +1575,7 @@ function formatGroupingSpec(
 // Format expression in WHERE/HAVING context — handles IN subquery, EXISTS, comparisons with subqueries
 function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string {
   if (expr.type === 'paren' && expr.expr.type === 'binary' && (expr.expr.operator === 'AND' || expr.expr.operator === 'OR')) {
-    return '(' + formatParenLogical(expr.expr, contentCol(ctx) + 1) + ')';
+    return '(' + formatParenLogical(expr.expr, contentCol(ctx) + 1, ctx.runtime) + ')';
   }
 
   if (expr.type === 'unary' && expr.operator === 'NOT' && expr.operand.type === 'in' && isInExprSubquery(expr.operand)) {
@@ -1675,12 +1679,17 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
   return formatExpr(expr);
 }
 
-function formatParenLogical(expr: AST.BinaryExpr, opCol: number, depth: number = 0): string {
+function formatParenLogical(
+  expr: AST.BinaryExpr,
+  opCol: number,
+  runtime: FormatterRuntime,
+  depth: number = 0
+): string {
   if (depth >= MAX_FORMATTER_DEPTH) {
     return formatExpr(expr);
   }
-  const left = formatParenOperand(expr.left, opCol, expr.operator, depth + 1);
-  const right = formatParenOperand(expr.right, opCol, expr.operator, depth + 1);
+  const left = formatParenOperand(expr.left, opCol, expr.operator, runtime, depth + 1);
+  const right = formatParenOperand(expr.right, opCol, expr.operator, runtime, depth + 1);
   if (expr.right.type === 'raw') {
     const continuationCol = opCol + expr.operator.length + 1;
     const normalizedRight = normalizeMultilineLogicalOperand(right, continuationCol);
@@ -1694,15 +1703,27 @@ function formatParenLogical(expr: AST.BinaryExpr, opCol: number, depth: number =
   return left + '\n' + ' '.repeat(opCol) + expr.operator + ' ' + right;
 }
 
-function formatParenOperand(expr: AST.Expression, opCol: number, parentOp: string, depth: number = 0): string {
+function formatParenOperand(
+  expr: AST.Expression,
+  opCol: number,
+  parentOp: string,
+  runtime: FormatterRuntime,
+  depth: number = 0
+): string {
   if (depth >= MAX_FORMATTER_DEPTH) {
     return formatExpr(expr);
   }
   if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
-    return formatParenLogical(expr, opCol, depth);
+    return formatParenLogical(expr, opCol, runtime, depth);
   }
   if (expr.type === 'paren' && expr.expr.type === 'binary' && (expr.expr.operator === 'AND' || expr.expr.operator === 'OR')) {
-    return '(' + formatParenLogical(expr.expr, opCol + parentOp.length + 2, depth) + ')';
+    return '(' + formatParenLogical(expr.expr, opCol + parentOp.length + 2, runtime, depth) + ')';
+  }
+  if (expr.type === 'exists') {
+    return 'EXISTS ' + formatSubqueryAtColumn(expr.subquery, opCol + 'EXISTS '.length, runtime, depth + 1);
+  }
+  if (expr.type === 'unary' && expr.operator === 'NOT' && expr.operand.type === 'exists') {
+    return 'NOT EXISTS ' + formatSubqueryAtColumn(expr.operand.subquery, opCol + 'NOT EXISTS '.length, runtime, depth + 1);
   }
   return formatExpr(expr);
 }
@@ -1755,7 +1776,12 @@ function wrapSubqueryLines(innerFormatted: string, col: number): string {
 
 // ─── CASE formatting ─────────────────────────────────────────────────
 
-function formatCaseAtColumn(expr: AST.CaseExpr, col: number, depth: number = 0): string {
+function formatCaseAtColumn(
+  expr: AST.CaseExpr,
+  col: number,
+  runtime: FormatterRuntime,
+  depth: number = 0
+): string {
   if (depth >= MAX_FORMATTER_DEPTH) {
     return formatCaseSimple(expr, depth);
   }
@@ -1765,7 +1791,12 @@ function formatCaseAtColumn(expr: AST.CaseExpr, col: number, depth: number = 0):
   result += '\n';
 
   for (const wc of expr.whenClauses) {
-    const thenExpr = formatCaseThenResult(wc.result, col + 'WHEN '.length + formatExpr(wc.condition).length + ' THEN '.length, depth + 1);
+    const thenExpr = formatCaseThenResult(
+      wc.result,
+      col + 'WHEN '.length + stringDisplayWidth(formatExpr(wc.condition)) + ' THEN '.length,
+      runtime,
+      depth + 1
+    );
     const thenComment = wc.trailingComment ? ' ' + wc.trailingComment : '';
     result += pad + 'WHEN ' + formatExpr(wc.condition) + ' THEN ' + thenExpr + thenComment + '\n';
   }
@@ -1778,11 +1809,16 @@ function formatCaseAtColumn(expr: AST.CaseExpr, col: number, depth: number = 0):
   return result;
 }
 
-function formatCaseThenResult(expr: AST.Expression, col: number, depth: number = 0): string {
+function formatCaseThenResult(
+  expr: AST.Expression,
+  col: number,
+  runtime: FormatterRuntime,
+  depth: number = 0
+): string {
   if (expr.type === 'case') {
-    return formatCaseAtColumn(expr, col, depth);
+    return formatCaseAtColumn(expr, col, runtime, depth);
   }
-  return formatExpr(expr);
+  return formatExprAtColumn(expr, col, runtime);
 }
 
 // ─── Window function formatting ──────────────────────────────────────
@@ -2693,6 +2729,21 @@ function packConstraintWordGroups(words: string[]): string[] {
 
     if (currentUpper === 'INITIALLY' && (nextUpper === 'DEFERRED' || nextUpper === 'IMMEDIATE')) {
       packed.push(`INITIALLY ${nextUpper}`);
+      i += 2;
+      continue;
+    }
+
+    if (
+      (currentUpper === '='
+        || currentUpper === '<'
+        || currentUpper === '>'
+        || currentUpper === '<='
+        || currentUpper === '>='
+        || currentUpper === '<>'
+        || currentUpper === '!=')
+      && words[i + 1]
+    ) {
+      packed.push(`${words[i]} ${words[i + 1]}`);
       i += 2;
       continue;
     }
@@ -3637,6 +3688,7 @@ function isRedundantAlias(expr: AST.Expression, alias: string): boolean {
 
 function formatAlias(alias: string): string {
   if (alias.startsWith('"')) return alias;
+  if (isMixedCaseIdentifierPart(alias)) return alias;
   return alias.toLowerCase();
 }
 
@@ -3647,16 +3699,18 @@ function formatProjectionAlias(alias: string): string {
 function formatFunctionName(name: string): string {
   const parts = splitQualifiedIdentifier(name);
   const last = parts[parts.length - 1];
-  if (isQuotedIdentifierPart(last)) return lowerIdentStrict(name);
+  if (isQuotedIdentifierPart(last)) return lowerIdent(name);
   const upperLast = last.toUpperCase();
-  if ((FUNCTION_KEYWORDS.has(upperLast) || upperLast === 'AGE') && parts.length === 1) {
+  if (FUNCTION_KEYWORDS.has(upperLast) || upperLast === 'AGE') {
     parts[parts.length - 1] = upperLast;
     for (let i = 0; i < parts.length - 1; i++) {
-      if (!isQuotedIdentifierPart(parts[i]) && !parts[i].startsWith('@')) parts[i] = parts[i].toLowerCase();
+      if (!isQuotedIdentifierPart(parts[i]) && !parts[i].startsWith('@') && !isMixedCaseIdentifierPart(parts[i])) {
+        parts[i] = parts[i].toLowerCase();
+      }
     }
     return parts.join('.');
   }
-  return lowerIdentStrict(name);
+  return lowerIdent(name);
 }
 
 // Lowercase identifiers, preserving qualified name dots and quoted identifiers
