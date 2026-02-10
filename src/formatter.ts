@@ -3245,7 +3245,10 @@ function formatAlterTable(node: AST.AlterTableStatement, ctx: FormatContext): st
 function formatAlterAction(action: AST.AlterAction): string {
   switch (action.type) {
     case 'add_column': {
-      let out = 'ADD COLUMN ';
+      let out = 'ADD ';
+      if (action.explicitColumnKeyword || action.ifNotExists) {
+        out += 'COLUMN ';
+      }
       if (action.ifNotExists) out += 'IF NOT EXISTS ';
       out += lowerIdent(action.columnName);
       if (action.definition) out += ' ' + action.definition;
@@ -3607,7 +3610,10 @@ function formatExpr(expr: AST.Expression, depth: number = 0): string {
   if (depth >= MAX_FORMATTER_DEPTH) {
     // At max depth, produce a minimal inline representation to avoid stack overflow.
     // We call the leaf formatters directly to avoid infinite recursion.
-    if (expr.type === 'identifier') return expr.quoted ? expr.value : lowerIdent(expr.value);
+    if (expr.type === 'identifier') {
+      const ident = expr.quoted ? expr.value : lowerIdent(expr.value);
+      return expr.withDescendants ? ident + '*' : ident;
+    }
     if (expr.type === 'literal') return expr.literalType === 'boolean' ? expr.value.toUpperCase() : expr.value;
     if (expr.type === 'null') return 'NULL';
     if (expr.type === 'star') return expr.qualifier ? lowerIdent(expr.qualifier) + '.*' : '*';
@@ -3619,7 +3625,7 @@ function formatExpr(expr: AST.Expression, depth: number = 0): string {
   const d = depth + 1;
   switch (expr.type) {
     case 'identifier':
-      return expr.quoted ? expr.value : lowerIdent(expr.value);
+      return (expr.quoted ? expr.value : lowerIdent(expr.value)) + (expr.withDescendants ? '*' : '');
     case 'literal':
       if (expr.literalType === 'boolean') return expr.value.toUpperCase();
       return expr.value;

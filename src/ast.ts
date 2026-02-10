@@ -21,7 +21,7 @@ export type Statement =
   | StandaloneValuesStatement;
 
 /** Query-producing statements that are valid in subquery positions. */
-export type QueryExpression = SelectStatement | UnionStatement | CTEStatement;
+export type QueryExpression = SelectStatement | UnionStatement | CTEStatement | ValuesClause;
 
 /** Statements that can legally appear as the primary statement after a WITH clause. */
 export type CTEMainStatement =
@@ -192,6 +192,7 @@ export type AlterAction =
 
 export interface AlterAddColumnAction {
   readonly type: 'add_column';
+  readonly explicitColumnKeyword?: boolean;
   readonly ifNotExists?: boolean;
   readonly columnName: string;
   readonly definition?: string;
@@ -438,6 +439,7 @@ export interface IdentifierExpr {
   readonly type: 'identifier';
   readonly value: string;
   readonly quoted: boolean;
+  readonly withDescendants?: boolean;
 }
 
 export interface LiteralExpr {

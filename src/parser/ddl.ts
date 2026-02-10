@@ -749,6 +749,7 @@ function tryParseAlterAddColumnAction(ctx: DdlParser): AST.AlterAction | null {
 
   return {
     type: 'add_column',
+    explicitColumnKeyword: explicitColumn || undefined,
     ifNotExists: ifNotExists || undefined,
     columnName,
     definition: definition || undefined,
@@ -898,6 +899,7 @@ const DROP_NAME_BOUNDARY_STARTERS = new Set([
   'CREATE', 'ALTER', 'DROP', 'TRUNCATE',
   'GRANT', 'REVOKE', 'COMMENT', 'CALL',
   'SET', 'RESET', 'ANALYZE', 'VACUUM',
+  'REINDEX',
   'DECLARE', 'PREPARE', 'EXECUTE', 'EXEC', 'DEALLOCATE',
   'USE', 'DO', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE',
   'START', 'VALUES', 'COPY', 'DELIMITER',

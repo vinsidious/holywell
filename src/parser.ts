@@ -51,6 +51,7 @@ const IMPLICIT_STATEMENT_STARTERS = new Set([
   'BACKUP', 'BULK', 'CLUSTER',
   'PRINT',
   'SET', 'RESET', 'ANALYZE', 'VACUUM',
+  'REINDEX',
   'DECLARE', 'PREPARE', 'EXECUTE', 'EXEC', 'DEALLOCATE',
   'USE', 'DO', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE',
   'START', 'VALUES', 'COPY', 'DELIMITER',
@@ -667,6 +668,7 @@ export class Parser {
       kw === 'RESET'
       || kw === 'ANALYZE'
       || kw === 'VACUUM'
+      || kw === 'REINDEX'
       || kw === 'DECLARE'
       || kw === 'PREPARE'
       || kw === 'EXECUTE'
@@ -1415,6 +1417,11 @@ export class Parser {
       if (this.peekUpper() === 'WITH') {
         return this.parseCTE(comments, { queryOnly: true });
       }
+      if (this.peekUpper() === 'VALUES') {
+        const values = this.parseValuesClause();
+        if (comments.length === 0) return values;
+        return { ...values, leadingComments: comments };
+      }
       if (this.peekUpper() === 'SELECT' || this.check('(')) {
         const query = this.parseUnionOrSelect(comments);
         if (query.type === 'select' || query.type === 'union') return query;
@@ -1732,7 +1739,7 @@ export class Parser {
       lateral = true;
     }
 
-    const table = this.parseTableExpr();
+    const table = this.parseTableExprWithDescendants();
     let tablesample: AST.FromClause['tablesample'];
 
     // TABLESAMPLE
@@ -1884,6 +1891,15 @@ export class Parser {
     return this.parsePrimary();
   }
 
+  private parseTableExprWithDescendants(): AST.Expression {
+    const table = this.parseTableExpr();
+    if (table.type === 'identifier' && this.check('*')) {
+      this.advance();
+      return { ...table, withDescendants: true };
+    }
+    return table;
+  }
+
   private tryParseParenthesizedJoinExpression(): AST.Expression | null {
     const checkpoint = this.pos;
     if (!this.check('(')) return null;
@@ -1979,7 +1995,7 @@ export class Parser {
   private parseJoin(): AST.JoinClause {
     if (this.peekUpper() === 'STRAIGHT_JOIN') {
       const joinType = this.advance().upper;
-      const table = this.parseTableExpr();
+      const table = this.parseTableExprWithDescendants();
       let ordinality = false;
       if (this.peekUpper() === 'WITH' && this.peekUpperAt(1) === 'ORDINALITY') {
         this.advance();
@@ -2025,7 +2041,7 @@ export class Parser {
 
     if ((this.peekUpper() === 'CROSS' || this.peekUpper() === 'OUTER') && this.peekUpperAt(1) === 'APPLY') {
       const joinType = this.advance().upper + ' ' + this.advance().upper;
-      const table = this.parseTableExpr();
+      const table = this.parseTableExprWithDescendants();
       const { alias, aliasColumns } = this.parseOptionalAlias({
         allowColumnList: true,
         stopKeywords: ['PIVOT', 'UNPIVOT'],
@@ -2046,7 +2062,7 @@ export class Parser {
       lateral = true;
     }
 
-    const table = this.parseTableExpr();
+    const table = this.parseTableExprWithDescendants();
     let ordinality = false;
     if (this.peekUpper() === 'WITH' && this.peekUpperAt(1) === 'ORDINALITY') {
       this.advance();
