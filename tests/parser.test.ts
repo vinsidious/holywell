@@ -226,7 +226,8 @@ WHERE t.id = u.id;
 
   it('does not uppercase user-defined function names', () => {
     const out = formatSQL('SELECT myCustomFunc(a), SUM(a) FROM t;');
-    expect(out).toContain('mycustomfunc(a)');
+    expect(out).toContain('myCustomFunc(a)');
+    expect(out).not.toContain('MYCUSTOMFUNC(a)');
     expect(out).toContain('SUM(a)');
   });
 
