@@ -31,6 +31,7 @@ const FUNCTION_KEYWORD_OVERRIDES = new Set([
   'LEFT',
   'RIGHT',
 ]);
+const CAST_STYLE_FUNCTIONS = new Set(['SAFE_CAST', 'TRY_CAST']);
 const STRING_ALIAS_TYPED_LITERAL_DISALLOWED = new Set([
   'DATE', 'TIME', 'TIMESTAMP', 'TIMESTAMPTZ', 'INTERVAL',
   'CHAR', 'CHARACTER', 'VARCHAR', 'NCHAR', 'NVARCHAR', 'TEXT',
@@ -361,6 +362,14 @@ export class Parser {
           stmts.push(stmt);
           if (stmt.type !== 'raw' && this.check(';')) {
             const semi = this.advance();
+            if (this.isSyntheticSlashSemicolon(semi)) {
+              stmts.push({
+                type: 'raw',
+                text: '/',
+                reason: 'slash_terminator',
+              });
+              continue;
+            }
             if (this.peekType() === 'line_comment' && this.peek().line === semi.line) {
               const trailing = this.advance();
               stmts.push({
@@ -494,6 +503,11 @@ export class Parser {
       );
     }
 
+    // T-SQL leading terminator before CTE: ;WITH ...
+    if (this.check(';') && this.peekUpperAt(1) === 'WITH') {
+      this.advance();
+    }
+
     // Comment-only statement terminated by a semicolon.
     if (this.check(';')) {
       const semi = this.advance();
@@ -568,13 +582,10 @@ export class Parser {
     if (kw === 'UPDATE') return this.parseUpdate(comments);
     if (kw === 'DELETE') return this.parseDelete(comments);
     if (kw === 'CREATE') {
-      if (CREATE_KEYWORD_NORMALIZED_TYPES.has(this.peekUpperAt(1))) {
-        const createType = this.peekUpperAt(1);
+      const createType = this.getCreateKeywordNormalizedType();
+      if (createType) {
         const allowImplicitBoundary = createType !== 'ROLE' && createType !== 'USER';
         return this.parseKeywordNormalizedStatement(comments, 'unsupported', allowImplicitBoundary);
-      }
-      if (this.peekUpperAt(1) === 'SCHEMA') {
-        return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
       }
       return this.parseCreate(comments);
     }
@@ -696,6 +707,23 @@ export class Parser {
 
   private looksLikeCreateRoutineStatement(): boolean {
     return this.getCreateRoutineKind() !== null;
+  }
+
+  private getCreateKeywordNormalizedType(): string | null {
+    if (this.peekUpper() !== 'CREATE') return null;
+    let offset = 1;
+    if (this.peekUpperAt(offset) === 'OR' && this.peekUpperAt(offset + 1) === 'REPLACE') {
+      offset += 2;
+    }
+
+    const first = this.peekUpperAt(offset);
+    const second = this.peekUpperAt(offset + 1);
+
+    if (CREATE_KEYWORD_NORMALIZED_TYPES.has(first)) return first;
+    if (first === 'SCHEMA') return 'SCHEMA';
+    if (first === 'STAGE') return 'STAGE';
+    if (first === 'FILE' && second === 'FORMAT') return 'FILE FORMAT';
+    return null;
   }
 
   private looksLikeAlterRoutineStatement(): boolean {
@@ -889,11 +917,33 @@ export class Parser {
   }
 
   private parseCopyStatement(comments: AST.CommentNode[]): AST.RawExpression | null {
+    let lookahead = this.pos;
+    let sawFrom = false;
+    let fromStdin = false;
+    while (lookahead < this.tokens.length) {
+      const token = this.tokens[lookahead];
+      if (token.type === 'eof' || token.value === ';') break;
+      if (token.upper === 'FROM') {
+        sawFrom = true;
+      } else if (sawFrom) {
+        if (token.upper === 'STDIN') {
+          fromStdin = true;
+          break;
+        }
+        sawFrom = false;
+      }
+      lookahead++;
+    }
+
+    if (!fromStdin) {
+      return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
+    }
+
     const startToken = this.peek();
     const startPos = startToken.position;
 
-    let sawFrom = false;
-    let fromStdin = false;
+    sawFrom = false;
+    fromStdin = false;
     let endPos = startPos;
 
     while (!this.isAtEnd()) {
@@ -2153,7 +2203,12 @@ export class Parser {
     items.push(this.parseOrderByItem());
     while (this.check(',')) {
       this.advance();
-      if (this.peekType() === 'line_comment' && !items[items.length - 1].trailingComment) {
+      if (
+        this.peekType() === 'line_comment'
+        && !items[items.length - 1].trailingComment
+        && this.pos > 0
+        && this.peek().line === this.tokens[this.pos - 1].line
+      ) {
         const t = this.advance();
         const last = items[items.length - 1];
         items[items.length - 1] = { ...last, trailingComment: { type: 'comment', style: 'line', text: t.value } };
@@ -2188,7 +2243,11 @@ export class Parser {
       }
     }
     let trailingComment: AST.CommentNode | undefined;
-    if (this.peekType() === 'line_comment') {
+    if (
+      this.peekType() === 'line_comment'
+      && this.pos > 0
+      && this.peek().line === this.tokens[this.pos - 1].line
+    ) {
       trailingComment = {
         type: 'comment',
         style: 'line',
@@ -2225,12 +2284,19 @@ export class Parser {
   private parseAnd(): AST.Expression {
     let left = this.parseNot();
     // BETWEEN consumes its own AND token at comparison precedence, so plain AND
-    // here always means boolean conjunction.
+    // here always means boolean conjunction. MySQL also accepts && as AND.
     while (true) {
       const preCommentStart = this.pos;
       const preCommentCount = this.consumeCommentsIfFollowedByKeyword('AND');
-      if (this.peekUpper() !== 'AND') break;
-      this.advance();
+      let operator: 'AND' | '&&' | null = null;
+      if (this.peekUpper() === 'AND') {
+        this.advance();
+        operator = 'AND';
+      } else if (this.peek().type === 'operator' && this.peek().value === '&&') {
+        this.advance();
+        operator = '&&';
+      }
+      if (!operator) break;
       const postCommentStart = this.pos;
       const comments = this.consumeComments();
       const parsedRight = this.parseNot();
@@ -2238,7 +2304,7 @@ export class Parser {
       const right = (preCommentCount > 0 || comments.length > 0)
         ? this.rawExpressionFromTokenRange(rightStart, this.pos)
         : parsedRight;
-      left = { type: 'binary', left, operator: 'AND', right };
+      left = { type: 'binary', left, operator, right };
     }
     return left;
   }
@@ -2291,7 +2357,7 @@ export class Parser {
   private checkComparisonOperator(): boolean {
     const t = this.peek();
     if (t.type === 'operator') {
-      return ['=', '<>', '!=', '<', '>', '<=', '>='].includes(t.value);
+      return ['=', '<>', '!=', '<', '>', '<=', '>=', '&&'].includes(t.value);
     }
     return false;
   }
@@ -2349,7 +2415,7 @@ export class Parser {
       }
 
       // Array / JSONB containment
-      if (v === '@>' || v === '<@' || v === '&&') {
+      if (v === '@>' || v === '<@') {
         this.advance();
         const rightStart = this.pos;
         const comments = this.consumeComments();
@@ -2584,6 +2650,16 @@ export class Parser {
       }
 
       const args: AST.Expression[] = [];
+      if (CAST_STYLE_FUNCTIONS.has(upperName)) {
+        const bodyTokens = this.consumeTokensUntilTopLevelFunctionClose();
+        if (bodyTokens.length > 0) {
+          args.push({
+            type: 'raw',
+            text: this.tokensToSqlPreserveCase(bodyTokens),
+            reason: 'verbatim',
+          });
+        }
+      } else {
       const parseFunctionBodyAsRaw =
         upperName === 'JSON_TABLE'
         || upperName === 'XMLELEMENT'
@@ -2609,6 +2685,7 @@ export class Parser {
             args.push(this.parseExpression());
           }
         }
+      }
       }
 
       let separator: AST.Expression | undefined;
@@ -4497,21 +4574,35 @@ export class Parser {
   }
 
   private consumeTypeNameToken(): string {
+    const tokenSql = (token: Token): string => (token.type === 'keyword' ? token.upper : token.value);
     const first = this.advance();
-    const parts: string[] = [first.type === 'keyword' ? first.upper : first.value];
+    let typeName = tokenSql(first);
+    let continuationAnchor = first.upper;
 
+    // Schema-qualified and dotted type names: schema.type, db.schema.type
+    while (this.check('.')) {
+      this.advance();
+      const nextToken = this.peek();
+      if (nextToken.type !== 'keyword' && nextToken.type !== 'identifier' && nextToken.type !== 'string') {
+        throw new ParseError('type name', nextToken);
+      }
+      const consumed = this.advance();
+      typeName += '.' + tokenSql(consumed);
+      continuationAnchor = consumed.upper;
+    }
+
+    // Multi-word type names: DOUBLE PRECISION, TIMESTAMP WITH TIME ZONE, etc.
     while (true) {
       const nextToken = this.peek();
       if (nextToken.type !== 'keyword' && nextToken.type !== 'identifier') break;
-      const nextUpper = nextToken.upper;
-      const validNext = TYPE_CONTINUATIONS[parts[parts.length - 1]];
-      const shouldConsume = validNext !== undefined && validNext.has(nextUpper);
-      if (!shouldConsume) break;
+      const validNext = TYPE_CONTINUATIONS[continuationAnchor];
+      if (validNext === undefined || !validNext.has(nextToken.upper)) break;
       const consumed = this.advance();
-      parts.push(consumed.type === 'keyword' ? consumed.upper : consumed.value);
+      typeName += ' ' + tokenSql(consumed);
+      continuationAnchor = consumed.upper;
     }
 
-    return parts.join(' ');
+    return typeName;
   }
 
   private looksLikeMergeIntoValuesShorthand(): boolean {
@@ -4541,7 +4632,7 @@ export class Parser {
       } while (!this.isAtEnd() && depth > 0);
       typeName += this.tokensToSqlPreserveCase(typeArgsTokens);
     }
-    if (this.check('[')) {
+    while (this.check('[')) {
       typeName += this.advance().value;
       if (this.check(']')) {
         typeName += this.advance().value;

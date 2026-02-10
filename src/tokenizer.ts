@@ -1051,14 +1051,23 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
 
     // @ operators: @> then @? then @@ then bare @
     if (ch === '@') {
-      // T-SQL variables: @name / @@name
+      // T-SQL variables: @name / @@name.
+      // Require a token boundary so MySQL user@host stays as identifier @ operator identifier.
+      const prevChar = start > 0 ? input[start - 1] : '';
+      const atTokenBoundary =
+        start === 0
+        || isWhitespaceCode(prevChar.charCodeAt(0))
+        || '([=,+-*/%<>;'.includes(prevChar);
       const atNext = input[pos + 1];
       const atNext2 = input[pos + 2];
       const atStartsIdent = !!atNext && (isIdentifierContinuation(atNext) || isDigit(atNext));
       const atStartsGlobal = atNext === '@' && !!atNext2 && (isIdentifierContinuation(atNext2) || isDigit(atNext2));
       if (
+        atTokenBoundary
+        && (
         atStartsGlobal
         || atStartsIdent
+        )
       ) {
         pos++;
         if (input[pos] === '@') pos++;

@@ -722,7 +722,8 @@ export type RawReason =
   | 'comment_only'
   | 'verbatim'
   | 'transaction_control'
-  | 'trailing_semicolon_comment';
+  | 'trailing_semicolon_comment'
+  | 'slash_terminator';
 
 // Column expression with optional alias and comment
 export interface ColumnExpr {
