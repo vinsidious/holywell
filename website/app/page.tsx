@@ -6,7 +6,7 @@ import { CopyInstall } from './components/copy-install';
 export const metadata: Metadata = {
   title: 'holywell — Beautiful, Readable SQL',
   description:
-    'SQL formatter that makes your queries beautiful and readable. Format SQL instantly in your browser with full PostgreSQL support.',
+    'SQL formatter that makes your queries beautiful and readable. Format SQL instantly in your browser with PostgreSQL-first, broad multi-dialect support.',
 };
 
 export default function HomePage() {
