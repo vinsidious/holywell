@@ -49,6 +49,7 @@ const IMPLICIT_STATEMENT_STARTERS = new Set([
   'PRAGMA', 'SHOW', 'FLUSH',
   'LOCK', 'UNLOCK',
   'BACKUP', 'BULK', 'CLUSTER',
+  'PRINT',
   'SET', 'RESET', 'ANALYZE', 'VACUUM',
   'DECLARE', 'PREPARE', 'EXECUTE', 'EXEC', 'DEALLOCATE',
   'USE', 'DO', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE',
@@ -572,7 +573,10 @@ export class Parser {
       return this.parseStatementUntilEndBlock(comments, 'unsupported');
     }
     if (kw === 'IF' && this.hasKeywordAhead('BEGIN') && this.hasKeywordAhead('END')) {
-      return this.parseStatementUntilEndBlock(comments, 'unsupported', { normalizeKeywords: true });
+      return this.parseStatementUntilEndBlock(comments, 'unsupported', {
+        normalizeKeywords: true,
+        allowElseChain: true,
+      });
     }
 
     if (kw === 'WITH') return this.parseCTE(comments);
@@ -636,6 +640,9 @@ export class Parser {
     }
     if (kw === 'CALL') {
       return this.parseVerbatimStatement(comments, 'unsupported', true);
+    }
+    if (kw === 'PRINT') {
+      return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
     }
 
     if (this.peekType() === 'identifier' && this.peekUpper() === 'SP_RENAME') {
@@ -773,7 +780,7 @@ export class Parser {
   private parseStatementUntilEndBlock(
     comments: AST.CommentNode[],
     reason: AST.RawReason,
-    options: { normalizeKeywords?: boolean; allowPreBeginSemicolons?: boolean } = {},
+    options: { normalizeKeywords?: boolean; allowPreBeginSemicolons?: boolean; allowElseChain?: boolean } = {},
   ): AST.RawExpression | null {
     const startPos = this.peek().position;
     const startIndex = this.pos;
@@ -795,6 +802,10 @@ export class Parser {
         if (!this.isControlFlowEndQualifier(this.peekUpper()) && beginDepth > 0) {
           beginDepth--;
           if (beginDepth === 0) {
+            if (options.allowElseChain && this.hasElseContinuationAhead()) {
+              sawBegin = false;
+              continue;
+            }
             if (this.check(';')) {
               const semi = this.advance();
               endPos = semi.position + semi.value.length;
@@ -829,6 +840,31 @@ export class Parser {
     }
 
     return this.buildRawFromSourceSlice(comments, startPos, endPos, reason);
+  }
+
+  private hasElseContinuationAhead(): boolean {
+    let lookahead = this.pos;
+    while (lookahead < this.tokens.length) {
+      const token = this.tokens[lookahead];
+      if (token.type === 'line_comment' || token.type === 'block_comment') {
+        lookahead++;
+        continue;
+      }
+      if (token.value === ';') {
+        lookahead++;
+        while (lookahead < this.tokens.length) {
+          const next = this.tokens[lookahead];
+          if (next.type === 'line_comment' || next.type === 'block_comment') {
+            lookahead++;
+            continue;
+          }
+          return next.upper === 'ELSE';
+        }
+        return false;
+      }
+      return token.upper === 'ELSE';
+    }
+    return false;
   }
 
   private combineCommentsWithRaw(

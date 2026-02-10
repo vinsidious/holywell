@@ -93,6 +93,13 @@ comment on column public.user.email is 'Email address of the user.';`;
     expect(out).toContain('FROM catalog.executions AS ex(NOLOCK)');
   });
 
+  it('uppercases PRINT statements in T-SQL batches', () => {
+    const out = formatSQL("print 'Bangla GPA = '+ CAST(@banglagpa AS VARCHAR);");
+
+    expect(out).toContain("PRINT 'Bangla GPA = '+ CAST(@banglagpa AS VARCHAR);");
+    expect(out).not.toContain("print 'Bangla GPA = '+ CAST(@banglagpa AS VARCHAR);");
+  });
+
   it('keeps CREATE FUNCTION names and parameter names as identifiers when they match keyword text', () => {
     const sql = `CREATE OR REPLACE FUNCTION jwt.url_encode(data bytea)
 RETURNS text
