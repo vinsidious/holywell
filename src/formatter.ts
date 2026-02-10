@@ -238,7 +238,7 @@ function deriveRiverWidth(node: AST.Node): number {
     case 'delete': {
       let width = Math.max('DELETE'.length, 'FROM'.length);
       if (node.using && node.using.length > 0) width = Math.max(width, 'USING'.length);
-      if (node.where) width = Math.max(width, 'WHERE'.length);
+      if (node.where || node.currentOf) width = Math.max(width, 'WHERE'.length);
       if (node.returning && node.returning.length > 0) {
         width = Math.max(width, 'RETURNING'.length);
       }
@@ -633,7 +633,13 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
   const topStr = node.top ? ` ${node.top}` : '';
   const colStartCol = contentCol(ctx) + stringDisplayWidth(distinctStr + topStr);
   const colStr = formatColumnList(node.columns, colStartCol, ctx);
-  lines.push(selectKw + distinctStr + topStr + ' ' + colStr);
+  const firstColumnHasLeadingComments = !!(node.columns[0]?.leadingComments && node.columns[0].leadingComments.length > 0);
+  if (firstColumnHasLeadingComments) {
+    lines.push(selectKw + distinctStr + topStr);
+    lines.push(colStr);
+  } else {
+    lines.push(selectKw + distinctStr + topStr + ' ' + colStr);
+  }
 
   if (node.into) {
     lines.push(rightAlign('INTO', ctx) + ' ' + node.into);
@@ -943,10 +949,11 @@ function shouldPackColumnGroup(
 
 function formatColumnsOnePerLine(parts: FormattedColumnPart[], indent: string): string {
   const result: string[] = [];
+  const firstHasLeadingComments = !!(parts[0]?.leadingComments && parts[0].leadingComments.length > 0);
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
-    const baseIndent = i === 0 ? '' : indent;
-    const commentIndent = i === 0 ? indent : indent;
+    const baseIndent = i === 0 ? (firstHasLeadingComments ? indent : '') : indent;
+    const commentIndent = indent;
     if (p.leadingComments && p.leadingComments.length > 0) {
       for (const comment of p.leadingComments) {
         result.push(commentIndent + comment.text);
@@ -2113,7 +2120,11 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
 
-  const insertHead = rightAlign('INSERT', dmlCtx) + (node.ignore ? ' IGNORE' : '') + ' INTO ' + lowerIdent(node.table);
+  const insertHead = rightAlign('INSERT', dmlCtx)
+    + (node.ignore ? ' IGNORE' : '')
+    + ' INTO '
+    + lowerIdent(node.table)
+    + (node.alias ? ' AS ' + formatAlias(node.alias) : '');
   const hasCommentColumns = node.columns.some(isInsertColumnComment);
   const formattedColumns = node.columns.map(formatWriteIdentifier);
   const inlineColumns = node.columns.length > 0
@@ -2390,6 +2401,9 @@ function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
   if (node.where) {
     const whereKw = rightAlign('WHERE', dmlCtx);
     lines.push(whereKw + ' ' + formatCondition(node.where.condition, dmlCtx));
+  } else if (node.currentOf) {
+    const whereKw = rightAlign('WHERE', dmlCtx);
+    lines.push(whereKw + ' CURRENT OF ' + lowerIdent(node.currentOf));
   }
 
   if (appendReturningClause(lines, node.returning, dmlCtx)) return lines.join('\n');

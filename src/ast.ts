@@ -111,6 +111,7 @@ export interface InsertStatement {
   readonly type: 'insert';
   readonly ignore?: boolean;
   readonly table: string;
+  readonly alias?: string;
   readonly columns: readonly string[];
   readonly overriding?: 'SYSTEM VALUE' | 'USER VALUE';
   readonly valueClauseLeadingComments?: readonly CommentNode[];
@@ -152,6 +153,7 @@ export interface DeleteStatement {
   readonly using?: readonly FromClause[];
   readonly usingJoins?: readonly JoinClause[];
   readonly where?: WhereClause;
+  readonly currentOf?: string;
   readonly returning?: readonly Expression[];
   readonly leadingComments: readonly CommentNode[];
 }

@@ -37,6 +37,10 @@ export function parseInsertStatement(
     ctx.advance(); // consume dot
     table += '.' + ctx.advance().value;
   }
+  const alias = parseOptionalTableAlias(
+    ctx,
+    new Set(['OVERRIDING', 'DEFAULT', 'VALUE', 'VALUES', 'SELECT', 'WITH', 'ON', 'RETURNING'])
+  );
 
   let columns: string[] = [];
   let selectQuery: AST.QueryExpression | undefined;
@@ -102,6 +106,7 @@ export function parseInsertStatement(
     type: 'insert',
     ignore: ignore || undefined,
     table,
+    alias,
     columns,
     overriding,
     valueClauseLeadingComments: valueClauseLeadingComments.length > 0 ? valueClauseLeadingComments : undefined,
@@ -394,14 +399,33 @@ export function parseDeleteStatement(
   }
 
   let where: AST.WhereClause | undefined;
+  let currentOf: string | undefined;
   if (ctx.peekUpper() === 'WHERE') {
     ctx.advance();
-    where = { condition: ctx.parseExpression() };
+    if (ctx.peekUpper() === 'CURRENT' && ctx.peekUpperAt(1) === 'OF') {
+      ctx.advance();
+      ctx.advance();
+      currentOf = parseDottedName(ctx);
+    } else {
+      where = { condition: ctx.parseExpression() };
+    }
   }
 
   const returning = parseOptionalReturning(ctx);
 
-  return { type: 'delete', targets, from: table, alias, fromJoins, using, usingJoins, where, returning, leadingComments: comments };
+  return {
+    type: 'delete',
+    targets,
+    from: table,
+    alias,
+    fromJoins,
+    using,
+    usingJoins,
+    where,
+    currentOf,
+    returning,
+    leadingComments: comments,
+  };
 }
 
 function parseParenthesizedIdentifierList(ctx: DmlParser): string[] {
@@ -438,7 +462,7 @@ function parseOptionalTableAlias(ctx: DmlParser, stopKeywords: Set<string>): str
   if (ctx.isJoinKeyword()) return undefined;
   const upper = ctx.peekUpper();
   if (stopKeywords.has(upper)) return undefined;
-  if (ctx.check(',') || ctx.check(')') || ctx.check(';')) return undefined;
+  if (ctx.check(',') || ctx.check('(') || ctx.check(')') || ctx.check(';')) return undefined;
   // Accept identifiers and non-clause keywords as aliases.
   const token = ctx.advance();
   if (token.type === 'identifier') return token.value;
