@@ -50,7 +50,7 @@ const IMPLICIT_STATEMENT_STARTERS = new Set([
   'LOCK', 'UNLOCK',
   'BACKUP', 'BULK', 'CLUSTER',
   'PRINT',
-  'SET', 'RESET', 'ANALYZE', 'VACUUM',
+  'SET', 'RESET', 'ANALYZE', 'ANALYSE', 'VACUUM',
   'REINDEX',
   'DECLARE', 'PREPARE', 'EXECUTE', 'EXEC', 'DEALLOCATE',
   'USE', 'DO', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE',
@@ -692,6 +692,7 @@ export class Parser {
     if (
       kw === 'RESET'
       || kw === 'ANALYZE'
+      || kw === 'ANALYSE'
       || kw === 'VACUUM'
       || kw === 'REINDEX'
       || kw === 'DECLARE'
@@ -2177,7 +2178,18 @@ export class Parser {
     if (kw === 'JOIN') return true;
     if (kw === 'STRAIGHT_JOIN') return true;
     if ((kw === 'CROSS' || kw === 'OUTER') && this.peekUpperAt(1) === 'APPLY') return true;
-    if (kw === 'INNER' || kw === 'LEFT' || kw === 'RIGHT' || kw === 'FULL' || kw === 'CROSS' || kw === 'NATURAL') {
+    if (kw === 'NATURAL') {
+      const next1 = this.peekUpperAt(1);
+      if (next1 === 'JOIN') return true;
+      if (next1 === 'INNER') return this.peekUpperAt(2) === 'JOIN';
+      if (next1 === 'LEFT' || next1 === 'RIGHT' || next1 === 'FULL') {
+        const next2 = this.peekUpperAt(2);
+        if (next2 === 'JOIN') return true;
+        if (next2 === 'OUTER') return this.peekUpperAt(3) === 'JOIN';
+      }
+      return false;
+    }
+    if (kw === 'INNER' || kw === 'LEFT' || kw === 'RIGHT' || kw === 'FULL' || kw === 'CROSS') {
       const next1 = this.peekUpperAt(1);
       if (next1 === 'JOIN') return true;
       if (next1 === 'OUTER' || next1 === 'INNER') {
@@ -3721,7 +3733,7 @@ export class Parser {
 
     const parseOption = (): boolean => {
       const kw = this.peekUpper();
-      if (kw === 'ANALYZE') {
+      if (kw === 'ANALYZE' || kw === 'ANALYSE') {
         this.advance();
         const value = parseOptionalExplainBoolean();
         if (value) analyze = true;
@@ -4176,6 +4188,10 @@ export class Parser {
           elements.push({
             elementType: 'comment',
             raw: comment.text,
+            commentStyle: comment.style,
+            commentStartsOnOwnLine: comment.startsOnOwnLine,
+            commentBlankLinesBefore: comment.blankLinesBefore,
+            commentBlankLinesAfter: comment.blankLinesAfter,
           });
         }
         if (this.check(')')) break;
@@ -5113,7 +5129,18 @@ export class Parser {
     if (kw === 'JOIN') return true;
     if (kw === 'STRAIGHT_JOIN') return true;
     if ((kw === 'CROSS' || kw === 'OUTER') && (this.tokens[index + 1]?.upper ?? '') === 'APPLY') return true;
-    if (kw === 'INNER' || kw === 'LEFT' || kw === 'RIGHT' || kw === 'FULL' || kw === 'CROSS' || kw === 'NATURAL') {
+    if (kw === 'NATURAL') {
+      const next1 = this.tokens[index + 1]?.upper ?? '';
+      if (next1 === 'JOIN') return true;
+      if (next1 === 'INNER') return (this.tokens[index + 2]?.upper ?? '') === 'JOIN';
+      if (next1 === 'LEFT' || next1 === 'RIGHT' || next1 === 'FULL') {
+        const next2 = this.tokens[index + 2]?.upper ?? '';
+        if (next2 === 'JOIN') return true;
+        if (next2 === 'OUTER') return (this.tokens[index + 3]?.upper ?? '') === 'JOIN';
+      }
+      return false;
+    }
+    if (kw === 'INNER' || kw === 'LEFT' || kw === 'RIGHT' || kw === 'FULL' || kw === 'CROSS') {
       const next1 = this.tokens[index + 1]?.upper ?? '';
       if (next1 === 'JOIN') return true;
       if (next1 === 'OUTER' || next1 === 'INNER') {
