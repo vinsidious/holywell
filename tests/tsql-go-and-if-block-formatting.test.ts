@@ -64,3 +64,37 @@ end`;
     expect(out).not.toContain('\nbegin\n');
   });
 });
+
+describe('T-SQL procedure control flow across GO batches', () => {
+  it('keeps execute parameter blocks nested inside IF BEGIN END and preserves GO separators', () => {
+    const sql = `ALTER PROCEDURE [dbo].[sp_HealthParser]
+AS
+BEGIN
+    IF @condition = 1
+    BEGIN
+        EXECUTE sys.sp_executesql
+            @insert_sql,
+            N'@max_event_time datetime2(7)',
+            @max_event_time
+    END
+END
+GO
+SELECT 1`;
+
+    expect(() => parse(sql, { recover: false })).not.toThrow();
+
+    const out = formatSQL(sql);
+    const ifPos = out.indexOf('IF @condition = 1');
+    const innerBeginPos = out.indexOf('BEGIN', ifPos);
+    const execPos = out.indexOf('EXECUTE sys.sp_executesql', innerBeginPos);
+    const innerEndPos = out.indexOf('END', execPos);
+    const goPos = out.indexOf('\nGO\n');
+
+    expect(ifPos).toBeGreaterThanOrEqual(0);
+    expect(innerBeginPos).toBeGreaterThan(ifPos);
+    expect(execPos).toBeGreaterThan(innerBeginPos);
+    expect(innerEndPos).toBeGreaterThan(execPos);
+    expect(goPos).toBeGreaterThan(innerEndPos);
+    expect(out).toContain("@max_event_time datetime2(7)");
+  });
+});
