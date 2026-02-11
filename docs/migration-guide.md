@@ -20,9 +20,9 @@ Before you run `holywell` on existing SQL, understand what will change:
 
 All SQL keywords are uppercased. `select` becomes `SELECT`, `inner join` becomes `INNER JOIN`, etc.
 
-### Unquoted identifiers become lowercase
+### ALL-CAPS identifiers become lowercase
 
-Unquoted table and column names are lowercased. `MyTable` becomes `mytable`, `UserID` becomes `userid`.
+ALL-CAPS unquoted identifiers are lowercased to avoid shouting: `MYTABLE` becomes `mytable`, `USERID` becomes `userid`. Mixed-case identifiers are preserved as-is: `MyTable` stays `MyTable`, `userId` stays `userId`.
 
 **Quoted identifiers are preserved exactly.** `"MyTable"` stays `"MyTable"`.
 
@@ -35,9 +35,9 @@ Unquoted table and column names are lowercased. `MyTable` becomes `mytable`, `Us
 
 ### Warning: case-sensitive databases
 
-Most databases (PostgreSQL, MySQL, SQL Server) treat unquoted identifiers as case-insensitive, so lowercasing them has no effect on query behavior.
+Most databases (PostgreSQL, MySQL, SQL Server) treat unquoted identifiers as case-insensitive, so lowercasing ALL-CAPS identifiers has no effect on query behavior. Mixed-case identifiers are preserved, so this is rarely an issue.
 
-However, if your database or collation is configured to treat unquoted identifiers as case-sensitive (uncommon, but possible in some configurations), lowercasing could change which table or column is referenced. In this case:
+However, if your database or collation is configured to treat unquoted identifiers as case-sensitive (uncommon, but possible in some configurations), the ALL-CAPS lowercasing could change which table or column is referenced. In this case:
 
 1. Use quoted identifiers (`"MyTable"`) for any names that depend on specific casing
 2. Or run `holywell --check` first to preview changes before applying `--write`

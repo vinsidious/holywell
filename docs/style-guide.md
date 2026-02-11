@@ -10,7 +10,7 @@ These rules are automatically applied by holywell on every format.
 |------|-------------|
 | Right-aligned keywords | Clause keywords (`SELECT`, `FROM`, `WHERE`, `AND`, `OR`, `JOIN`, etc.) are right-aligned to a per-statement river width |
 | Uppercase keywords | All SQL reserved words are uppercased (`SELECT`, `FROM`, `WHERE`, `INSERT`, etc.) |
-| Lowercase identifiers | Unquoted identifiers (table names, column names) are lowercased; quoted identifiers are preserved as-is |
+| Identifier normalization | ALL-CAPS unquoted identifiers are lowercased (e.g., `MYTABLE` becomes `mytable`); mixed-case identifiers like `MyColumn` are preserved; quoted identifiers are unchanged |
 | Trailing commas | Column lists use trailing commas with continuation lines indented past the river |
 | No trailing whitespace | All trailing whitespace is stripped from every line |
 | Consistent indentation | Continuation lines, subexpressions, and nested blocks are indented predictably relative to the river |

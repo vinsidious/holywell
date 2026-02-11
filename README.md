@@ -30,6 +30,8 @@ SELECT e.name,
 
 > **Disclaimer:** This project is not officially associated with or endorsed by Simon Holywell or sqlstyle.guide. It is an independent, faithful implementation of the SQL formatting rules described in that style guide.
 
+> **Built with AI.** holywell was built entirely with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) -- every line of code, every test, every doc. This is not a disclaimer; it is a design choice. AI-generated code can be regenerated, refactored, and extended by future AI agents with minimal friction. The result is a codebase optimized for correctness, determinism, and maintainability over human aesthetics.
+
 ## Quick Start
 
 ### Install
@@ -209,16 +211,13 @@ Coverage is PostgreSQL-first, but materially broader than ANSI + PostgreSQL alon
 
 If you rely heavily on vendor extensions, run `--check` in CI and use `--strict` where parse failures should block merges.
 
-You can extend keyword/clause recognition without forking:
+Choose a built-in dialect explicitly when formatting:
 
 ```typescript
 import { formatSQL } from 'holywell';
 
 const formatted = formatSQL(sql, {
-  dialect: {
-    additionalKeywords: ['QUALIFY', 'TOP'],
-    clauseKeywords: ['QUALIFY'],
-  },
+  dialect: 'postgres',
 });
 ```
 
@@ -257,7 +256,7 @@ This formatter implements the [Simon Holywell SQL Style Guide](https://www.sqlst
 
 - **River alignment** -- Clause/logical keywords are right-aligned to a per-statement river width derived from the longest top-level aligned keyword
 - **Keyword uppercasing** -- Reserved words like `SELECT`, `FROM`, `WHERE` are uppercased
-- **Identifier normalization** -- Most unquoted identifiers are lowercased; quoted identifiers are preserved
+- **Identifier normalization** -- ALL-CAPS unquoted identifiers are lowercased (e.g., `MYTABLE` becomes `mytable`); mixed-case identifiers like `MyColumn` are preserved; quoted identifiers are unchanged
 - **Right-aligned clause/logical keywords** -- `SELECT`, `FROM`, `WHERE`, `AND`, `OR`, `JOIN`, `ON`, `ORDER BY`, `GROUP BY`, etc. align within each formatted block
 - **Consistent indentation** -- Continuation lines and subexpressions are indented predictably
 
@@ -274,7 +273,7 @@ For the full style guide, see [sqlstyle.guide](https://www.sqlstyle.guide/) or t
 | **Runtime dependencies** | Zero | 8 deps | Prettier + parser | Perl runtime | Python + deps |
 | **Idempotent** | Yes | Yes | Yes | Yes | Yes |
 | **Keyword casing** | Uppercase (enforced) | Configurable | Configurable | Configurable | Configurable |
-| **Identifier casing** | Lowercase (enforced) | Not modified | Not modified | Configurable | Not modified |
+| **Identifier casing** | ALL-CAPS lowercased; mixed-case preserved | Not modified | Not modified | Configurable | Not modified |
 | **Output** | Deterministic, single style | Depends on config | Depends on config | Depends on config | Depends on config |
 | **Editor extensions** | In development | Available | Prettier-compatible | VS Code extension | VS Code extension |
 
@@ -288,6 +287,7 @@ It does support a focused optional config file (`.holywellrc.json`) for operatio
 - `maxLineLength`
 - `maxDepth`
 - `maxInputSize`
+- `dialect`
 - `strict`
 - `recover`
 
@@ -316,6 +316,9 @@ npx holywell -l "migrations/*.sql"
 
 # Strict mode: fail on unparseable SQL instead of passing through
 npx holywell --strict --check "**/*.sql"
+
+# Select SQL dialect explicitly
+npx holywell --dialect postgres --write query.sql
 
 # Tune output width
 npx holywell --max-line-length 100 query.sql
@@ -484,7 +487,7 @@ Line comments and block comments are preserved. Comments attached to specific ex
 
 ### Keyword Casing
 
-All SQL keywords are uppercased. Identifiers are preserved as-is (quoted identifiers keep their case and quotes). Unquoted identifiers are lowercased.
+All SQL keywords are uppercased. Quoted identifiers keep their case and quotes. ALL-CAPS unquoted identifiers are lowercased to avoid shouting (e.g., `MYTABLE` becomes `mytable`); mixed-case identifiers like `MyColumn` are preserved as-is.
 
 ### Idempotency
 
@@ -506,7 +509,7 @@ In default (recovery) mode, unrecognized statements are passed through unchanged
 
 **Q: Does holywell modify SQL semantics?**
 
-No. holywell changes whitespace, uppercases SQL keywords, lowercases unquoted identifiers, and normalizes alias syntax (e.g., inserting AS). Quoted identifiers and string literals are preserved exactly. The semantic meaning is preserved.
+No. holywell changes whitespace, uppercases SQL keywords, lowercases ALL-CAPS unquoted identifiers (mixed-case identifiers are preserved), and normalizes alias syntax (e.g., inserting AS). Quoted identifiers and string literals are preserved exactly. The semantic meaning is preserved.
 
 **Q: Does holywell respect `.editorconfig`?**
 
@@ -515,10 +518,6 @@ No. holywell does not read `.editorconfig`. It does read `.holywellrc.json` (or 
 **Q: Can I customize the river width?**
 
 Not directly. River width is derived automatically from statement structure. You can influence wrapping via `maxLineLength`, but keyword alignment behavior itself is fixed.
-
-**Q: Does formatting change SQL semantics?**
-
-holywell only changes whitespace and casing. Specifically: SQL keywords are uppercased (`select` becomes `SELECT`), unquoted identifiers are lowercased (`MyTable` becomes `mytable`), and quoted identifiers are preserved exactly (`"MyTable"` stays `"MyTable"`). If your database is case-sensitive for unquoted identifiers (rare, but possible), see the [Migration Guide](docs/migration-guide.md) for details.
 
 **Q: Does holywell work with MySQL / SQL Server / SQLite / Oracle?**
 

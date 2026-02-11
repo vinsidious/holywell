@@ -52,7 +52,7 @@ Use this walkthrough as a guide when adding support for a new SQL construct.
 
 ### 1. Add AST node(s)
 
-Define the new node type(s) in the AST type definitions (`src/types.ts`). Each node should have a `type` field and contain only the information needed for formatting.
+Define the new node type(s) in the AST type definitions (`src/ast.ts`). Each node should have a `type` field and contain only the information needed for formatting.
 
 ### 2. Add parser rule(s)
 
