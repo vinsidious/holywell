@@ -14,7 +14,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@3d267786b128fe76c2f16a390aa2448b815359f3 # v2.1.2
         with:
-          bun-version: latest
+          bun-version: "1.1.45"
 
       - run: bun install --frozen-lockfile
 
@@ -30,8 +30,34 @@ jobs:
 
       - uses: oven-sh/setup-bun@3d267786b128fe76c2f16a390aa2448b815359f3 # v2.1.2
         with:
-          bun-version: latest
+          bun-version: "1.1.45"
 
       - run: bun install --frozen-lockfile
 
       - run: bun run build
+
+  node-compat:
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+    name: "Node ${{ matrix.node-version }} smoke test"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: oven-sh/setup-bun@3d267786b128fe76c2f16a390aa2448b815359f3 # v2.1.2
+        with:
+          bun-version: "1.1.45"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run build
+
+      - run: node tests/node-smoke.mjs
+
+      - run: node tests/node-cli-smoke.mjs
