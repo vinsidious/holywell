@@ -772,6 +772,7 @@ export interface ColumnExpr {
 
 export interface FromClause {
   readonly table: Expression;
+  readonly only?: boolean;
   readonly alias?: string;
   readonly aliasColumns?: readonly string[];
   readonly indexHint?: string;
@@ -785,6 +786,7 @@ export interface FromClause {
 export interface JoinClause {
   readonly joinType: string; // 'INNER JOIN', 'LEFT JOIN', 'LEFT OUTER JOIN', etc.
   readonly table: Expression;
+  readonly only?: boolean;
   readonly alias?: string;
   readonly aliasColumns?: readonly string[];
   readonly indexHint?: string;

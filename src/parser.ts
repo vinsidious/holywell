@@ -1872,6 +1872,12 @@ export class Parser {
       lateral = true;
     }
 
+    let only = false;
+    if (this.peekUpper() === 'ONLY') {
+      this.advance();
+      only = true;
+    }
+
     const table = this.parseTableExprWithDescendants();
     let tablesample: AST.FromClause['tablesample'];
 
@@ -1908,6 +1914,7 @@ export class Parser {
 
     return {
       table,
+      only: only || undefined,
       alias,
       aliasColumns,
       indexHint,
@@ -2185,6 +2192,11 @@ export class Parser {
   private parseJoin(): AST.JoinClause {
     if (this.peekUpper() === 'STRAIGHT_JOIN') {
       const joinType = this.advance().upper;
+      let only = false;
+      if (this.peekUpper() === 'ONLY') {
+        this.advance();
+        only = true;
+      }
       const table = this.parseTableExprWithDescendants();
       let ordinality = false;
       if (this.peekUpper() === 'WITH' && this.peekUpperAt(1) === 'ORDINALITY') {
@@ -2243,6 +2255,7 @@ export class Parser {
       return {
         joinType,
         table,
+        only: only || undefined,
         alias,
         aliasColumns,
         indexHint,
@@ -2258,6 +2271,11 @@ export class Parser {
 
     if ((this.peekUpper() === 'CROSS' || this.peekUpper() === 'OUTER') && this.peekUpperAt(1) === 'APPLY') {
       const joinType = this.advance().upper + ' ' + this.advance().upper;
+      let only = false;
+      if (this.peekUpper() === 'ONLY') {
+        this.advance();
+        only = true;
+      }
       const table = this.parseTableExprWithDescendants();
       const { alias, aliasColumns } = this.parseOptionalAlias({
         allowColumnList: true,
@@ -2265,7 +2283,7 @@ export class Parser {
       });
       const indexHint = this.parseOptionalIndexHintClause();
       const pivotClause = this.parseOptionalPivotClause();
-      return { joinType, table, alias, aliasColumns, indexHint, pivotClause };
+      return { joinType, table, only: only || undefined, alias, aliasColumns, indexHint, pivotClause };
     }
 
     let joinType = '';
@@ -2278,6 +2296,12 @@ export class Parser {
     if (this.peekUpper() === 'LATERAL') {
       this.advance();
       lateral = true;
+    }
+
+    let only = false;
+    if (this.peekUpper() === 'ONLY') {
+      this.advance();
+      only = true;
     }
 
     const table = this.parseTableExprWithDescendants();
@@ -2339,6 +2363,7 @@ export class Parser {
     return {
       joinType: joinType.trim(),
       table,
+      only: only || undefined,
       alias,
       aliasColumns,
       indexHint,
