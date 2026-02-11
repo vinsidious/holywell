@@ -963,7 +963,7 @@ const DROP_NAME_BOUNDARY_STARTERS = new Set([
   'DECLARE', 'PREPARE', 'EXECUTE', 'EXEC', 'DEALLOCATE',
   'USE', 'DO', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE',
   'START', 'VALUES', 'COPY', 'DELIMITER',
-  'GO', 'ACCEPT', 'DESCRIBE', 'REM', 'DEFINE',
+  'GO', 'ACCEPT', 'DESC', 'DESCRIBE', 'REM', 'DEFINE',
 ]);
 
 function isDropNameBoundaryToken(token: Token): boolean {

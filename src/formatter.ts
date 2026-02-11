@@ -2,6 +2,7 @@ import * as AST from './ast';
 import { FUNCTION_KEYWORDS } from './keywords';
 import { DEFAULT_MAX_DEPTH, TERMINAL_WIDTH } from './constants';
 import { parse } from './parser';
+import { tokenize } from './tokenizer';
 
 function isInExprSubquery(expr: AST.InExpr): expr is AST.InExprSubquery {
   return expr.kind === 'subquery';
@@ -361,8 +362,65 @@ function formatRawTopLevelNode(text: string, ctx: FormatContext): string {
   if (routine) return routine;
   const beginEnd = tryFormatBeginEndBlock(text, ctx.runtime);
   if (beginEnd) return beginEnd;
+  const alterView = tryFormatAlterViewAsQuery(text, ctx.runtime);
+  if (alterView) return alterView;
   const returnSelect = tryFormatReturnParenthesizedSelect(text, ctx.runtime);
   return returnSelect ?? text;
+}
+
+function tryFormatAlterViewAsQuery(text: string, runtime: FormatterRuntime): string | null {
+  const trimmed = text.trim();
+  if (!/^ALTER\s+VIEW\b/i.test(trimmed)) return null;
+
+  const tokens = tokenize(trimmed)
+    .filter(token => token.type !== 'whitespace' && token.type !== 'line_comment' && token.type !== 'block_comment' && token.type !== 'eof');
+  if (tokens.length < 4 || tokens[0].upper !== 'ALTER' || tokens[1].upper !== 'VIEW') return null;
+
+  let groupDepth = 0;
+  let asTokenIndex = -1;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token.value === '(' || token.value === '[' || token.value === '{') {
+      groupDepth++;
+      continue;
+    }
+    if (token.value === ')' || token.value === ']' || token.value === '}') {
+      groupDepth = Math.max(0, groupDepth - 1);
+      continue;
+    }
+    if (groupDepth === 0 && token.upper === 'AS') {
+      asTokenIndex = i;
+      break;
+    }
+  }
+  if (asTokenIndex < 0 || asTokenIndex + 1 >= tokens.length) return null;
+
+  const queryStartToken = tokens[asTokenIndex + 1];
+  if (queryStartToken.upper !== 'SELECT' && queryStartToken.upper !== 'WITH' && queryStartToken.upper !== 'VALUES') {
+    return null;
+  }
+
+  const asToken = tokens[asTokenIndex];
+  const header = trimmed.slice(0, asToken.position + asToken.value.length).trim().replace(/\s+/g, ' ');
+  const querySql = trimmed.slice(queryStartToken.position).trim().replace(/;$/, '') + ';';
+
+  try {
+    const nodes = parse(querySql, {
+      recover: false,
+      maxDepth: DEFAULT_MAX_DEPTH,
+    });
+    if (nodes.length !== 1) return null;
+    const node = nodes[0];
+    if (node.type !== 'select' && node.type !== 'cte' && node.type !== 'union' && node.type !== 'standalone_values') {
+      return null;
+    }
+    const formattedQuery = formatStatements(nodes, {
+      maxLineLength: runtime.maxLineLength,
+    }).trim();
+    return `${header}\n${formattedQuery}`;
+  } catch {
+    return null;
+  }
 }
 
 function tryFormatRoutineBlock(text: string, runtime: FormatterRuntime): string | null {
@@ -1983,11 +2041,12 @@ function formatWindowFunctionAtColumn(
   runtime: FormatterRuntime
 ): string {
   const func = formatFunctionCall(expr.func);
+  const funcWithNullTreatment = expr.nullTreatment ? `${func} ${expr.nullTreatment}` : func;
   const hasWindowSpecParts = !!(expr.partitionBy || expr.orderBy || expr.frame || expr.exclude);
   if (expr.windowName && !hasWindowSpecParts) {
-    return func + ' OVER ' + expr.windowName;
+    return funcWithNullTreatment + ' OVER ' + expr.windowName;
   }
-  const overStart = func + ' OVER (';
+  const overStart = funcWithNullTreatment + ' OVER (';
   const overContentCol = col + overStart.length;
 
   if (expr.windowName && !expr.partitionBy && !expr.orderBy && expr.frame) {
@@ -1996,7 +2055,7 @@ function formatWindowFunctionAtColumn(
       overContentCol + expr.windowName.length + 1,
       expr.exclude,
     );
-    return func + ' OVER (' + expr.windowName + ' ' + frame + ')';
+    return funcWithNullTreatment + ' OVER (' + expr.windowName + ' ' + frame + ')';
   }
 
   // Collect parts with their BY keyword length for alignment
@@ -2043,14 +2102,14 @@ function formatWindowFunctionAtColumn(
   }
 
   if (overParts.length <= 1 && !expr.frame) {
-    const inline = func + ' OVER (' + overParts.map(p => p.text).join('') + ')';
+    const inline = funcWithNullTreatment + ' OVER (' + overParts.map(p => p.text).join('') + ')';
     if (col + stringDisplayWidth(inline) <= runtime.maxLineLength) {
       return inline;
     }
   }
 
   const pad = ' '.repeat(overContentCol);
-  let result = func + ' OVER (';
+  let result = funcWithNullTreatment + ' OVER (';
   for (let i = 0; i < overParts.length; i++) {
     const part = overParts[i];
     let extraPad: string;
@@ -2148,6 +2207,18 @@ function formatInsertSourceAlias(
   return out;
 }
 
+function shouldWrapValuesTuple(
+  tupleText: string,
+  prefix: string,
+  maxLineLength: number,
+  valueCount: number,
+): boolean {
+  if (valueCount <= 1) return false;
+  const lineWidth = stringDisplayWidth(prefix + tupleText);
+  if (valueCount >= 8 && lineWidth > maxLineLength) return true;
+  return lineWidth > Math.max(maxLineLength * 2, 160);
+}
+
 function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   const dmlCtx: FormatContext = {
     ...ctx,
@@ -2215,14 +2286,25 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
       if (tupleNode.leadingComments && tupleNode.leadingComments.length > 0) {
         emitComments(tupleNode.leadingComments, lines);
       }
-      const tuple = '(' + tupleNode.values.map(formatExpr).join(', ') + ')';
+      const tupleValues = tupleNode.values.map(formatExpr);
+      const tuple = '(' + tupleValues.join(', ') + ')';
       const comma = i < node.values.length - 1 ? ',' : '';
       const prefix = i === 0 ? rightAlign('VALUES', dmlCtx) + ' ' : contentPad(dmlCtx);
       const trailing = tupleNode.trailingComments && tupleNode.trailingComments.length > 0
         ? ' ' + tupleNode.trailingComments.map(c => c.text).join(' ')
         : '';
       const sourceAlias = i === node.values.length - 1 ? formatInsertSourceAlias(node.valuesAlias) : '';
-      lines.push(prefix + tuple + trailing + comma + sourceAlias);
+      if (shouldWrapValuesTuple(tuple, prefix, dmlCtx.runtime.maxLineLength, tupleValues.length)) {
+        const tuplePad = ' '.repeat(prefix.length);
+        lines.push(prefix + '(');
+        for (let j = 0; j < tupleValues.length; j++) {
+          const valueComma = j < tupleValues.length - 1 ? ',' : '';
+          lines.push(tuplePad + tupleValues[j] + valueComma);
+        }
+        lines.push(tuplePad + ')' + trailing + comma + sourceAlias);
+      } else {
+        lines.push(prefix + tuple + trailing + comma + sourceAlias);
+      }
     }
   } else if (node.defaultValues) {
     lines.push(rightAlign('DEFAULT', dmlCtx) + ' VALUES');
@@ -2636,8 +2718,8 @@ function formatCreatePolicy(node: AST.CreatePolicyStatement, ctx: FormatContext)
 function formatGrant(node: AST.GrantStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
-  if (node.privileges.length === 0 || node.recipients.length === 0) {
-    throw new Error('Invalid grant statement AST: missing privileges or recipients');
+  if (node.privileges.length === 0) {
+    throw new Error('Invalid grant statement AST: missing privileges');
   }
 
   const head = node.kind
@@ -2646,18 +2728,19 @@ function formatGrant(node: AST.GrantStatement, ctx: FormatContext): string {
     + node.privileges.join(', ');
   lines.push(head);
 
+  const hasRecipients = node.recipients.length > 0;
   if (node.kind === 'GRANT') {
     if (node.object) {
       lines.push(...formatGrantObjectLines(node.object, '   ON ', ctx.runtime.maxLineLength));
-      lines.push('   TO ' + node.recipients.join(', '));
-    } else {
+    }
+    if (hasRecipients) {
       lines.push('   TO ' + node.recipients.join(', '));
     }
   } else {
     if (node.object) {
       lines.push(...formatGrantObjectLines(node.object, '  ON ', ctx.runtime.maxLineLength));
-      lines.push('FROM ' + node.recipients.join(', '));
-    } else {
+    }
+    if (hasRecipients) {
       lines.push('FROM ' + node.recipients.join(', '));
     }
   }
@@ -3943,8 +4026,9 @@ function formatCaseSimple(expr: AST.CaseExpr, depth: number = 0): string {
 
 function formatWindowFunctionSimple(expr: AST.WindowFunctionExpr, depth: number = 0): string {
   const func = formatFunctionCall(expr.func, depth);
+  const funcWithNullTreatment = expr.nullTreatment ? `${func} ${expr.nullTreatment}` : func;
   const hasWindowSpecParts = !!(expr.partitionBy || expr.orderBy || expr.frame || expr.exclude);
-  if (expr.windowName && !hasWindowSpecParts) return func + ' OVER ' + expr.windowName;
+  if (expr.windowName && !hasWindowSpecParts) return funcWithNullTreatment + ' OVER ' + expr.windowName;
   let over = '';
   if (expr.windowName) over += expr.windowName;
   if (expr.partitionBy) {
@@ -3965,7 +4049,7 @@ function formatWindowFunctionSimple(expr: AST.WindowFunctionExpr, depth: number 
       over += 'EXCLUDE ' + expr.exclude;
     }
   }
-  return func + ' OVER (' + over + ')';
+  return funcWithNullTreatment + ' OVER (' + over + ')';
 }
 
 function formatOrderByItem(item: AST.OrderByItem): string {

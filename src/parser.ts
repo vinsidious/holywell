@@ -55,7 +55,7 @@ const IMPLICIT_STATEMENT_STARTERS = new Set([
   'DECLARE', 'PREPARE', 'EXECUTE', 'EXEC', 'DEALLOCATE',
   'USE', 'DO', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE',
   'START', 'VALUES', 'COPY', 'DELIMITER',
-  'GO', 'DBCC', 'ACCEPT', 'DESCRIBE', 'REM', 'DEFINE', 'PROMPT', 'SP_RENAME',
+  'GO', 'DBCC', 'ACCEPT', 'DESC', 'DESCRIBE', 'REM', 'DEFINE', 'PROMPT', 'SP_RENAME',
 ]);
 
 const CREATE_KEYWORD_NORMALIZED_TYPES = new Set([
@@ -592,6 +592,9 @@ export class Parser {
     }
     if (kw === 'UPDATE') return this.parseUpdate(comments);
     if (kw === 'DELETE') return this.parseDelete(comments);
+    if (kw === 'CREATE' && this.looksLikeCreateTypeBodyStatement()) {
+      return this.parseCreateTypeBody(comments);
+    }
     if (kw === 'CREATE') {
       const createType = this.getCreateKeywordNormalizedType();
       if (createType) {
@@ -636,6 +639,9 @@ export class Parser {
     }
     if (kw === 'DBCC') {
       return this.parseVerbatimStatement(comments, 'unsupported', true);
+    }
+    if (kw === 'DESC' || kw === 'DESCRIBE') {
+      return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
     }
     if (kw === 'ACCEPT' || kw === 'DESCRIBE' || kw === 'REM' || kw === 'DEFINE' || kw === 'PROMPT') {
       return this.parseSingleLineStatement(comments, 'unsupported');
@@ -730,7 +736,57 @@ export class Parser {
   }
 
   private looksLikeCreateRoutineStatement(): boolean {
+    if (this.looksLikeCreateTypeBodyStatement()) return false;
     return this.getCreateRoutineKind() !== null;
+  }
+
+  private looksLikeCreateTypeBodyStatement(): boolean {
+    if (this.peekUpper() !== 'CREATE') return false;
+    let offset = 1;
+    if (this.peekUpperAt(offset) === 'OR' && this.peekUpperAt(offset + 1) === 'REPLACE') {
+      offset += 2;
+    }
+    return this.peekUpperAt(offset) === 'TYPE' && this.peekUpperAt(offset + 1) === 'BODY';
+  }
+
+  private parseCreateTypeBody(
+    comments: AST.CommentNode[],
+    reason: AST.RawReason = 'unsupported',
+  ): AST.RawExpression | null {
+    const startPos = this.peek().position;
+    let endPos = startPos;
+    let beginDepth = 0;
+
+    while (!this.isAtEnd()) {
+      const token = this.advance();
+      endPos = token.position + token.value.length;
+
+      if (token.upper === 'BEGIN') {
+        beginDepth++;
+        continue;
+      }
+
+      if (token.upper === 'END') {
+        if (!this.isControlFlowEndQualifier(this.peekUpper())) {
+          if (beginDepth > 0) {
+            beginDepth--;
+            continue;
+          }
+
+          if (this.check(';')) {
+            const semi = this.advance();
+            endPos = semi.position + semi.value.length;
+          }
+          if (this.check('/')) {
+            const slash = this.advance();
+            endPos = slash.position + slash.value.length;
+          }
+          break;
+        }
+      }
+    }
+
+    return this.buildRawFromSourceSlice(comments, startPos, endPos, reason);
   }
 
   private getCreateKeywordNormalizedType(): string | null {
@@ -3048,9 +3104,22 @@ export class Parser {
         withinGroup,
       };
 
+      let nullTreatment: AST.WindowFunctionExpr['nullTreatment'];
+      if (
+        (this.peekUpper() === 'IGNORE' || this.peekUpper() === 'RESPECT')
+        && this.peekUpperAt(1) === 'NULLS'
+      ) {
+        const modifier = this.advance().upper as 'IGNORE' | 'RESPECT';
+        this.expect('NULLS');
+        nullTreatment = `${modifier} NULLS`;
+      }
+
       // Window function: OVER (...)
       if (this.peekUpper() === 'OVER') {
-        return this.parseWindowFunction(funcExpr);
+        return this.parseWindowFunction(funcExpr, nullTreatment);
+      }
+      if (nullTreatment) {
+        throw new ParseError('OVER', this.peek());
       }
 
       return funcExpr;
@@ -3059,13 +3128,16 @@ export class Parser {
     return { type: 'identifier', value: fullName, quoted };
   }
 
-  private parseWindowFunction(func: AST.FunctionCallExpr): AST.WindowFunctionExpr {
+  private parseWindowFunction(
+    func: AST.FunctionCallExpr,
+    nullTreatment?: AST.WindowFunctionExpr['nullTreatment'],
+  ): AST.WindowFunctionExpr {
     this.expect('OVER');
 
     // Check for named window reference: OVER window_name
     if (!this.check('(')) {
       const windowName = this.advance().value;
-      return { type: 'window_function', func, windowName };
+      return { type: 'window_function', func, windowName, nullTreatment };
     }
 
     this.expect('(');
@@ -3075,6 +3147,7 @@ export class Parser {
     return {
       type: 'window_function',
       func,
+      nullTreatment,
       windowName: spec.baseWindowName,
       partitionBy: spec.partitionBy,
       orderBy: spec.orderBy,
@@ -3722,21 +3795,31 @@ export class Parser {
     const recipientKeyword = kind === 'GRANT' ? 'TO' : 'FROM';
     const privilegeTokens = this.collectTokensUntilTopLevelKeyword(new Set(['ON', recipientKeyword]));
 
+    const trailingClauseKeywords = new Set(['WITH', 'GRANTED', 'CASCADE', 'RESTRICT']);
     let objectTokens: Token[] = [];
+    let hasExplicitRecipients = false;
     if (this.peekUpper() === 'ON') {
       this.advance();
-      objectTokens = this.collectTokensUntilTopLevelKeyword(new Set([recipientKeyword]));
-      this.expect(recipientKeyword);
+      objectTokens = this.collectTokensUntilTopLevelKeyword(new Set([recipientKeyword, ...trailingClauseKeywords]));
+      if (this.peekUpper() === recipientKeyword) {
+        this.advance();
+        hasExplicitRecipients = true;
+      }
+    } else if (this.peekUpper() === recipientKeyword) {
+      this.advance();
+      hasExplicitRecipients = true;
     } else {
-      this.expect(recipientKeyword);
+      hasExplicitRecipients = false;
     }
 
     const recipientTokens: Token[] = [];
-    while (!this.isAtEnd() && !this.check(';')) {
-      if (this.peekUpper() === 'WITH' && this.peekUpperAt(1) === 'GRANT' && this.peekUpperAt(2) === 'OPTION') break;
-      if (this.peekUpper() === 'GRANTED' && this.peekUpperAt(1) === 'BY') break;
-      if (this.peekUpper() === 'CASCADE' || this.peekUpper() === 'RESTRICT') break;
-      recipientTokens.push(this.advance());
+    if (hasExplicitRecipients) {
+      while (!this.isAtEnd() && !this.check(';')) {
+        if (this.peekUpper() === 'WITH' && this.peekUpperAt(1) === 'GRANT' && this.peekUpperAt(2) === 'OPTION') break;
+        if (this.peekUpper() === 'GRANTED' && this.peekUpperAt(1) === 'BY') break;
+        if (this.peekUpper() === 'CASCADE' || this.peekUpper() === 'RESTRICT') break;
+        recipientTokens.push(this.advance());
+      }
     }
 
     let withGrantOption = false;

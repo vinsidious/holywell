@@ -648,6 +648,7 @@ export interface FrameBound {
 export interface WindowFunctionExpr {
   readonly type: 'window_function';
   readonly func: FunctionCallExpr;
+  readonly nullTreatment?: 'IGNORE NULLS' | 'RESPECT NULLS';
   readonly partitionBy?: readonly Expression[];
   readonly orderBy?: readonly OrderByItem[];
   readonly frame?: FrameSpec;
