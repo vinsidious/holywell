@@ -534,27 +534,68 @@ function formatBlockBody(body: string, runtime: FormatterRuntime): string | null
     });
     if (bodyNodes.length === 0) return body.trim();
 
-    const parts: string[] = [];
+    const lines: string[] = [];
+    let controlDepth = 0;
+
     for (const node of bodyNodes) {
+      let part = '';
+      let controlKind: RoutineControlFlowKind | undefined;
+
       if (node.type === 'raw') {
         const returnSelect = tryFormatReturnParenthesizedSelect(node.text, runtime);
         if (returnSelect) {
-          parts.push(returnSelect.trim());
-          continue;
+          part = returnSelect.trim();
+        } else {
+          const formattedRaw = formatStatements([node], {
+            maxLineLength: runtime.maxLineLength,
+          }).trim();
+          part = normalizeRawBlockPartIndent(formattedRaw);
+          controlKind = detectRoutineControlFlowKind(part);
         }
-        const formattedRaw = formatStatements([node], {
+      } else {
+        part = formatStatements([node], {
           maxLineLength: runtime.maxLineLength,
         }).trim();
-        parts.push(normalizeRawBlockPartIndent(formattedRaw));
-        continue;
       }
-      parts.push(formatStatements([node], {
-        maxLineLength: runtime.maxLineLength,
-      }).trim());
+
+      if (!part) continue;
+
+      if (controlKind === 'if_end') {
+        controlDepth = Math.max(0, controlDepth - 1);
+      }
+
+      let indentLevel = controlDepth;
+      if (controlKind === 'elseif' || controlKind === 'else') {
+        indentLevel = Math.max(0, controlDepth - 1);
+      }
+      appendIndentedBlockText(lines, part, indentLevel);
+
+      if (controlKind === 'if_start') {
+        controlDepth++;
+      }
     }
-    return parts.join('\n\n');
+    return lines.join('\n');
   } catch {
     return null;
+  }
+}
+
+type RoutineControlFlowKind = 'if_start' | 'elseif' | 'else' | 'if_end';
+
+function detectRoutineControlFlowKind(text: string): RoutineControlFlowKind | undefined {
+  const trimmed = text.trim();
+  if (/^IF\b[\s\S]*\bTHEN\b\s*$/i.test(trimmed)) return 'if_start';
+  if (/^ELSEIF\b[\s\S]*\bTHEN\b\s*$/i.test(trimmed)) return 'elseif';
+  if (/^ELSE\b/i.test(trimmed)) return 'else';
+  if (/^END\s+IF\b/i.test(trimmed)) return 'if_end';
+  return undefined;
+}
+
+function appendIndentedBlockText(lines: string[], text: string, indentLevel: number): void {
+  const indent = '    '.repeat(Math.max(0, indentLevel));
+  const textLines = text.split('\n');
+  for (const line of textLines) {
+    lines.push(line ? indent + line : line);
   }
 }
 
@@ -1812,11 +1853,25 @@ function splitLeadingLineComment(
   text: string,
   continuationCol: number,
 ): { comment: string; remainder: string } | null {
-  const match = text.match(/^\s*(--[^\n]*)(?:\n([\s\S]*))$/);
-  if (!match) return null;
+  const lineMatch = text.match(/^\s*(--[^\n]*)(?:\n([\s\S]*))$/);
+  if (lineMatch) {
+    const comment = lineMatch[1];
+    let remainder = (lineMatch[2] || '').trimStart();
+    if (!remainder) return null;
+    if (/^(AND|OR)\b/i.test(remainder)) {
+      remainder = remainder.replace(/^(AND|OR)\s+/i, '');
+    }
+    return {
+      comment,
+      remainder: normalizeMultilineLogicalOperand(remainder, continuationCol),
+    };
+  }
 
-  const comment = match[1];
-  let remainder = (match[2] || '').trimStart();
+  const blockMatch = text.match(/^\s*(\/\*[\s\S]*?\*\/)\s*([\s\S]*)$/);
+  if (!blockMatch) return null;
+
+  const comment = blockMatch[1];
+  let remainder = (blockMatch[2] || '').trimStart();
   if (!remainder) return null;
   if (/^(AND|OR)\b/i.test(remainder)) {
     remainder = remainder.replace(/^(AND|OR)\s+/i, '');
