@@ -3329,6 +3329,8 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
     if (col.dataType) maxTypeLen = Math.max(maxTypeLen, col.dataType.replace(/\s+/g, ' ').length);
   }
   maxTypeLen = Math.min(maxTypeLen, ctx.runtime.layoutPolicy.createTableTypeAlignMax);
+  const tableConstraintIndentWidth = maxNameLen > 0 ? 4 + maxNameLen + 1 : 4;
+  const tableConstraintIndent = ' '.repeat(tableConstraintIndentWidth);
   const hasDataElementAfter = (index: number): boolean => {
     for (let j = index + 1; j < node.elements.length; j++) {
       if (node.elements[j].elementType !== 'comment') return true;
@@ -3405,18 +3407,16 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       }
     } else if (elem.elementType === 'constraint') {
       if (elem.constraintName) {
-        const headIndent = '    ';
-        const bodyIndent = '        ';
-        lines.push(headIndent + 'CONSTRAINT ' + elem.constraintName);
+        lines.push(tableConstraintIndent + 'CONSTRAINT ' + elem.constraintName);
         if (elem.constraintType === 'check' && elem.checkExpr) {
-          lines.push(bodyIndent + 'CHECK(' + formatExpr(elem.checkExpr) + ')');
+          lines.push(tableConstraintIndent + 'CHECK(' + formatExpr(elem.checkExpr) + ')');
         } else if (elem.constraintBody) {
-          lines.push(bodyIndent + normalizeConstraintIdentifierCase(elem.constraintBody));
+          lines.push(tableConstraintIndent + normalizeConstraintIdentifierCase(elem.constraintBody));
         } else {
           const pattern = new RegExp(`^CONSTRAINT\\s+${escapeRegExp(elem.constraintName)}\\b\\s*`, 'i');
           const body = elem.raw.trim().replace(pattern, '').trim();
           if (body) {
-            lines.push(bodyIndent + normalizeConstraintIdentifierCase(body));
+            lines.push(tableConstraintIndent + normalizeConstraintIdentifierCase(body));
           }
         }
       } else if (elem.constraintType === 'check' && elem.checkExpr) {
@@ -3428,17 +3428,19 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       }
       if (comma) lines[lines.length - 1] += comma;
     } else if (elem.elementType === 'foreign_key') {
+      const foreignKeyIndent = elem.constraintName ? tableConstraintIndent : '    ';
+      const foreignKeyBodyIndent = elem.constraintName ? tableConstraintIndent : '        ';
       if (elem.constraintName) {
-        lines.push('    CONSTRAINT ' + elem.constraintName);
-        lines.push('        ' + normalizeConstraintIdentifierCase('FOREIGN KEY (' + elem.fkColumns + ')'));
+        lines.push(foreignKeyIndent + 'CONSTRAINT ' + elem.constraintName);
+        lines.push(foreignKeyBodyIndent + normalizeConstraintIdentifierCase('FOREIGN KEY (' + elem.fkColumns + ')'));
       } else {
-        lines.push('    ' + normalizeConstraintIdentifierCase('FOREIGN KEY (' + elem.fkColumns + ')'));
+        lines.push(foreignKeyIndent + normalizeConstraintIdentifierCase('FOREIGN KEY (' + elem.fkColumns + ')'));
       }
-      let referenceLine = '        REFERENCES ' + elem.fkRefTable;
+      let referenceLine = `${foreignKeyBodyIndent}REFERENCES ${elem.fkRefTable}`;
       if (elem.fkRefColumns) {
         referenceLine += ' (' + elem.fkRefColumns + ')';
       }
-      referenceLine = '        ' + normalizeConstraintIdentifierCase(referenceLine.trim());
+      referenceLine = normalizeConstraintIdentifierCase(referenceLine.trimEnd());
       const actionLines = elem.fkActions
         ? elem.fkActions.split(/\n/).map(action => action.trim()).filter(Boolean)
         : [];
@@ -3448,7 +3450,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       lines.push(referenceLine);
       for (const action of actionLines) {
           const trimmed = action.trim();
-          if (trimmed) lines.push('        ' + trimmed);
+          if (trimmed) lines.push(foreignKeyBodyIndent + trimmed);
       }
       if (comma) lines[lines.length - 1] += comma;
     }

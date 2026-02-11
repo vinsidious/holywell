@@ -10,7 +10,7 @@ describe('CREATE TABLE constraint and comment behaviors', () => {
 
     const expected = `CREATE TABLE t (
     id INT,
-    CONSTRAINT ck_test
+       CONSTRAINT ck_test
 );\n`;
 
     const once = formatSQL(sql);

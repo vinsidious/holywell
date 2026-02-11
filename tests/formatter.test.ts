@@ -261,8 +261,8 @@ describe('Category 7: CREATE TABLE', () => {
     staff_num      INT(5)       NOT NULL,
     first_name     VARCHAR(100) NOT NULL,
     pens_in_drawer INT(2)       NOT NULL,
-    CONSTRAINT pens_in_drawer_range
-        CHECK(pens_in_drawer BETWEEN 1 AND 99)
+                   CONSTRAINT pens_in_drawer_range
+                   CHECK(pens_in_drawer BETWEEN 1 AND 99)
 );`
   );
 
@@ -274,14 +274,14 @@ describe('Category 7: CREATE TABLE', () => {
     order_id   INT NOT NULL,
     product_id INT NOT NULL,
     quantity   INT DEFAULT 1 NOT NULL,
-    CONSTRAINT fk_order
-        FOREIGN KEY (order_id)
-        REFERENCES orders (order_id)
-        ON DELETE CASCADE
-        ON UPDATE CASCADE,
-    CONSTRAINT fk_product
-        FOREIGN KEY (product_id)
-        REFERENCES products (product_id)
+               CONSTRAINT fk_order
+               FOREIGN KEY (order_id)
+               REFERENCES orders (order_id)
+               ON DELETE CASCADE
+               ON UPDATE CASCADE,
+               CONSTRAINT fk_product
+               FOREIGN KEY (product_id)
+               REFERENCES products (product_id)
 );`
   );
 });
