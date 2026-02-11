@@ -1767,11 +1767,15 @@ export class Parser {
       const condition = this.parseExpression();
       let whereComment: AST.CommentNode | undefined;
       if (
-        this.peekType() === 'line_comment'
+        (this.peekType() === 'line_comment' || this.peekType() === 'block_comment')
         && this.peek().line === this.peekAt(-1).line
       ) {
         const t = this.advance();
-        whereComment = { type: 'comment', style: 'line', text: t.value };
+        whereComment = {
+          type: 'comment',
+          style: t.type === 'line_comment' ? 'line' : 'block',
+          text: t.value,
+        };
       }
       where = { condition, trailingComment: whereComment };
     }
@@ -3229,16 +3233,7 @@ export class Parser {
           });
         }
       } else if (!this.check(')')) {
-        if (this.check('*')) {
-          this.advance();
-          args.push({ type: 'star' });
-        } else {
-          args.push(this.parseExpression());
-          while (this.check(',')) {
-            this.advance();
-            args.push(this.parseExpression());
-          }
-        }
+        args.push(...this.parseExpressionList());
       }
       }
 
