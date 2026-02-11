@@ -220,7 +220,9 @@ describe('Category 6: UNION / INTERSECT / EXCEPT', () => {
      OR f.species_name = 'Sheoak'
      OR f.species_name = 'Wattle'
   GROUP BY f.species_name, f.observation_date)
+
   UNION ALL
+
 (SELECT b.species_name,
         AVG(b.height) AS average_height, AVG(b.diameter) AS average_diameter
    FROM botanic_garden_flora AS b
@@ -259,8 +261,8 @@ describe('Category 7: CREATE TABLE', () => {
     staff_num      INT(5)       NOT NULL,
     first_name     VARCHAR(100) NOT NULL,
     pens_in_drawer INT(2)       NOT NULL,
-    CONSTRAINT pens_in_drawer_range
-        CHECK(pens_in_drawer BETWEEN 1 AND 99)
+                   CONSTRAINT pens_in_drawer_range
+                   CHECK(pens_in_drawer BETWEEN 1 AND 99)
 );`
   );
 
@@ -369,7 +371,7 @@ UPDATE file_system
 a.release_date, a.recording_date, a.production_date -- grouped dates together
 from albums as a where a.title = 'Charcoal Lane' or a.title = 'The New Danger';`,
     `SELECT a.title,  -- the album name
-       a.release_date, a.recording_date, a.production_date  -- grouped dates together
+       a.release_date, a.recording_date, a.production_date -- grouped dates together
   FROM albums AS a
  WHERE a.title = 'Charcoal Lane'
     OR a.title = 'The New Danger';`
