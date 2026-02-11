@@ -9,7 +9,7 @@ describe('CREATE TABLE ON UPDATE DEFAULT alignment', () => {
   updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'mysql' });
     const createdLine = out.split('\n').find(line => line.includes('created_date')) ?? '';
     const updatedLine = out.split('\n').find(line => line.includes('updated_date')) ?? '';
 

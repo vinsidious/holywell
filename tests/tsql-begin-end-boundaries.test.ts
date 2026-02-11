@@ -17,7 +17,7 @@ BEGIN
     ALTER TABLE sa.sa_suorat_yo_talous_3_tuloslaskelman_toiminnot ADD KULKAT int null
 END`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toContain('ADD kkvaltrah INT NULL;\nEND\n\nIF NOT EXISTS');
     expect(out).toContain('ADD KULKAT INT NULL\nEND');
     expect(out).not.toContain('END IF NOT EXISTS(');

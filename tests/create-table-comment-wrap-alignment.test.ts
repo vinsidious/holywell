@@ -9,7 +9,7 @@ describe('CREATE TABLE wrapped comment alignment', () => {
   is_delete tinyint(4) NOT NULL DEFAULT '0' COMMENT 'another'
 ) ENGINE=InnoDB;`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'mysql' });
     expect(out).toContain('id        BIGINT(20) NOT NULL COMMENT \'short\'');
     expect(out).toContain('create_at DATETIME   NOT NULL DEFAULT');
     expect(out).toContain('is_delete TINYINT(4) NOT NULL DEFAULT \'0\' COMMENT \'another\'');

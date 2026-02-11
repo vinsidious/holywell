@@ -6,10 +6,11 @@ describe('T-SQL CREATE VIEW WITH SCHEMABINDING', () => {
   it('parses and formats CREATE VIEW statements with SCHEMABINDING attributes', () => {
     const sql = 'CREATE VIEW test WITH SCHEMABINDING AS SELECT id FROM t;';
 
-    expect(() => parse(sql, { recover: false })).not.toThrow();
+    expect(() => parse(sql, { recover: false, dialect: 'tsql' })).not.toThrow();
 
     const recoveries: string[] = [];
     const out = formatSQL(sql, {
+      dialect: 'tsql',
       onRecover: err => recoveries.push(err.message),
     });
 

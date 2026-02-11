@@ -11,9 +11,9 @@ describe('MySQL FULLTEXT table elements', () => {
   FULLTEXT(note_text)
 ) ENGINE=MyISAM;`;
 
-    expect(() => parse(sql, { recover: false })).not.toThrow();
+    expect(() => parse(sql, { dialect: 'mysql', recover: false })).not.toThrow();
 
-    const out = formatSQL(sql, { recover: false });
+    const out = formatSQL(sql, { dialect: 'mysql', recover: false });
     expect(out).toContain('FULLTEXT (note_text)');
     expect(out).toContain('ENGINE = MyISAM;');
     expect(out).not.toContain(') ) ENGINE');

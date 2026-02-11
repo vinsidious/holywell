@@ -8,9 +8,9 @@ describe('T-SQL Compound Assignment Operators', () => {
   for (const operator of operators) {
     it(`parses UPDATE SET with ${operator}`, () => {
       const sql = `UPDATE t SET x ${operator} 1 WHERE id = 1;`;
-      expect(() => parse(sql, { recover: false })).not.toThrow();
+      expect(() => parse(sql, { recover: false, dialect: 'tsql' })).not.toThrow();
 
-      const out = formatSQL(sql, { recover: false });
+      const out = formatSQL(sql, { recover: false, dialect: 'tsql' });
       expect(out).toContain(`x ${operator} 1`);
     });
   }
@@ -20,9 +20,9 @@ describe('T-SQL Compound Assignment Operators', () => {
 ON target.id = src.id
 WHEN MATCHED THEN UPDATE SET target.total += 1;`;
 
-    expect(() => parse(sql, { recover: false })).not.toThrow();
+    expect(() => parse(sql, { recover: false, dialect: 'tsql' })).not.toThrow();
 
-    const out = formatSQL(sql, { recover: false });
+    const out = formatSQL(sql, { recover: false, dialect: 'tsql' });
     expect(out).toContain('target.total += 1');
   });
 });

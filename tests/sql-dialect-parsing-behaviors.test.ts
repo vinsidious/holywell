@@ -2,28 +2,29 @@ import { describe, expect, it } from 'bun:test';
 import { formatSQL } from '../src/format';
 import { parse } from '../src/parser';
 
-function formatWithoutRecoveries(sql: string): string {
+function formatWithoutRecoveries(sql: string, options: { dialect?: 'ansi' | 'postgres' | 'mysql' | 'tsql' } = {}): string {
   const recoveries: string[] = [];
   const out = formatSQL(sql, {
+    dialect: options.dialect,
     onRecover: err => recoveries.push(err.message),
   });
   expect(recoveries).toEqual([]);
   return out;
 }
 
-function expectIdempotentWithoutRecoveries(sql: string): string {
-  const once = formatWithoutRecoveries(sql);
-  const twice = formatWithoutRecoveries(once);
+function expectIdempotentWithoutRecoveries(sql: string, options: { dialect?: 'ansi' | 'postgres' | 'mysql' | 'tsql' } = {}): string {
+  const once = formatWithoutRecoveries(sql, options);
+  const twice = formatWithoutRecoveries(once, options);
   expect(twice).toBe(once);
   return once;
 }
 
-function expectStrictParseAndNoRecoveries(sql: string): string {
-  expect(() => parse(sql, { recover: false })).not.toThrow();
-  return formatWithoutRecoveries(sql);
+function expectStrictParseAndNoRecoveries(sql: string, options: { dialect?: 'ansi' | 'postgres' | 'mysql' | 'tsql' } = {}): string {
+  expect(() => parse(sql, { recover: false, dialect: options.dialect })).not.toThrow();
+  return formatWithoutRecoveries(sql, options);
 }
 
-describe('sql dialect feature coverage', () => {
+describe('sql dialect parsing behaviors', () => {
   it('MySQL # comments remain stable across formatting passes', () => {
     const sql = `# V1
 # https://www.cnblogs.com/onePunchCoder/p/11619433.html
@@ -43,7 +44,7 @@ FROM teams t;`;
 GO
 SELECT * FROM Categorias;`;
 
-    const out = expectIdempotentWithoutRecoveries(sql);
+    const out = expectIdempotentWithoutRecoveries(sql, { dialect: 'tsql' });
     expect(out).toContain('--select * from Categorias;');
     expect(out).not.toContain('--select * from Categorias;;');
   });
@@ -74,7 +75,7 @@ DROP DATABASE IF EXISTS :"dbname";`;
 )
 SELECT * FROM cteEndDates;`;
 
-    const out = expectStrictParseAndNoRecoveries(sql);
+    const out = expectStrictParseAndNoRecoveries(sql, { dialect: 'tsql' });
     expect(out).toContain('/* the magic */');
     expect(out).toContain('WITH cteEndDates');
   });
@@ -179,13 +180,13 @@ END$$ LANGUAGE plpgsql;`;
 
   it('SQL Server BACKUP DATABASE statement parses in strict mode', () => {
     const sql = "backup database feb2022 to disk='D:\\SQL\\BACK\\backupfeb2022.bak' with differential;";
-    const out = expectStrictParseAndNoRecoveries(sql);
+    const out = expectStrictParseAndNoRecoveries(sql, { dialect: 'tsql' });
     expect(out.toUpperCase()).toContain('BACKUP DATABASE FEB2022');
   });
 
   it('SQL Server BULK INSERT statement parses in strict mode', () => {
     const sql = "BULK INSERT Students FROM 'D:/SQL/students.csv' WITH (FORMAT='CSV', FIRSTROW=2, FIELDTERMINATOR=',');";
-    const out = expectStrictParseAndNoRecoveries(sql);
+    const out = expectStrictParseAndNoRecoveries(sql, { dialect: 'tsql' });
     expect(out.toUpperCase()).toContain('BULK INSERT STUDENTS');
     expect(out.toUpperCase()).toContain('WITH (FORMAT');
   });

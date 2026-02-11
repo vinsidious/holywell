@@ -12,10 +12,11 @@ select title, au_ord, au_lname
 from authors, titles
 where authors.au_id = titleauthor.au_id`;
 
-    expect(() => parse(sql, { recover: false })).not.toThrow();
+    expect(() => parse(sql, { recover: false, dialect: 'tsql' })).not.toThrow();
 
     const recoveries: string[] = [];
     const out = formatSQL(sql, {
+      dialect: 'tsql',
       onRecover: err => recoveries.push(err.message),
     });
 

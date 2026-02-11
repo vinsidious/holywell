@@ -11,7 +11,7 @@ function parseFirst(sql: string) {
   return nodes[0] as any;
 }
 
-describe('parser syntax coverage', () => {
+describe('parser syntax behaviors', () => {
   it('parses ORDER BY NULLS LAST/FIRST', () => {
     const stmt = parseFirst('SELECT * FROM t ORDER BY a DESC NULLS LAST, b NULLS FIRST;');
     expect(stmt.type).toBe('select');
@@ -468,7 +468,7 @@ SELECT 1 AS id;
     expect(nodes[0].name).toBe('[dbo].[vw_demo]');
   });
 
-  it('treats T-SQL variable assignment statements as unsupported without recovery warnings', () => {
+  it('parses T-SQL variable assignment with table hints without recovery warnings', () => {
     const recovered: string[] = [];
     const nodes = parse('SELECT @batch_num = Batch_Num FROM Trans_Num WITH (ROWLOCK, XLOCK);', {
       recover: true,
@@ -477,9 +477,7 @@ SELECT 1 AS id;
 
     expect(recovered).toHaveLength(0);
     expect(nodes).toHaveLength(1);
-    expect(nodes[0].type).toBe('raw');
-    if (nodes[0].type !== 'raw') return;
-    expect(nodes[0].reason).toBe('unsupported');
+    expect(nodes[0].type).toBe('select');
   });
 });
 

@@ -3,6 +3,26 @@ import type * as AST from './ast';
 import { formatStatements } from './formatter';
 import { DEFAULT_MAX_INPUT_SIZE } from './constants';
 import type { SQLDialect } from './dialect';
+import { resolveDialectProfile } from './dialects';
+
+/** Calculate UTF-8 byte length without allocating an encoded copy. */
+function utf8ByteLength(s: string): number {
+  let bytes = 0;
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      bytes += 4; // surrogate pair → 4-byte UTF-8 code point
+      i++; // skip low surrogate
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
 
 /**
  * Options for {@link formatSQL}.
@@ -67,7 +87,16 @@ export interface FormatOptions {
   onDropStatement?: (error: ParseError, context: ParseRecoveryContext) => void;
 
   /**
-   * Optional SQL dialect extensions used during tokenization/parsing.
+   * Callback invoked when a statement is passed through as raw text because
+   * it uses unsupported syntax (e.g. MERGE, SET, USE, DBCC).
+   *
+   * Unlike `onRecover`, this fires for statements the parser intentionally
+   * does not format, not for parse errors.
+   */
+  onPassthrough?: (raw: AST.RawExpression, context: ParseRecoveryContext) => void;
+
+  /**
+   * SQL dialect selection or custom dialect profile.
    */
   dialect?: SQLDialect;
 
@@ -84,7 +113,8 @@ export interface FormatOptions {
  * Format SQL according to the Simon Holywell SQL Style Guide with river alignment.
  *
  * Keywords are right-aligned to form a visual "river" of whitespace, making
- * queries easier to scan. Identifiers are lowercased, keywords are uppercased.
+ * queries easier to scan. ALL-CAPS identifiers are lowercased, mixed-case
+ * identifiers are preserved, and keywords are uppercased.
  *
  * @param input - SQL text to format. May contain multiple statements.
  * @param options - Optional formatting options.
@@ -107,7 +137,7 @@ export interface FormatOptions {
  */
 export function formatSQL(input: string, options: FormatOptions = {}): string {
   const maxSize = options.maxInputSize ?? DEFAULT_MAX_INPUT_SIZE;
-  if (input.length > maxSize) {
+  if (utf8ByteLength(input) > maxSize) {
     throw new Error(
       `Input exceeds maximum size of ${maxSize} bytes. Use the maxInputSize option to increase the limit.`
     );
@@ -122,13 +152,19 @@ export function formatSQL(input: string, options: FormatOptions = {}): string {
     maxTokenCount: options.maxTokenCount,
     onRecover: options.onRecover,
     onDropStatement: options.onDropStatement,
+    onPassthrough: options.onPassthrough,
     dialect: options.dialect,
   });
 
   if (statements.length === 0) return '';
 
+  const profile = resolveDialectProfile(options.dialect);
   const formatted = formatStatements(statements, {
     maxLineLength: options.maxLineLength,
+    dialect: options.dialect,
+    maxDepth: options.maxDepth,
+    maxTokenCount: options.maxTokenCount,
+    functionKeywords: profile.functionKeywords,
   })
     .split('\n')
     .map(line => line.trimEnd())

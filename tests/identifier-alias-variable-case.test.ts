@@ -5,7 +5,7 @@ describe('Identifier, alias, and variable case stability', () => {
   it('keeps session variable case stable across statements', () => {
     const sql = `SET @customerName = 'test';
 SELECT * FROM t WHERE name = @customerName;`;
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toContain('@customerName');
     expect(out).not.toContain('@customername');
   });

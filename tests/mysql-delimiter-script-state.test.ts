@@ -8,7 +8,7 @@ DELIMITER $$
 CREATE TRIGGER t BEFORE INSERT ON a FOR EACH ROW BEGIN END$$
 DELIMITER ;
 CREATE TABLE b (id INT);`;
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'mysql' });
     expect(out).toContain('CREATE TABLE a (\n    id INT\n);');
     expect(out).toContain('CREATE TABLE b (\n    id INT\n);');
   });

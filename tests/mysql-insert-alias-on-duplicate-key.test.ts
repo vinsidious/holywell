@@ -3,9 +3,10 @@ import { formatSQL } from '../src/format';
 import { parse } from '../src/parser';
 
 function expectStrictAndRecoveryFree(sql: string): string {
-  expect(() => parse(sql, { recover: false })).not.toThrow();
+  expect(() => parse(sql, { dialect: 'mysql', recover: false })).not.toThrow();
   const recoveries: string[] = [];
   const out = formatSQL(sql, {
+    dialect: 'mysql',
     onRecover: err => recoveries.push(err.message),
   });
   expect(recoveries).toEqual([]);

@@ -5,7 +5,7 @@
 // by parens). Some words could appear in both lists; to avoid duplication, each
 // word appears in exactly one list. KEYWORDS is the union of both sets, used by
 // the tokenizer to recognize all keywords.
-const KEYWORD_LIST = [
+export const KEYWORD_LIST = [
   'ABSOLUTE', 'ACTION', 'ADD', 'ALTER', 'ALWAYS', 'AND', 'APPLY', 'ARRAY', 'AS', 'ASC',
   'AFTER',
   'AUTO_INCREMENT',
@@ -15,7 +15,7 @@ const KEYWORD_LIST = [
   'COLUMN', 'COLUMNS', 'COMMENT', 'COMMIT', 'CONCURRENTLY', 'CONFLICT', 'CONSTRAINT', 'COPY', 'CREATE', 'CROSS', 'CUBE', 'CURRENT',
   'CURRENT_DATE', 'CURRENT_ROW', 'CURRENT_TIME', 'CURRENT_TIMESTAMP',
   'CURRENT_USER', 'CURSOR',
-  'DATA', 'DATABASE', 'DATE', 'DATETIME', 'DECIMAL', 'DECLARE', 'DEFAULT', 'DELETE', 'DOMAIN',
+  'DATA', 'DATABASE', 'DATE', 'DATETIME', 'DECIMAL', 'DECLARE', 'DEFAULT', 'DELETE', 'DESCRIBE', 'DOMAIN',
   'DESC', 'DISTINCT', 'DO', 'DOUBLE', 'DROP',
   'EACH',
   'ELSE', 'END', 'ENGINE', 'ESCAPE', 'EXCEPT', 'EXCLUDE', 'EXCLUDED', 'EXECUTE', 'EXTENSION',
@@ -63,7 +63,7 @@ const KEYWORD_LIST = [
 ] as const;
 
 // Function-like keywords (followed by parens) -- uppercased but not clause keywords.
-const FUNCTION_KEYWORD_LIST = [
+export const FUNCTION_KEYWORD_LIST = [
   'ABS', 'ALL', 'ANY', 'ARRAY_AGG', 'ARRAY_LENGTH', 'AVG', 'CAST', 'CEIL', 'CEILING',
   'COALESCE', 'CONCAT', 'CONVERT', 'COUNT', 'CUME_DIST', 'CURRVAL', 'DATEADD', 'DATE_PART', 'DATE_TRUNC',
   'CURDATE', 'CURTIME', 'DAY', 'DAYOFWEEK', 'DATE_FORMAT', 'DENSE_RANK', 'EXISTS', 'EXTRACT', 'FIRST_VALUE', 'FLOOR',

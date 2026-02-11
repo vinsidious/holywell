@@ -32,7 +32,7 @@ JOIN catalog.executable_statistics es (NOLOCK) ON e.executable_id = es.executabl
 FULL OUTER JOIN running r (NOLOCK) ON es.execution_path = r.execution_path
 WHERE e.execution_id = @execution_id;`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toMatch(/\n  JOIN catalog\.executable_statistics AS es\(NOLOCK\)/);
     expect(out).toMatch(/\n  FULL OUTER JOIN running AS r\(NOLOCK\)/);
     expect(out).not.toMatch(/\n\s{7,}FULL OUTER JOIN/);

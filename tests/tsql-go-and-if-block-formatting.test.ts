@@ -10,7 +10,7 @@ GO
 SELECT 1
 GO`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toContain('ON actor (last_name)');
     expect(out).toMatch(/\nGO\n/);
     expect(out).toMatch(/\nSELECT 1;\n/);
@@ -24,7 +24,7 @@ BEGIN
 \tdrop table bar;
 END`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toContain('IF EXISTS (SELECT name FROM sys.tables WHERE name = N\'foo\')');
     expect(out).toContain('DROP TABLE foo;');
     expect(out).toContain('DROP TABLE bar;');
@@ -43,7 +43,7 @@ begin
 set @banglagpa =4
 end`;
 
-    expect(() => parse(sql, { recover: false })).not.toThrow();
+    expect(() => parse(sql, { recover: false, dialect: 'tsql' })).not.toThrow();
   });
 
   it('normalizes keyword casing across ELSE IF blocks', () => {
@@ -57,7 +57,7 @@ begin
 set @banglagpa =4
 end`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toContain('ELSE IF(@bangla>=70 AND @bangla<=79)');
     expect(out).toContain('\nBEGIN\nSET @banglagpa =4\nEND');
     expect(out).not.toContain('else if');
@@ -81,9 +81,9 @@ END
 GO
 SELECT 1`;
 
-    expect(() => parse(sql, { recover: false })).not.toThrow();
+    expect(() => parse(sql, { recover: false, dialect: 'tsql' })).not.toThrow();
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     const ifPos = out.indexOf('IF @condition = 1');
     const innerBeginPos = out.indexOf('BEGIN', ifPos);
     const execPos = out.indexOf('EXECUTE sys.sp_executesql', innerBeginPos);

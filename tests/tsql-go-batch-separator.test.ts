@@ -8,7 +8,7 @@ GO
 ALTER TABLE [dbo].[tbl] ADD CONSTRAINT [DF_col2] DEFAULT (0) FOR [reviewID]
 GO`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toMatch(/\bFOR \[enterID\];?\s*\n\s*GO\s*\n\s*ALTER TABLE \[dbo\]\.\[tbl\]/);
     expect(out).not.toContain('FOR [enterID] GO ALTER TABLE');
   });
@@ -17,7 +17,7 @@ GO`;
     const sql = `ALTER DATABASE [RSM] SET READ_WRITE
 GO`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toMatch(/\bSET READ_WRITE;?\s*\n\s*GO\b/);
     expect(out).not.toContain('SET READ_WRITE GO');
   });
@@ -28,7 +28,7 @@ GO
 ALTER TABLE [dbo].[t2] WITH CHECK ADD CONSTRAINT [FK_2] FOREIGN KEY ([col]) REFERENCES [dbo].[t3] ([id])
 GO`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toMatch(/ALTER TABLE \[dbo\]\.\[t1\][\s\S]*CHECK CONSTRAINT \[FK_1\]/);
     expect(out).toContain('\nGO\n');
     expect(out).toMatch(/ALTER TABLE \[dbo\]\.\[t2\][\s\S]*WITH CHECK ADD CONSTRAINT \[FK_2\]/);

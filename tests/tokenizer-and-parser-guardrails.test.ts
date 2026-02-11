@@ -8,7 +8,7 @@ import { parse, ParseError } from '../src/parser';
  * Focus: crash conditions, silent data loss, incorrect output, edge case mishandling.
  */
 
-describe('CRITICAL: Block comment nesting ambiguity', () => {
+describe('Block comment nesting ambiguity', () => {
   it('terminates block comment at first */ (not nested)', () => {
     // Standard SQL: /* /* */ text should be: comment "/* /* */", then tokens "text"
     const sql = 'SELECT /* /* */ 1 FROM t;';
@@ -31,7 +31,7 @@ describe('CRITICAL: Block comment nesting ambiguity', () => {
   });
 });
 
-describe('CRITICAL: Scientific notation backtracking edge cases', () => {
+describe('Scientific notation backtracking edge cases', () => {
   it('1e alone (no digits after e) backtracks correctly', () => {
     const tokens = tokenize('SELECT 1e');
     const types = tokens.filter(t => t.type !== 'whitespace').map(t => ({ type: t.type, value: t.value }));
@@ -90,7 +90,7 @@ describe('CRITICAL: Scientific notation backtracking edge cases', () => {
   });
 });
 
-describe('CRITICAL: Dollar-quoted string edge cases', () => {
+describe('Dollar-quoted string edge cases', () => {
   it('handles $$ as both parameter and dollar-quote start', () => {
     // $1 is parameter, $$ is dollar quote
     const tokens = tokenize('SELECT $1, $$text$$');
@@ -164,7 +164,7 @@ describe('CRITICAL: Dollar-quoted string edge cases', () => {
   });
 });
 
-describe('CRITICAL: String literal edge cases', () => {
+describe('String literal edge cases', () => {
   it('handles escaped single quote at end of string', () => {
     const sql = "SELECT 'text''';";
     const result = formatSQL(sql);
@@ -235,7 +235,7 @@ describe('CRITICAL: String literal edge cases', () => {
   });
 });
 
-describe('CRITICAL: Quoted identifier edge cases', () => {
+describe('Quoted identifier edge cases', () => {
   it('handles escaped double quote inside identifier', () => {
     const sql = 'SELECT "col""name" FROM t;';
     const result = formatSQL(sql);
@@ -281,7 +281,7 @@ describe('CRITICAL: Quoted identifier edge cases', () => {
   });
 });
 
-describe('CRITICAL: Numeric literal edge cases', () => {
+describe('Numeric literal edge cases', () => {
   it('handles hex with mixed case', () => {
     const sql = 'SELECT 0xAbCdEf, 0XaBcDeF;';
     const result = formatSQL(sql);
@@ -337,7 +337,7 @@ describe('CRITICAL: Numeric literal edge cases', () => {
   });
 });
 
-describe('CRITICAL: Operator precedence and ambiguity', () => {
+describe('Operator precedence and ambiguity', () => {
   it('handles - as both binary minus and unary minus', () => {
     const sql = 'SELECT -1, a - b, -x FROM t;';
     const result = formatSQL(sql);
@@ -406,7 +406,7 @@ describe('CRITICAL: Operator precedence and ambiguity', () => {
   });
 });
 
-describe('CRITICAL: Whitespace handling', () => {
+describe('Whitespace handling', () => {
   it('handles form feed', () => {
     const sql = 'SELECT\f1 FROM t;';
     const result = formatSQL(sql);
@@ -436,7 +436,7 @@ describe('CRITICAL: Whitespace handling', () => {
   });
 });
 
-describe('CRITICAL: Token count DoS protection', () => {
+describe('Token count DoS protection', () => {
   it('allows exactly 1,000,000 tokens', () => {
     // Each semicolon is 1 token + final EOF = exactly 1,000,000
     const sql = ';'.repeat(999_999);
@@ -462,7 +462,7 @@ describe('CRITICAL: Token count DoS protection', () => {
   });
 });
 
-describe('CRITICAL: Input size DoS protection', () => {
+describe('Input size DoS protection', () => {
   it('allows input just under 10MB limit', () => {
     // Use a large comment token to avoid identifier-length guards.
     const prefix = '-- ';
@@ -483,7 +483,7 @@ describe('CRITICAL: Input size DoS protection', () => {
   });
 });
 
-describe('CRITICAL: Depth limit DoS protection', () => {
+describe('Depth limit DoS protection', () => {
   it('allows nesting just under maxDepth', () => {
     const depth = 99;
     const sql = 'SELECT ' + '('.repeat(depth) + '1' + ')'.repeat(depth) + ';';
@@ -498,7 +498,7 @@ describe('CRITICAL: Depth limit DoS protection', () => {
   });
 });
 
-describe('CRITICAL: Recovery mode data preservation', () => {
+describe('Recovery mode data preservation', () => {
   it('preserves original text in recovery mode', () => {
     const sql = 'SELECT bad syntax here FROM t;';
     const result = formatSQL(sql, { recover: true });
@@ -515,7 +515,7 @@ describe('CRITICAL: Recovery mode data preservation', () => {
   });
 });
 
-describe('CRITICAL: Unterminated input error handling', () => {
+describe('Unterminated input error handling', () => {
   it('reports unterminated string with correct position', () => {
     try {
       tokenize("SELECT 'unterminated");

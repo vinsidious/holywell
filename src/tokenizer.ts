@@ -1,6 +1,6 @@
-import { isKeyword } from './keywords';
 import { MAX_IDENTIFIER_LENGTH, MAX_TOKEN_COUNT } from './constants';
 import type { SQLDialect } from './dialect';
+import { resolveDialectProfile } from './dialects';
 
 export type TokenType =
   | 'keyword'
@@ -511,9 +511,8 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
   const lineOffsets = buildLineOffsets(input);
   const allowMetaCommands = options.allowMetaCommands ?? false;
   const maxTokenCount = options.maxTokenCount ?? MAX_TOKEN_COUNT;
-  const additionalKeywords = new Set(
-    (options.dialect?.additionalKeywords ?? []).map(k => k.toUpperCase())
-  );
+  const dialect = resolveDialectProfile(options.dialect);
+  const keywords = dialect.keywords;
 
   function lc(p: number) {
     const { line, column } = posToLineCol(lineOffsets, p);
@@ -1453,7 +1452,7 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       }
       const val = input.slice(start, pos);
       const upper = val.toUpperCase();
-      if (isKeyword(val) || additionalKeywords.has(upper)) {
+      if (keywords.has(upper)) {
         emit('keyword', val, upper, start);
       } else {
         emit('identifier', val, upper, start);

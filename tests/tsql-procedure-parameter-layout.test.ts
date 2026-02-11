@@ -14,7 +14,7 @@ BEGIN
 END
 GO`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toContain('\n    @TotalEmployees INT,');
     expect(out).toContain('\n    @TotalDays INT,');
     expect(out).toContain('\n    @LateOrEarly INT,');

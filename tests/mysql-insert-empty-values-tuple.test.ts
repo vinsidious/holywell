@@ -5,7 +5,7 @@ import { parse } from '../src/parser';
 describe('MySQL INSERT empty VALUES tuple', () => {
   it('parses INSERT with empty column list and empty VALUES tuple in strict mode', () => {
     const sql = 'INSERT INTO status () VALUES ();';
-    expect(() => parse(sql, { recover: false })).not.toThrow();
+    expect(() => parse(sql, { dialect: 'mysql', recover: false })).not.toThrow();
   });
 
   it('formats INSERT with empty tuples without parser recovery', () => {
@@ -13,9 +13,11 @@ describe('MySQL INSERT empty VALUES tuple', () => {
     const recoveries: string[] = [];
 
     const once = formatSQL(sql, {
+      dialect: 'mysql',
       onRecover: err => recoveries.push(err.message),
     });
     const twice = formatSQL(once, {
+      dialect: 'mysql',
       onRecover: err => recoveries.push(err.message),
     });
 

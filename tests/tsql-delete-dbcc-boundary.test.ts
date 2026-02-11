@@ -7,10 +7,11 @@ describe('T-SQL DELETE boundaries before DBCC statements', () => {
     const sql = `delete from Categories
 DBCC CHECKIDENT ('[Categories]', RESEED, 0);`;
 
-    expect(() => parse(sql, { recover: false })).not.toThrow();
+    expect(() => parse(sql, { recover: false, dialect: 'tsql' })).not.toThrow();
 
     const recoveries: string[] = [];
     const out = formatSQL(sql, {
+      dialect: 'tsql',
       onRecover: err => recoveries.push(err.message),
     });
 

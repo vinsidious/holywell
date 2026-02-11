@@ -12,7 +12,7 @@ describe('T-SQL PRIMARY KEY CLUSTERED option clauses', () => {
 ) ON [PRIMARY]
 GO`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toContain('PRIMARY KEY CLUSTERED ([id] ASC)');
     expect(out).toContain('WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF) ON [PRIMARY]');
     expect(out).not.toMatch(/\n\s*WITH\s+\(/);

@@ -14,8 +14,8 @@ BEGIN
 \t\t,@Msg NVARCHAR(MAX);
 END;`;
 
-    const once = formatSQL(sql);
-    const twice = formatSQL(once);
+    const once = formatSQL(sql, { dialect: 'tsql' });
+    const twice = formatSQL(once, { dialect: 'tsql' });
 
     expect(twice).toBe(once);
   });

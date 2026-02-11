@@ -3,7 +3,7 @@ import { formatSQL } from '../src/format';
 
 describe('MySQL keyword and function casing', () => {
   it('uppercases MySQL text type keywords', () => {
-    const out = formatSQL('CREATE TABLE t (a tinytext, b mediumtext, c longtext, d text);');
+    const out = formatSQL('CREATE TABLE t (a tinytext, b mediumtext, c longtext, d text);', { dialect: 'mysql' });
     expect(out).toContain('a TINYTEXT');
     expect(out).toContain('b MEDIUMTEXT');
     expect(out).toContain('c LONGTEXT');
@@ -22,7 +22,7 @@ describe('MySQL keyword and function casing', () => {
   });
 
   it('uppercases MySQL date and time function names consistently', () => {
-    const out = formatSQL('SELECT CURTIME(), CURDATE(), NOW(), DAYOFWEEK(NOW()), DATE_FORMAT(NOW(), \'%Y-%m-%d\');');
+    const out = formatSQL('SELECT CURTIME(), CURDATE(), NOW(), DAYOFWEEK(NOW()), DATE_FORMAT(NOW(), \'%Y-%m-%d\');', { dialect: 'mysql' });
     expect(out).toContain('CURTIME()');
     expect(out).toContain('CURDATE()');
     expect(out).toContain('NOW()');

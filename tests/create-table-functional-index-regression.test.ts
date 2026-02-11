@@ -18,7 +18,7 @@ describe('CREATE TABLE functional and multi-valued index formatting', () => {
     INDEX idx_tags ((CAST(doc->'$.tags' AS CHAR(20) ARRAY)))
 );`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'mysql' });
     expect(out).toBe(`CREATE TABLE complex_ddl_test (
     id          INT         AUTO_INCREMENT PRIMARY KEY,
     /* Invisible column (hidden from SELECT *) */

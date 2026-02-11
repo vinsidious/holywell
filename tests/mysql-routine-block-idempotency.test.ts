@@ -9,8 +9,8 @@ describe('MySQL routine block formatting', () => {
     END IF;
 END;`;
 
-    const once = formatSQL(sql);
-    const twice = formatSQL(once);
+    const once = formatSQL(sql, { dialect: 'mysql' });
+    const twice = formatSQL(once, { dialect: 'mysql' });
 
     expect(twice).toBe(once);
     expect(once).toContain('THEN');

@@ -14,7 +14,7 @@ function maxLineLength(sql: string): number {
   return Math.max(...sql.split('\n').map(line => line.length));
 }
 
-describe('line wrapping and statement boundary behavior coverage', () => {
+describe('line wrapping and statement boundary behaviors', () => {
   it('wraps long generated column definitions in CREATE TABLE', () => {
     const sql = "CREATE TABLE docs (\n  id int,\n  search_vector tsvector GENERATED ALWAYS AS (to_tsvector('english'::regconfig, COALESCE(title, ''::text) || ' ' || COALESCE(body, ''::text) || ' ' || COALESCE(tags, ''::text))) STORED\n);";
     const out = formatWithoutRecoveries(sql);

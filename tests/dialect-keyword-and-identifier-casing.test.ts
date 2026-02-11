@@ -3,7 +3,7 @@ import { formatSQL } from '../src/format';
 
 describe('Dialect keyword and identifier casing', () => {
   it('uppercases AUTO_INCREMENT in MySQL column definitions', () => {
-    const out = formatSQL('CREATE TABLE t (id INT NOT NULL auto_increment PRIMARY KEY);');
+    const out = formatSQL('CREATE TABLE t (id INT NOT NULL auto_increment PRIMARY KEY);', { dialect: 'mysql' });
     expect(out).toContain('AUTO_INCREMENT');
     expect(out).not.toContain('auto_increment');
   });
@@ -17,7 +17,7 @@ describe('Dialect keyword and identifier casing', () => {
   });
 
   it('uppercases IF and IFNULL function names', () => {
-    const out = formatSQL('SELECT if(a > 0, 1, 0), ifnull(a, 0), coalesce(x, y), nullif(a, b) FROM t;');
+    const out = formatSQL('SELECT if(a > 0, 1, 0), ifnull(a, 0), coalesce(x, y), nullif(a, b) FROM t;', { dialect: 'mysql' });
 
     expect(out).toContain('IF(a > 0, 1, 0)');
     expect(out).toContain('IFNULL(a, 0)');
@@ -86,7 +86,7 @@ comment on column public.user.email is 'Email address of the user.';`;
     const sql = `SELECT CONVERT(DATETIME, es.start_time) AS start_time,
        CONVERT(VARCHAR, DATEADD(ms, es.execution_duration, 0), 108) AS duration_hms
   FROM catalog.executions ex (NOLOCK);`;
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
 
     expect(out).toContain('CONVERT(DATETIME, es.start_time)');
     expect(out).toContain('CONVERT(VARCHAR, DATEADD(ms, es.execution_duration, 0), 108)');
@@ -94,7 +94,7 @@ comment on column public.user.email is 'Email address of the user.';`;
   });
 
   it('uppercases PRINT statements in T-SQL batches', () => {
-    const out = formatSQL("print 'Bangla GPA = '+ CAST(@banglagpa AS VARCHAR);");
+    const out = formatSQL("print 'Bangla GPA = '+ CAST(@banglagpa AS VARCHAR);", { dialect: 'tsql' });
 
     expect(out).toContain("PRINT 'Bangla GPA = '+ CAST(@banglagpa AS VARCHAR);");
     expect(out).not.toContain("print 'Bangla GPA = '+ CAST(@banglagpa AS VARCHAR);");

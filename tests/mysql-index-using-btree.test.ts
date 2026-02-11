@@ -9,7 +9,7 @@ describe('MySQL index USING BTREE clauses', () => {
     UNIQUE INDEX \`eCard\` (\`eCard\`) USING BTREE
 ) ENGINE = InnoDB;`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'mysql' });
     expect(out).toContain('UNIQUE INDEX `eCard` (`eCard`) USING BTREE');
     expect(out).not.toMatch(/\n\s*USING\s+BTREE\s*(,|\n|\))/);
   });

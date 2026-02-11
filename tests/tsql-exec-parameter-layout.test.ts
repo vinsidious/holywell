@@ -8,7 +8,7 @@ describe('T-SQL EXEC parameter layout', () => {
 @ContactId = 23,
 @Notes = @TempNotes;`;
 
-    const ast = parse(sql, { recover: false });
+    const ast = parse(sql, { recover: false, dialect: 'tsql' });
     expect(ast).toHaveLength(1);
   });
 
@@ -17,7 +17,7 @@ describe('T-SQL EXEC parameter layout', () => {
 @ContactId = 23,
 @Notes = @TempNotes;`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toContain('EXEC dbo.InsertContactNotes\n@ContactId = 23,\n@Notes = @TempNotes;');
     expect(out).not.toMatch(/InsertContactNotes\n\s*\n\s*@ContactId/);
     expect(out).not.toMatch(/@ContactId = 23,\n\s*\n\s*@Notes/);

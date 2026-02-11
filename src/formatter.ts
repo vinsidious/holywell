@@ -3,6 +3,7 @@ import { FUNCTION_KEYWORDS } from './keywords';
 import { DEFAULT_MAX_DEPTH, TERMINAL_WIDTH } from './constants';
 import { parse } from './parser';
 import { tokenize } from './tokenizer';
+import type { SQLDialect } from './dialect';
 
 function isInExprSubquery(expr: AST.InExpr): expr is AST.InExprSubquery {
   return expr.kind === 'subquery';
@@ -22,6 +23,12 @@ function getInExprList(expr: AST.InExprList): AST.Expression[] {
 
 const DEFAULT_RIVER = 6; // length of SELECT keyword
 const MAX_FORMATTER_DEPTH = DEFAULT_MAX_DEPTH;
+
+// Module-level function keyword set for the current formatting pass.
+// Set at the start of formatStatements() and used by formatFunctionName()
+// to apply dialect-specific function keyword casing. Safe because formatting
+// is synchronous — no concurrent formatting calls can interleave.
+let activeFunctionKeywords: ReadonlySet<string> = FUNCTION_KEYWORDS;
 
 // Approximate monospace display width with East Asian wide/full-width support.
 // Used for line-length heuristics so CJK-heavy SQL wraps more predictably.
@@ -117,6 +124,10 @@ function buildLayoutPolicy(maxLineLength: number): LayoutPolicy {
 interface FormatterRuntime {
   maxLineLength: number;
   layoutPolicy: LayoutPolicy;
+  dialect?: SQLDialect;
+  maxDepth: number;
+  maxTokenCount?: number;
+  functionKeywords: ReadonlySet<string>;
 }
 
 interface FormatContext {
@@ -130,6 +141,10 @@ interface FormatContext {
 
 export interface FormatterOptions {
   maxLineLength?: number;
+  dialect?: SQLDialect;
+  maxDepth?: number;
+  maxTokenCount?: number;
+  functionKeywords?: ReadonlySet<string>;
 }
 
 export class FormatterError extends Error {
@@ -142,12 +157,28 @@ export class FormatterError extends Error {
   }
 }
 
+function runtimeToFormatterOptions(runtime: FormatterRuntime): FormatterOptions {
+  return {
+    maxLineLength: runtime.maxLineLength,
+    dialect: runtime.dialect,
+    maxDepth: runtime.maxDepth,
+    maxTokenCount: runtime.maxTokenCount,
+    functionKeywords: runtime.functionKeywords,
+  };
+}
+
 export function formatStatements(nodes: AST.Node[], options: FormatterOptions = {}): string {
   const maxLineLength = Math.max(40, options.maxLineLength ?? TERMINAL_WIDTH);
   const runtime: FormatterRuntime = {
     maxLineLength,
     layoutPolicy: buildLayoutPolicy(maxLineLength),
+    dialect: options.dialect,
+    maxDepth: options.maxDepth ?? DEFAULT_MAX_DEPTH,
+    maxTokenCount: options.maxTokenCount,
+    functionKeywords: options.functionKeywords ?? FUNCTION_KEYWORDS,
   };
+  // Set module-level function keywords for use by formatFunctionName in all call paths
+  activeFunctionKeywords = runtime.functionKeywords;
 
   const parts: string[] = [];
   for (const node of nodes) {
@@ -423,7 +454,10 @@ function tryFormatAlterViewAsQuery(text: string, runtime: FormatterRuntime): str
   const trimmed = text.trim();
   if (!/^ALTER\s+VIEW\b/i.test(trimmed)) return null;
 
-  const tokens = tokenize(trimmed)
+  const tokens = tokenize(trimmed, {
+    dialect: runtime.dialect,
+    maxTokenCount: runtime.maxTokenCount,
+  })
     .filter(token => token.type !== 'whitespace' && token.type !== 'line_comment' && token.type !== 'block_comment' && token.type !== 'eof');
   if (tokens.length < 4 || tokens[0].upper !== 'ALTER' || tokens[1].upper !== 'VIEW') return null;
 
@@ -458,16 +492,16 @@ function tryFormatAlterViewAsQuery(text: string, runtime: FormatterRuntime): str
   try {
     const nodes = parse(querySql, {
       recover: false,
-      maxDepth: DEFAULT_MAX_DEPTH,
+      maxDepth: runtime.maxDepth,
+      maxTokenCount: runtime.maxTokenCount,
+      dialect: runtime.dialect,
     });
     if (nodes.length !== 1) return null;
     const node = nodes[0];
     if (node.type !== 'select' && node.type !== 'cte' && node.type !== 'union' && node.type !== 'standalone_values') {
       return null;
     }
-    const formattedQuery = formatStatements(nodes, {
-      maxLineLength: runtime.maxLineLength,
-    }).trim();
+    const formattedQuery = formatStatements(nodes, runtimeToFormatterOptions(runtime)).trim();
     return `${header}\n${formattedQuery}`;
   } catch {
     return null;
@@ -530,7 +564,9 @@ function formatBlockBody(body: string, runtime: FormatterRuntime): string | null
   try {
     const bodyNodes = parse(body, {
       recover: true,
-      maxDepth: DEFAULT_MAX_DEPTH,
+      maxDepth: runtime.maxDepth,
+      maxTokenCount: runtime.maxTokenCount,
+      dialect: runtime.dialect,
     });
     if (bodyNodes.length === 0) return body.trim();
 
@@ -546,16 +582,12 @@ function formatBlockBody(body: string, runtime: FormatterRuntime): string | null
         if (returnSelect) {
           part = returnSelect.trim();
         } else {
-          const formattedRaw = formatStatements([node], {
-            maxLineLength: runtime.maxLineLength,
-          }).trim();
+          const formattedRaw = formatStatements([node], runtimeToFormatterOptions(runtime)).trim();
           part = normalizeRawBlockPartIndent(formattedRaw);
           controlKind = detectRoutineControlFlowKind(part);
         }
       } else {
-        part = formatStatements([node], {
-          maxLineLength: runtime.maxLineLength,
-        }).trim();
+        part = formatStatements([node], runtimeToFormatterOptions(runtime)).trim();
       }
 
       part = normalizeBlockCommentIndentation(part);
@@ -664,7 +696,9 @@ function tryFormatReturnParenthesizedSelect(text: string, runtime: FormatterRunt
   try {
     const innerNodes = parse(inner, {
       recover: false,
-      maxDepth: DEFAULT_MAX_DEPTH,
+      maxDepth: runtime.maxDepth,
+      maxTokenCount: runtime.maxTokenCount,
+      dialect: runtime.dialect,
     });
     if (
       innerNodes.length !== 1
@@ -676,9 +710,7 @@ function tryFormatReturnParenthesizedSelect(text: string, runtime: FormatterRunt
     ) {
       return null;
     }
-    formattedInner = formatStatements(innerNodes, {
-      maxLineLength: runtime.maxLineLength,
-    }).trim().replace(/;$/, '');
+    formattedInner = formatStatements(innerNodes, runtimeToFormatterOptions(runtime)).trim().replace(/;$/, '');
   } catch {
     return null;
   }
@@ -2260,7 +2292,7 @@ function formatWindowFunctionAtColumn(
   col: number,
   runtime: FormatterRuntime
 ): string {
-  const func = formatFunctionCall(expr.func);
+  const func = formatFunctionCall(expr.func, 0, runtime.functionKeywords);
   const funcWithNullTreatment = expr.nullTreatment ? `${func} ${expr.nullTreatment}` : func;
   const hasWindowSpecParts = !!(expr.partitionBy || expr.orderBy || expr.frame || expr.exclude);
   if (expr.windowName && !hasWindowSpecParts) {
@@ -4322,7 +4354,10 @@ function formatExpr(expr: AST.Expression, depth: number = 0): string {
       return formatExpr(expr.expr, d) + '::' + expr.targetType;
     case 'ilike': {
       const neg = expr.negated ? 'NOT ' : '';
-      let out = formatExpr(expr.expr, d) + ' ' + neg + 'ILIKE ' + formatExpr(expr.pattern, d);
+      // Use originalKeyword when the tokenizer classified ILIKE as an
+      // identifier (non-PostgreSQL dialects); otherwise uppercase it.
+      const kw = expr.originalKeyword ?? 'ILIKE';
+      let out = formatExpr(expr.expr, d) + ' ' + neg + kw + ' ' + formatExpr(expr.pattern, d);
       if (expr.escape) out += ' ESCAPE ' + formatExpr(expr.escape, d);
       return out;
     }
@@ -4352,8 +4387,8 @@ function assertNeverExpr(expr: never): never {
   );
 }
 
-function formatFunctionCall(expr: AST.FunctionCallExpr, depth: number = 0): string {
-  const name = formatFunctionName(expr.name);
+function formatFunctionCall(expr: AST.FunctionCallExpr, depth: number = 0, functionKeywords: ReadonlySet<string> = activeFunctionKeywords): string {
+  const name = formatFunctionName(expr.name, functionKeywords);
   const functionNameParts = splitQualifiedIdentifier(expr.name);
   const upperSimpleName = functionNameParts[functionNameParts.length - 1]?.toUpperCase() ?? '';
   const distinct = expr.distinct ? 'DISTINCT ' : '';
@@ -4400,6 +4435,8 @@ function formatSubquerySimple(expr: AST.SubqueryExpr): string {
   const inner = formatQueryExpressionForSubquery(expr.query, {
     maxLineLength: TERMINAL_WIDTH,
     layoutPolicy: buildLayoutPolicy(TERMINAL_WIDTH),
+    maxDepth: DEFAULT_MAX_DEPTH,
+    functionKeywords: activeFunctionKeywords,
   });
   return '(' + inner + ')';
 }
@@ -4462,12 +4499,12 @@ function formatProjectionAlias(alias: string): string {
   return alias;
 }
 
-function formatFunctionName(name: string): string {
+function formatFunctionName(name: string, functionKeywords: ReadonlySet<string> = activeFunctionKeywords): string {
   const parts = splitQualifiedIdentifier(name);
   const last = parts[parts.length - 1];
   if (isQuotedIdentifierPart(last)) return lowerIdent(name);
   const upperLast = last.toUpperCase();
-  if (FUNCTION_KEYWORDS.has(upperLast) || upperLast === 'AGE') {
+  if (functionKeywords.has(upperLast) || upperLast === 'AGE') {
     parts[parts.length - 1] = upperLast;
     for (let i = 0; i < parts.length - 1; i++) {
       if (!isQuotedIdentifierPart(parts[i]) && !parts[i].startsWith('@') && !isMixedCaseIdentifierPart(parts[i])) {
@@ -4479,7 +4516,7 @@ function formatFunctionName(name: string): string {
   return lowerIdent(name);
 }
 
-// Lowercase identifiers, preserving qualified name dots and quoted identifiers
+// Lowercase ALL-CAPS identifiers; preserve mixed-case, quoted, and @-prefixed identifiers
 function lowerIdent(name: string): string {
   return splitQualifiedIdentifier(name).map(p => {
     if (p.startsWith('@')) return p;

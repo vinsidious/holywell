@@ -10,8 +10,8 @@ describe('ALTER XML schema string literal indentation', () => {
     </xsd:element>
 </xsd:schema>';`;
 
-    const once = formatSQL(sql);
-    const twice = formatSQL(once);
+    const once = formatSQL(sql, { dialect: 'tsql' });
+    const twice = formatSQL(once, { dialect: 'tsql' });
 
     expect(twice).toBe(once);
   });

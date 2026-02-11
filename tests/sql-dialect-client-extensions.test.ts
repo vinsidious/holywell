@@ -2,21 +2,22 @@ import { describe, expect, it } from 'bun:test';
 import { formatSQL } from '../src/format';
 import { parse } from '../src/parser';
 
-function formatWithoutRecoveries(sql: string): string {
+function formatWithoutRecoveries(sql: string, options: { dialect?: 'ansi' | 'postgres' | 'mysql' | 'tsql' } = {}): string {
   const recoveries: string[] = [];
   const out = formatSQL(sql, {
+    dialect: options.dialect,
     onRecover: err => recoveries.push(err.message),
   });
   expect(recoveries).toEqual([]);
   return out;
 }
 
-function expectStrictAndRecoveryFree(sql: string): string {
-  expect(() => parse(sql, { recover: false })).not.toThrow();
-  return formatWithoutRecoveries(sql);
+function expectStrictAndRecoveryFree(sql: string, options: { dialect?: 'ansi' | 'postgres' | 'mysql' | 'tsql' } = {}): string {
+  expect(() => parse(sql, { recover: false, dialect: options.dialect })).not.toThrow();
+  return formatWithoutRecoveries(sql, options);
 }
 
-describe('dialect and client SQL behavior coverage', () => {
+describe('dialect and client SQL behaviors', () => {
   it('accepts backslashes in Windows paths inside quoted literals', () => {
     const sql = "SET @cmd = 'BACKUP DATABASE foo TO DISK = ''C:\\Backups\\foo.bak'' WITH FORMAT';";
     const out = expectStrictAndRecoveryFree(sql);
@@ -124,7 +125,7 @@ describe('dialect and client SQL behavior coverage', () => {
 
   it('treats GO as a batch separator between statements', () => {
     const sql = 'SELECT 1\nGO\nSELECT 2;';
-    const out = expectStrictAndRecoveryFree(sql);
+    const out = expectStrictAndRecoveryFree(sql, { dialect: 'tsql' });
     expect(out).toContain('\nGO\n');
     expect(out.toUpperCase()).not.toContain('AS GO');
   });

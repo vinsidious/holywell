@@ -3,6 +3,8 @@ import * as AST from './ast';
 import { parseComparisonExpression, parsePrimaryExpression } from './parser/expressions';
 import { DEFAULT_MAX_DEPTH } from './constants';
 import type { SQLDialect } from './dialect';
+import { resolveDialectProfile } from './dialects';
+import type { DialectProfile } from './dialects';
 import {
   type DmlParser,
   parseDeleteStatement,
@@ -16,16 +18,6 @@ import {
   parseCreateStatement,
   parseDropStatement,
 } from './parser/ddl';
-const BASE_CLAUSE_KEYWORDS = new Set([
-  'FROM', 'WHERE', 'GROUP', 'HAVING', 'ORDER', 'LIMIT', 'OFFSET',
-  'UNION', 'INTERSECT', 'EXCEPT', 'ON', 'SET', 'VALUES',
-  'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'NATURAL', 'JOIN',
-  'INTO', 'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER',
-  'DROP', 'WITH', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR',
-  'RETURNING', 'FETCH', 'WINDOW', 'LATERAL', 'FOR', 'USING', 'ESCAPE',
-  'PIVOT', 'UNPIVOT', 'GO', 'OPTION',
-  'START', 'CONNECT', 'BY', 'PRIOR', 'NOCYCLE',
-]);
 const FUNCTION_KEYWORD_OVERRIDES = new Set([
   // Can appear as join keywords and as scalar functions.
   'LEFT',
@@ -41,23 +33,6 @@ const STRING_ALIAS_TYPED_LITERAL_DISALLOWED = new Set([
   'DECIMAL', 'NUMERIC', 'FLOAT', 'DOUBLE', 'REAL', 'MONEY',
   'JSON', 'JSONB', 'UUID',
 ]);
-const IMPLICIT_STATEMENT_STARTERS = new Set([
-  'SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'MERGE',
-  'CREATE', 'ALTER', 'DROP', 'TRUNCATE',
-  'GRANT', 'REVOKE', 'COMMENT', 'CALL',
-  'EXPLAIN',
-  'PRAGMA', 'SHOW', 'FLUSH',
-  'LOCK', 'UNLOCK',
-  'BACKUP', 'BULK', 'CLUSTER',
-  'PRINT',
-  'SET', 'RESET', 'ANALYZE', 'ANALYSE', 'VACUUM',
-  'REINDEX',
-  'DECLARE', 'PREPARE', 'EXECUTE', 'EXEC', 'DEALLOCATE',
-  'USE', 'DO', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE',
-  'START', 'VALUES', 'COPY', 'DELIMITER',
-  'GO', 'DBCC', 'ACCEPT', 'DESC', 'DESCRIBE', 'REM', 'DEFINE', 'PROMPT', 'SP_RENAME',
-]);
-
 const CREATE_KEYWORD_NORMALIZED_TYPES = new Set([
   'DATABASE',
   'ROLE',
@@ -138,9 +113,19 @@ export interface ParseOptions {
   onDropStatement?: (error: ParseError, context: ParseRecoveryContext) => void;
 
   /**
-   * Optional SQL dialect extensions (keywords + clause boundaries).
+   * Optional callback invoked when a statement is passed through as raw text
+   * because it uses unsupported syntax (e.g. MERGE, SET, USE, DBCC, etc.).
    *
-   * When omitted, holywell uses its default PostgreSQL-first behavior.
+   * Unlike `onRecover`, this is not triggered by parse errors -- it fires for
+   * statements that the parser intentionally does not format because the syntax
+   * is recognized but unsupported for structured formatting.
+   */
+  onPassthrough?: (raw: AST.RawExpression, context: ParseRecoveryContext) => void;
+
+  /**
+   * SQL dialect selection or custom profile.
+   *
+   * When omitted, holywell defaults to the built-in PostgreSQL profile.
    */
   dialect?: SQLDialect;
 
@@ -240,6 +225,7 @@ export class MaxDepthError extends ParseError {
 export class Parser {
   private tokens: Token[];
   private readonly source?: string;
+  private readonly profile: DialectProfile;
   private pos: number = 0;
   private activeDelimiter: string = ';';
   private blankLinesBeforeToken = new Map<number, number>();
@@ -247,6 +233,7 @@ export class Parser {
   private readonly maxDepth: number;
   private readonly onRecover?: (error: ParseError, raw: AST.RawExpression | null, context: ParseRecoveryContext) => void;
   private readonly onDropStatement?: (error: ParseError, context: ParseRecoveryContext) => void;
+  private readonly onPassthrough?: (raw: AST.RawExpression, context: ParseRecoveryContext) => void;
   private readonly clauseKeywords: Set<string>;
   private readonly totalStatements: number;
   private currentStatementIndex: number = 0;
@@ -269,14 +256,15 @@ export class Parser {
     }
     this.tokens = tokens.filter(t => t.type !== 'whitespace');
     this.source = source;
+    this.profile = (options.dialect && typeof options.dialect === 'object' && options.dialect.keywords instanceof Set)
+      ? options.dialect as DialectProfile
+      : resolveDialectProfile(options.dialect);
     this.recover = options.recover ?? true;
     this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
     this.onRecover = options.onRecover;
     this.onDropStatement = options.onDropStatement;
-    this.clauseKeywords = new Set(BASE_CLAUSE_KEYWORDS);
-    for (const kw of options.dialect?.clauseKeywords ?? []) {
-      this.clauseKeywords.add(kw.toUpperCase());
-    }
+    this.onPassthrough = options.onPassthrough;
+    this.clauseKeywords = new Set(this.profile.clauseKeywords);
     this.totalStatements = this.estimateTotalStatements();
   }
 
@@ -367,6 +355,10 @@ export class Parser {
           throw new ParseError(';', this.peek());
         }
         if (stmt) {
+          // Notify caller when a statement is intentionally passed through unformatted
+          if (stmt.type === 'raw' && stmt.reason === 'unsupported' && this.onPassthrough) {
+            this.onPassthrough(stmt, recoveryContext);
+          }
           stmts.push(stmt);
           if (stmt.type !== 'raw' && this.check(';')) {
             const semi = this.advance();
@@ -430,6 +422,8 @@ export class Parser {
           : recovered;
         if (!dialectUnsupported) {
           this.onRecover?.(err, raw, recoveryContext);
+        } else if (raw) {
+          this.onPassthrough?.(raw, recoveryContext);
         }
         if (raw) {
           stmts.push(raw);
@@ -439,11 +433,10 @@ export class Parser {
           }
           if (this.onDropStatement) {
             this.onDropStatement(err, recoveryContext);
-          } else {
-            console.error(
-              `Warning: dropped statement ${recoveryContext.statementIndex}/${recoveryContext.totalStatements} after parse failure at line ${err.line}, column ${err.column}`
-            );
           }
+          // If no callback is provided, silently drop the statement.
+          // A library should never write to stderr; the caller can
+          // observe drops via the onDropStatement callback.
         }
       }
       this.skipSemicolons();
@@ -463,7 +456,7 @@ export class Parser {
   private isStatementStarterToken(token: Token | undefined): boolean {
     if (!token || token.type === 'eof') return false;
     if (token.value === '/') return true;
-    if (IMPLICIT_STATEMENT_STARTERS.has(token.upper)) return true;
+    if (this.profile.statementStarters.has(token.upper)) return true;
     return false;
   }
 
@@ -504,6 +497,28 @@ export class Parser {
     while (this.check(';')) {
       if (this.isSyntheticSlashSemicolon(this.peek())) break;
       this.advance();
+    }
+  }
+
+  private tryParseDialectStatement(kw: string, comments: AST.CommentNode[]): AST.Node | null {
+    const handler = this.profile.statementHandlers?.[kw];
+    if (!handler) return null;
+
+    switch (handler.kind) {
+      case 'single_line_unsupported':
+        return this.parseSingleLineStatement(comments, 'unsupported');
+      case 'delimiter_script':
+        return this.parseDelimiterScript(comments);
+      case 'verbatim_unsupported':
+        return this.parseVerbatimStatement(comments, 'unsupported', handler.allowImplicitBoundary ?? false);
+      case 'keyword_normalized_unsupported':
+        return this.parseKeywordNormalizedStatement(
+          comments,
+          'unsupported',
+          handler.allowImplicitBoundary ?? false,
+        );
+      default:
+        return null;
     }
   }
 
@@ -569,6 +584,9 @@ export class Parser {
     if (this.activeDelimiter !== ';' && kw !== 'DELIMITER') {
       return this.parseCustomDelimitedStatement(comments);
     }
+
+    const dialectHandled = this.tryParseDialectStatement(kw, comments);
+    if (dialectHandled) return dialectHandled;
 
     if (kw === 'CREATE' && this.looksLikeCreateRoutineStatement()) {
       const routineKind = this.getCreateRoutineKind();
@@ -647,11 +665,6 @@ export class Parser {
     if (kw === 'TRUNCATE') return this.parseTruncate(comments);
     if (kw === 'VALUES') return this.parseStandaloneValues(comments);
     if (kw === 'COPY') return this.parseCopyStatement(comments);
-    if (kw === 'DELIMITER') return this.parseDelimiterScript(comments);
-    if (kw === 'GO') return this.parseSingleLineStatement(comments, 'unsupported');
-    if (kw === 'BACKUP' || kw === 'BULK' || kw === 'CLUSTER') {
-      return this.parseVerbatimStatement(comments, 'unsupported');
-    }
     if (kw === 'DBCC') {
       return this.parseVerbatimStatement(comments, 'unsupported', true);
     }
@@ -1370,8 +1383,8 @@ export class Parser {
       let fetch: { count: AST.Expression; withTies?: boolean } | undefined;
       let lockingClause: string | undefined;
 
-      if (this.peekUpper() === 'ORDER' && this.peekUpperAt(1) === 'BY') {
-        this.advance(); this.advance();
+      if (this.peekUpper() === 'ORDER' && this.peekUpperSkippingComments(1) === 'BY') {
+        this.advance(); this.consumeComments(); this.advance();
         orderBy = { items: this.parseOrderByItems() };
       }
 
@@ -1426,8 +1439,8 @@ export class Parser {
     let lockingClause: string | undefined;
 
     if (first.parenthesized) {
-      if (this.peekUpper() === 'ORDER' && this.peekUpperAt(1) === 'BY') {
-        this.advance(); this.advance();
+      if (this.peekUpper() === 'ORDER' && this.peekUpperSkippingComments(1) === 'BY') {
+        this.advance(); this.consumeComments(); this.advance();
         orderBy = { items: this.parseOrderByItems() };
       }
 
@@ -1532,6 +1545,8 @@ export class Parser {
     try {
       return fn();
     } catch (err) {
+      // MaxDepthError must always propagate — it is a security boundary.
+      if (err instanceof MaxDepthError) throw err;
       if (err instanceof ParseError) {
         this.pos = checkpoint;
         return null;
@@ -1733,6 +1748,7 @@ export class Parser {
 
     const parseConnectByClause = (): void => {
       this.expect('CONNECT');
+      this.consumeComments();
       this.expect('BY');
       let noCycle = false;
       if (this.peekUpper() === 'NOCYCLE') {
@@ -1753,7 +1769,7 @@ export class Parser {
           advanced = true;
           continue;
         }
-        if (!connectBy && this.peekUpper() === 'CONNECT' && this.peekUpperAt(1) === 'BY') {
+        if (!connectBy && this.peekUpper() === 'CONNECT' && this.peekUpperSkippingComments(1) === 'BY') {
           parseConnectByClause();
           advanced = true;
         }
@@ -1783,8 +1799,8 @@ export class Parser {
 
     parseHierarchicalClauses();
 
-    if (this.peekUpper() === 'GROUP' && this.peekUpperAt(1) === 'BY') {
-      this.advance(); this.advance();
+    if (this.peekUpper() === 'GROUP' && this.peekUpperSkippingComments(1) === 'BY') {
+      this.advance(); this.consumeComments(); this.advance();
       groupBy = this.parseGroupByClause();
     }
 
@@ -1798,8 +1814,8 @@ export class Parser {
       windowClause = this.parseWindowClause();
     }
 
-    if (this.peekUpper() === 'ORDER' && this.peekUpperAt(1) === 'BY') {
-      this.advance(); this.advance();
+    if (this.peekUpper() === 'ORDER' && this.peekUpperSkippingComments(1) === 'BY') {
+      this.advance(); this.consumeComments(); this.advance();
       orderBy = { items: this.parseOrderByItems() };
     }
 
@@ -2000,6 +2016,7 @@ export class Parser {
   private parseOptionalIndexHintClause(): string | undefined {
     const hintParts: string[] = [];
 
+    // MySQL-style index hints: USE/IGNORE/FORCE INDEX/KEY (...)
     while (
       (this.peekUpper() === 'USE' || this.peekUpper() === 'IGNORE' || this.peekUpper() === 'FORCE')
       && (this.peekUpperAt(1) === 'INDEX' || this.peekUpperAt(1) === 'KEY')
@@ -2014,9 +2031,13 @@ export class Parser {
           hintTokens.push(this.advance());
         } else if (
           (this.peekUpper() === 'ORDER' || this.peekUpper() === 'GROUP')
-          && this.peekUpperAt(1) === 'BY'
+          && this.peekUpperSkippingComments(1) === 'BY'
         ) {
           hintTokens.push(this.advance());
+          // Skip any inline comments between ORDER/GROUP and BY
+          while (this.peekType() === 'line_comment' || this.peekType() === 'block_comment') {
+            hintTokens.push(this.advance());
+          }
           hintTokens.push(this.advance());
         } else {
           throw new ParseError('JOIN, ORDER BY, or GROUP BY', this.peek());
@@ -2036,6 +2057,29 @@ export class Parser {
       const hintText = this.tokensToSql(hintTokens).trim();
       if (hintText) hintParts.push(hintText);
       this.consumeComments();
+    }
+
+    // T-SQL table hints: WITH (NOLOCK), WITH (HOLDLOCK, UPDLOCK), etc.
+    if (this.peekUpper() === 'WITH' && this.peekUpperAt(1) === '(') {
+      // Distinguish from WITH ORDINALITY, WITH ROLLUP, WITH TIES (already handled elsewhere)
+      const nextAfterParen = this.peekUpperAt(2);
+      if (nextAfterParen !== 'ORDINALITY' && nextAfterParen !== 'ROLLUP' && nextAfterParen !== 'TIES') {
+        const hintTokens: Token[] = [];
+        hintTokens.push(this.advance()); // WITH
+        this.expect('(');
+        hintTokens.push(this.peekAt(-1)); // (
+        let depth = 1;
+        while (!this.isAtEnd() && depth > 0) {
+          const token = this.advance();
+          hintTokens.push(token);
+          if (token.value === '(' || token.value === '[' || token.value === '{') depth++;
+          else if (token.value === ')' || token.value === ']' || token.value === '}') depth--;
+        }
+        let hintText = this.tokensToSql(hintTokens).trim();
+        // Ensure space between WITH and opening paren: WITH(X) -> WITH (X)
+        hintText = hintText.replace(/\bWITH\(/g, 'WITH (');
+        if (hintText) hintParts.push(hintText);
+      }
     }
 
     return hintParts.length > 0 ? hintParts.join(' ') : undefined;
@@ -2176,7 +2220,9 @@ export class Parser {
   private isJoinKeyword(): boolean {
     const kw = this.peekUpper();
     if (kw === 'JOIN') return true;
-    if (kw === 'STRAIGHT_JOIN') return true;
+    // STRAIGHT_JOIN is MySQL-specific; only treat as join keyword when
+    // the tokenizer classified it as a keyword (i.e. MySQL dialect).
+    if (kw === 'STRAIGHT_JOIN' && this.peekType() === 'keyword') return true;
     if ((kw === 'CROSS' || kw === 'OUTER') && this.peekUpperAt(1) === 'APPLY') return true;
     if (kw === 'NATURAL') {
       const next1 = this.peekUpperAt(1);
@@ -2202,7 +2248,7 @@ export class Parser {
   }
 
   private parseJoin(): AST.JoinClause {
-    if (this.peekUpper() === 'STRAIGHT_JOIN') {
+    if (this.peekUpper() === 'STRAIGHT_JOIN' && this.peekType() === 'keyword') {
       const joinType = this.advance().upper;
       let only = false;
       if (this.peekUpper() === 'ONLY') {
@@ -2532,13 +2578,13 @@ export class Parser {
       baseWindowName = this.advance().value;
     }
 
-    if (this.peekUpper() === 'PARTITION' && this.peekUpperAt(1) === 'BY') {
-      this.advance(); this.advance();
+    if (this.peekUpper() === 'PARTITION' && this.peekUpperSkippingComments(1) === 'BY') {
+      this.advance(); this.consumeComments(); this.advance();
       partitionBy = this.parseExpressionList();
     }
 
-    if (this.peekUpper() === 'ORDER' && this.peekUpperAt(1) === 'BY') {
-      this.advance(); this.advance();
+    if (this.peekUpper() === 'ORDER' && this.peekUpperSkippingComments(1) === 'BY') {
+      this.advance(); this.consumeComments(); this.advance();
       orderBy = this.parseOrderByItems();
     }
 
@@ -3282,8 +3328,8 @@ export class Parser {
 
       // Handle ORDER BY inside aggregate: e.g., ARRAY_AGG(x ORDER BY y), STRING_AGG(x, ',' ORDER BY y)
       let innerOrderBy: AST.OrderByItem[] | undefined;
-      if (this.peekUpper() === 'ORDER' && this.peekUpperAt(1) === 'BY') {
-        this.advance(); this.advance();
+      if (this.peekUpper() === 'ORDER' && this.peekUpperSkippingComments(1) === 'BY') {
+        this.advance(); this.consumeComments(); this.advance();
         innerOrderBy = this.parseOrderByItems();
       }
 
@@ -4060,7 +4106,7 @@ export class Parser {
     if (hasExplicitRecipients) {
       while (!this.isAtEnd() && !this.check(';')) {
         if (this.peekUpper() === 'WITH' && this.peekUpperAt(1) === 'GRANT' && this.peekUpperAt(2) === 'OPTION') break;
-        if (this.peekUpper() === 'GRANTED' && this.peekUpperAt(1) === 'BY') break;
+        if (this.peekUpper() === 'GRANTED' && this.peekUpperSkippingComments(1) === 'BY') break;
         if (this.peekUpper() === 'CASCADE' || this.peekUpper() === 'RESTRICT') break;
         recipientTokens.push(this.advance());
       }
@@ -4078,8 +4124,9 @@ export class Parser {
         withGrantOption = true;
         continue;
       }
-      if (this.peekUpper() === 'GRANTED' && this.peekUpperAt(1) === 'BY') {
+      if (this.peekUpper() === 'GRANTED' && this.peekUpperSkippingComments(1) === 'BY') {
         this.advance();
+        this.consumeComments();
         this.advance();
         const grantedByTokens = this.collectTokensUntilTopLevelKeyword(new Set(['CASCADE', 'RESTRICT']));
         grantedBy = this.tokensToSql(grantedByTokens);
@@ -5127,7 +5174,7 @@ export class Parser {
   private isJoinKeywordAt(index: number): boolean {
     const kw = this.tokens[index]?.upper ?? '';
     if (kw === 'JOIN') return true;
-    if (kw === 'STRAIGHT_JOIN') return true;
+    if (kw === 'STRAIGHT_JOIN' && this.tokens[index]?.type === 'keyword') return true;
     if ((kw === 'CROSS' || kw === 'OUTER') && (this.tokens[index + 1]?.upper ?? '') === 'APPLY') return true;
     if (kw === 'NATURAL') {
       const next1 = this.tokens[index + 1]?.upper ?? '';
@@ -5728,14 +5775,14 @@ export class Parser {
  */
 export function parse(input: string, options: ParseOptions = {}): AST.Node[] {
   if (!input.trim()) return [];
-  const recover = options.recover ?? true;
+  const dialect = resolveDialectProfile(options.dialect);
   const parser = new Parser(
     tokenize(input, {
-      dialect: options.dialect,
+      dialect,
       allowMetaCommands: true,
       maxTokenCount: options.maxTokenCount,
     }),
-    options,
+    { ...options, dialect },
     input,
   );
   return parser.parseStatements();

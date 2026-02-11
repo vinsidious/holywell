@@ -1,6 +1,7 @@
 export { formatSQL } from './format';
 export type { FormatOptions } from './format';
-export type { SQLDialect } from './dialect';
+export type { SQLDialect, DialectName, DialectProfile, DialectStatementHandler } from './dialect';
+export { resolveDialectProfile, ANSI_PROFILE, POSTGRES_PROFILE, MYSQL_PROFILE, TSQL_PROFILE } from './dialects';
 export { tokenize, TokenizeError } from './tokenizer';
 export type { Token, TokenType, TokenizeOptions } from './tokenizer';
 export { Parser, parse, ParseError, MaxDepthError } from './parser';

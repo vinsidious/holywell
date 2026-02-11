@@ -3,16 +3,17 @@ import { formatSQL } from '../src/format';
 import { parse } from '../src/parser';
 import { tokenize } from '../src/tokenizer';
 
-function expectStrictAndRecoveryFree(sql: string): string {
+function expectStrictAndRecoveryFree(sql: string, options: { dialect?: 'ansi' | 'postgres' | 'mysql' | 'tsql' } = {}): string {
   const recoveries: string[] = [];
   expect(() =>
     parse(sql, {
       recover: false,
+      dialect: options.dialect,
       onRecover: err => recoveries.push(err.message),
     })
   ).not.toThrow();
   expect(recoveries).toEqual([]);
-  return formatSQL(sql, { recover: false });
+  return formatSQL(sql, { recover: false, dialect: options.dialect });
 }
 
 describe('SQL Dialect Statement Behaviors', () => {
@@ -125,7 +126,7 @@ WITH INIT, FORMAT, COMPRESSION;
 GO
 SELECT 1;`;
 
-    const out = expectStrictAndRecoveryFree(sql);
+    const out = expectStrictAndRecoveryFree(sql, { dialect: 'tsql' });
     expect(out).toContain('BACKUP DATABASE BsAll TO DISK');
     expect(out).toContain('\nGO\n');
     expect(out).toContain('SELECT 1;');

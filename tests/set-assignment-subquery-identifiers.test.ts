@@ -6,7 +6,7 @@ describe('SET assignment subquery identifier casing', () => {
     const sql = `SET @v_type = (SELECT type FROM t);
 SET @v_value = (SELECT value FROM t);`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
 
     expect(out).toContain('SET @v_type = (SELECT type FROM t);');
     expect(out).toContain('SET @v_value = (SELECT value FROM t);');

@@ -13,11 +13,11 @@ describe('GROUP_CONCAT order and separator idempotency', () => {
 FROM employees
 GROUP BY department;`;
 
-    expect(() => parse(sql, { recover: false })).not.toThrow();
+    expect(() => parse(sql, { recover: false, dialect: 'mysql' })).not.toThrow();
 
-    const once = formatSQL(sql);
-    const twice = formatSQL(once);
-    const thrice = formatSQL(twice);
+    const once = formatSQL(sql, { dialect: 'mysql' });
+    const twice = formatSQL(once, { dialect: 'mysql' });
+    const thrice = formatSQL(twice, { dialect: 'mysql' });
 
     expect(twice).toBe(once);
     expect(thrice).toBe(twice);

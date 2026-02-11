@@ -10,8 +10,8 @@ describe('T-SQL IF BEGIN END idempotent formatting', () => {
         );
     END;`;
 
-    const once = formatSQL(sql);
-    const twice = formatSQL(once);
+    const once = formatSQL(sql, { dialect: 'tsql' });
+    const twice = formatSQL(once, { dialect: 'tsql' });
 
     expect(twice).toBe(once);
     expect(once).toContain("IF OBJECT_ID('tempdb..##GlobalTempTableCommands') IS NULL\n    BEGIN");

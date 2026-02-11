@@ -166,7 +166,7 @@ function tryParseLikeFamilyComparison(
   }
   if (ctx.peekUpper() !== keyword) return null;
 
-  ctx.advance();
+  const keywordToken = ctx.advance();
   const pattern = ctx.parseAddSub();
   let escape: AST.Expression | undefined;
   if (ctx.peekUpper() === 'ESCAPE') {
@@ -178,7 +178,11 @@ function tryParseLikeFamilyComparison(
     return { type: 'like', expr: left, pattern, negated, escape };
   }
   if (keyword === 'ILIKE') {
-    return { type: 'ilike', expr: left, pattern, negated, escape };
+    // Preserve original casing when the tokenizer classified ILIKE as an
+    // identifier (non-PostgreSQL dialects). When it's a keyword, the
+    // formatter will uppercase it automatically.
+    const originalKeyword = keywordToken.type !== 'keyword' ? keywordToken.value : undefined;
+    return { type: 'ilike', expr: left, pattern, negated, escape, originalKeyword };
   }
   const op = negated ? `NOT ${keyword}` : keyword;
   return { type: 'binary', left, operator: op, right: pattern };

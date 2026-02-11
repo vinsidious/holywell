@@ -40,11 +40,41 @@ describe('public API surface', () => {
     expect(api.version.length).toBeGreaterThan(0);
   });
 
-  it('supports dialect keyword extensions in tokenize()', () => {
+  it('supports named dialects in tokenize()', () => {
+    const tokens = api.tokenize('SELECT 1 GO', {
+      dialect: 'tsql',
+    });
+    const go = tokens.find(t => t.upper === 'GO');
+    expect(go?.type).toBe('keyword');
+  });
+
+  it('supports custom dialect profiles in tokenize()', () => {
     const tokens = api.tokenize('SELECT qualify FROM t;', {
-      dialect: { additionalKeywords: ['qualify'] },
+      dialect: {
+        name: 'ansi',
+        keywords: new Set(['SELECT', 'FROM', 'QUALIFY']),
+        functionKeywords: new Set(),
+        clauseKeywords: new Set(['FROM', 'QUALIFY']),
+        statementStarters: new Set(['SELECT']),
+      },
     });
     const qualify = tokens.find(t => t.upper === 'QUALIFY');
+    expect(qualify?.type).toBe('keyword');
+  });
+
+  it('normalizes lowercase custom dialect profile entries', () => {
+    const tokens = api.tokenize('select qualify from t;', {
+      dialect: {
+        name: 'ansi',
+        keywords: new Set(['select', 'from', 'qualify']),
+        functionKeywords: new Set(['current_date']),
+        clauseKeywords: new Set(['from', 'qualify']),
+        statementStarters: new Set(['select']),
+      },
+    });
+    const select = tokens.find(t => t.upper === 'SELECT');
+    const qualify = tokens.find(t => t.upper === 'QUALIFY');
+    expect(select?.type).toBe('keyword');
     expect(qualify?.type).toBe('keyword');
   });
 });

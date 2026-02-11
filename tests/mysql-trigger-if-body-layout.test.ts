@@ -13,7 +13,7 @@ BEGIN
     END IF;
 END`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'mysql' });
 
     expect(out).toContain("IF NEW.status = 'cancelled' THEN");
     expect(out).not.toContain('THEN\n\n');

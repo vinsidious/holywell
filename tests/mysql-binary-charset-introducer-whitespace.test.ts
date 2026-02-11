@@ -7,13 +7,13 @@ describe('MySQL binary charset introducer whitespace', () => {
     const withSingleSpace = "INSERT INTO test VALUES (_binary '\\0');";
     const withDoubleSpace = "INSERT INTO test VALUES (_binary  'abc');";
 
-    expect(() => parse(withSingleSpace, { recover: false })).not.toThrow();
-    expect(() => parse(withDoubleSpace, { recover: false })).not.toThrow();
+    expect(() => parse(withSingleSpace, { dialect: 'mysql', recover: false })).not.toThrow();
+    expect(() => parse(withDoubleSpace, { dialect: 'mysql', recover: false })).not.toThrow();
   });
 
   it('formats _binary introducers with whitespace as valid statements', () => {
     const sql = "INSERT INTO test VALUES (_binary '\\0');";
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'mysql' });
 
     expect(out.toUpperCase()).toContain('INSERT INTO test'.toUpperCase());
     expect(out).toMatch(/_binary\s*'\\0'/);

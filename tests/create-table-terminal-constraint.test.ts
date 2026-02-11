@@ -15,7 +15,7 @@ describe('CREATE TABLE terminal constraint comma handling', () => {
         CHECK (([EndDate] >= [StartDate]) OR ([EndDate] IS NULL))
 ) ON [PRIMARY];`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toContain('CONSTRAINT [CK_EmployeeDepartmentHistory_EndDate]');
     expect(out).not.toMatch(/\)\),\n\) ON \[PRIMARY\];/);
   });

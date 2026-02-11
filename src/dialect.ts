@@ -1,22 +1,11 @@
+import type { DialectName, DialectProfile } from './dialects/types';
+
+export type { DialectName, DialectProfile, DialectStatementHandler } from './dialects/types';
+
 /**
- * Optional dialect extension points for parser/tokenizer behavior.
+ * Public dialect option accepted by Holywell APIs.
  *
- * holywell remains PostgreSQL-first by default. Provide this object when you need
- * to teach the tokenizer/parser about vendor-specific keywords or clause words.
+ * Use a built-in dialect name for common behavior, or pass a full profile
+ * for custom dialect integrations.
  */
-export interface SQLDialect {
-  /**
-   * Extra words that should be recognized as SQL keywords during tokenization.
-   *
-   * Useful for vendor-specific statements/functions without forking holywell.
-   */
-  readonly additionalKeywords?: readonly string[];
-
-  /**
-   * Extra clause boundary keywords used for alias/primary-expression disambiguation.
-   *
-   * Add words here if your dialect introduces new top-level clause starters.
-   */
-  readonly clauseKeywords?: readonly string[];
-}
-
+export type SQLDialect = DialectName | DialectProfile;

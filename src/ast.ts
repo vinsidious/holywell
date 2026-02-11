@@ -600,6 +600,12 @@ export interface IlikeExpr {
   readonly pattern: Expression;
   readonly negated: boolean;
   readonly escape?: Expression;
+  /**
+   * When the token was classified as an identifier (non-PostgreSQL dialects),
+   * this preserves the original casing. When absent, the formatter uses
+   * uppercase 'ILIKE' (keyword behavior).
+   */
+  readonly originalKeyword?: string;
 }
 
 export interface SimilarToExpr {

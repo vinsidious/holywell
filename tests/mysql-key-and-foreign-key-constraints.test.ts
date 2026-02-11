@@ -10,7 +10,7 @@ describe('MySQL table key and foreign key constraints', () => {
    PRIMARY KEY (id)
 );`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'mysql' });
     expect(out).toContain('\n       KEY (id),\n');
     expect(out).toContain('\n    FOREIGN KEY (id)\n');
     expect(out).toContain('\n    PRIMARY KEY (id)\n');
@@ -24,7 +24,7 @@ describe('MySQL table key and foreign key constraints', () => {
     FOREIGN KEY (a) REFERENCES other
 );`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'mysql' });
     expect(out).toContain('REFERENCES other');
     expect(out).not.toContain('REFERENCES other ()');
   });
@@ -36,7 +36,7 @@ describe('MySQL table key and foreign key constraints', () => {
     UNIQUE KEY idx_b (id)
 );`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { dialect: 'mysql' });
     expect(out).toContain('KEY idx_a (id)');
     expect(out).toContain('UNIQUE KEY idx_b (id)');
     expect(out).not.toContain('key idx_a(');
