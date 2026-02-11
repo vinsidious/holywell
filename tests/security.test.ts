@@ -155,6 +155,26 @@ describe('input size validation', () => {
       expect((err as Error).message).toContain('maxInputSize');
     }
   });
+
+  it('counts multibyte characters correctly as UTF-8 bytes', () => {
+    // '€' is 3 bytes in UTF-8, but 1 code unit in JS (U+20AC)
+    // 5 × '€' = 15 bytes, plus "SELECT '';" = 10 ASCII bytes → 25 bytes total
+    const input = "SELECT '€€€€€';";
+    // 16 bytes in UTF-8: SELECT + space + quote + 5×3 + quote + semicolon = 25
+    expect(() => formatSQL(input, { maxInputSize: 20 })).toThrow('exceeds maximum size');
+    // Should succeed with enough room
+    expect(formatSQL(input, { maxInputSize: 30 })).toContain('SELECT');
+  });
+
+  it('counts surrogate pairs as 4 UTF-8 bytes', () => {
+    // '𝄞' (U+1D11E) is a surrogate pair in JS (2 code units) but 4 bytes in UTF-8
+    // With old input.length check, "SELECT '𝄞';" would be 12 code units
+    // With correct byte check, it's 13 bytes (SELECT=6 + space=1 + quote=1 + 4 + quote=1 + ;=1 = 14 bytes... wait)
+    const input = "SELECT '𝄞';";
+    // "SELECT '𝄞';" = 6+1+1+4+1+1 = 14 bytes UTF-8, but 12 code units
+    expect(() => formatSQL(input, { maxInputSize: 12 })).toThrow('exceeds maximum size');
+    expect(formatSQL(input, { maxInputSize: 14 })).toContain('SELECT');
+  });
 });
 
 describe('CLI path validation for --write', () => {

@@ -1,10 +1,21 @@
 import { randomBytes } from 'crypto';
-import { readFileSync, writeFileSync, renameSync, unlinkSync, globSync, lstatSync, realpathSync } from 'fs';
+import {
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  unlinkSync,
+  globSync,
+  lstatSync,
+  statSync,
+  readdirSync,
+  realpathSync,
+} from 'fs';
 import { dirname, join, resolve, isAbsolute, relative } from 'path';
 import { formatSQL } from './format';
 import { ParseError } from './parser';
 import { TokenizeError } from './tokenizer';
 import type { RawExpression } from './ast';
+import type { DialectName } from './dialect';
 
 class CLIUsageError extends Error {
   constructor(message: string) {
@@ -33,6 +44,7 @@ interface CLIOptions {
   completionShell: 'bash' | 'zsh' | 'fish' | null;
   maxLineLength?: number;
   maxTokenCount?: number;
+  dialect?: DialectName;
   files: string[];
 }
 
@@ -42,6 +54,7 @@ interface RuntimeFormatOptions {
   maxDepth?: number;
   maxInputSize?: number;
   maxTokenCount?: number;
+  dialect?: DialectName;
 }
 
 interface CLIConfigFile {
@@ -51,6 +64,7 @@ interface CLIConfigFile {
   maxTokenCount?: number;
   strict?: boolean;
   recover?: boolean;
+  dialect?: DialectName;
 }
 
 // Recovery event collected during formatting
@@ -149,6 +163,7 @@ Formatting:
   -l, --list-different  Print only filenames that need formatting
   --max-line-length <n> Preferred output line width (default: 80)
   --max-token-count <n> Tokenizer ceiling for very large SQL files
+  --dialect <name>      SQL dialect: ansi|postgres|mysql|tsql
   --strict              Disable parser recovery; exit 2 on parse errors
                         (recommended for CI)
 
@@ -171,6 +186,7 @@ Examples:
   holywell -w one.sql two.sql
   holywell --write --ignore "migrations/**" "**/*.sql"
   holywell --strict --check "**/*.sql"
+  holywell --dialect postgres --write "db/**/*.sql"
   cat query.sql | holywell
   cat query.sql | holywell --stdin-filepath query.sql
   echo "SELECT 1;" | holywell
@@ -197,6 +213,14 @@ function parseColorModeArg(value: string): ColorMode {
   throw new CLIUsageError(`--color must be one of: auto, always, never (got '${value}')`);
 }
 
+function parseDialectArg(value: string): DialectName {
+  const normalized = value.toLowerCase();
+  if (normalized === 'ansi' || normalized === 'postgres' || normalized === 'mysql' || normalized === 'tsql') {
+    return normalized;
+  }
+  throw new CLIUsageError(`--dialect must be one of: ansi, postgres, mysql, tsql (got '${value}')`);
+}
+
 function parseArgs(args: string[]): CLIOptions {
   const opts: CLIOptions = {
     check: false,
@@ -216,6 +240,7 @@ function parseArgs(args: string[]): CLIOptions {
     completionShell: null,
     maxLineLength: undefined,
     maxTokenCount: undefined,
+    dialect: undefined,
     files: [],
   };
 
@@ -277,6 +302,15 @@ function parseArgs(args: string[]): CLIOptions {
         throw new CLIUsageError('--max-token-count must be an integer >= 1');
       }
       opts.maxTokenCount = parsed;
+      i++;
+      continue;
+    }
+    if (arg === '--dialect') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('-')) {
+        throw new CLIUsageError('--dialect requires one of: ansi, postgres, mysql, tsql');
+      }
+      opts.dialect = parseDialectArg(next);
       i++;
       continue;
     }
@@ -395,7 +429,7 @@ function parseArgs(args: string[]): CLIOptions {
 function renderCompletionScript(shell: 'bash' | 'zsh' | 'fish'): string {
   const options = [
     '--help', '--version', '--check', '--diff', '--dry-run', '--preview',
-    '--write', '--list-different', '--max-line-length', '--max-token-count', '--strict', '--ignore',
+    '--write', '--list-different', '--max-line-length', '--max-token-count', '--dialect', '--strict', '--ignore',
     '--config', '--stdin-filepath', '--verbose', '--quiet', '--no-color',
     '--color', '--completion',
     '-h', '-V', '-w', '-l', '-v',
@@ -460,6 +494,183 @@ function isDirectoryPath(filepath: string): boolean {
 // Cap total file count from glob expansion to prevent runaway matches
 const MAX_GLOB_FILES = 10_000;
 
+function extractLiteralGlobPrefix(pattern: string): string {
+  const wildcardIndex = pattern.search(/[*?[{]/);
+  if (wildcardIndex < 0) return pattern;
+  const prefix = pattern.slice(0, wildcardIndex);
+  const lastSlash = prefix.lastIndexOf('/');
+  if (lastSlash < 0) return '';
+  if (lastSlash === 0 && prefix.startsWith('/')) return '/';
+  return prefix.slice(0, lastSlash);
+}
+
+function collectGlobCandidates(startPath: string, maxFiles: number): string[] {
+  const out: string[] = [];
+  const stack: string[] = [startPath];
+  const visitedDirs = new Set<string>();
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+
+    let stat = null as ReturnType<typeof lstatSync> | null;
+    try {
+      stat = lstatSync(current);
+    } catch {
+      continue;
+    }
+
+    let asDirectory = stat.isDirectory();
+    if (stat.isSymbolicLink()) {
+      try {
+        asDirectory = statSync(current).isDirectory();
+      } catch {
+        continue;
+      }
+    }
+
+    if (!asDirectory) {
+      out.push(current);
+      if (out.length > maxFiles) break;
+      continue;
+    }
+
+    let realDir = current;
+    try {
+      realDir = realpathSync(current);
+    } catch {
+      // If realpath fails (broken link/permissions), skip this subtree.
+      continue;
+    }
+    if (visitedDirs.has(realDir)) continue;
+    visitedDirs.add(realDir);
+
+    let entries: Array<{ name: string }> = [];
+    try {
+      entries = readdirSync(current, { withFileTypes: true }) as Array<{ name: string }>;
+    } catch {
+      continue;
+    }
+
+    // Reverse push so traversal is stable in lexical order after stack pop.
+    for (let i = entries.length - 1; i >= 0; i--) {
+      stack.push(join(current, entries[i].name));
+    }
+  }
+
+  return out;
+}
+
+function splitGlobSegments(value: string): string[] {
+  const parts = normalizeGlobPath(value).split('/');
+  if (parts.length > 1 && parts[parts.length - 1] === '') {
+    parts.pop();
+  }
+  return parts;
+}
+
+function matchGlobSegment(patternSegment: string, pathSegment: string): boolean {
+  const memo = new Map<string, boolean>();
+
+  const dfs = (pi: number, si: number): boolean => {
+    const key = `${pi}:${si}`;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+
+    if (pi === patternSegment.length) {
+      const done = si === pathSegment.length;
+      memo.set(key, done);
+      return done;
+    }
+
+    const ch = patternSegment[pi];
+    let matched = false;
+    if (ch === '*') {
+      matched = dfs(pi + 1, si) || (si < pathSegment.length && dfs(pi, si + 1));
+    } else if (ch === '?') {
+      matched = si < pathSegment.length && dfs(pi + 1, si + 1);
+    } else {
+      matched = si < pathSegment.length && ch === pathSegment[si] && dfs(pi + 1, si + 1);
+    }
+
+    memo.set(key, matched);
+    return matched;
+  };
+
+  return dfs(0, 0);
+}
+
+function matchGlobPattern(pathValue: string, patternValue: string): boolean {
+  const pathSegments = splitGlobSegments(pathValue);
+  const patternSegments = splitGlobSegments(patternValue);
+  const memo = new Map<string, boolean>();
+
+  const dfs = (pathIndex: number, patternIndex: number): boolean => {
+    const key = `${pathIndex}:${patternIndex}`;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+
+    if (patternIndex >= patternSegments.length) {
+      const done = pathIndex >= pathSegments.length;
+      memo.set(key, done);
+      return done;
+    }
+
+    const patternSegment = patternSegments[patternIndex];
+    let matched = false;
+
+    if (patternSegment === '**') {
+      let nextPatternIndex = patternIndex;
+      while (nextPatternIndex + 1 < patternSegments.length && patternSegments[nextPatternIndex + 1] === '**') {
+        nextPatternIndex++;
+      }
+      if (nextPatternIndex + 1 >= patternSegments.length) {
+        matched = true;
+      } else {
+        for (let i = pathIndex; i <= pathSegments.length; i++) {
+          if (dfs(i, nextPatternIndex + 1)) {
+            matched = true;
+            break;
+          }
+        }
+      }
+    } else if (
+      pathIndex < pathSegments.length
+      && matchGlobSegment(patternSegment, pathSegments[pathIndex])
+    ) {
+      matched = dfs(pathIndex + 1, patternIndex + 1);
+    }
+
+    memo.set(key, matched);
+    return matched;
+  };
+
+  return dfs(0, 0);
+}
+
+function fallbackGlobMatches(pattern: string): string[] {
+  const cwd = process.cwd();
+  const normalizedPattern = normalizeGlobPath(pattern);
+  const absolutePattern = isAbsolute(pattern);
+  const literalPrefix = extractLiteralGlobPrefix(normalizedPattern);
+  const basePath = absolutePattern
+    ? resolve(literalPrefix || '/')
+    : resolve(cwd, literalPrefix || '.');
+
+  const candidates = collectGlobCandidates(basePath, MAX_GLOB_FILES + 1);
+  const matches: string[] = [];
+
+  for (const candidate of candidates) {
+    const asMatchPath = normalizeGlobPath(absolutePattern ? candidate : relative(cwd, candidate));
+    if (matchGlobPattern(asMatchPath, normalizedPattern)) {
+      matches.push(absolutePattern ? candidate : relative(cwd, candidate));
+      if (matches.length > MAX_GLOB_FILES) break;
+    }
+  }
+
+  return matches;
+}
+
 function expandGlobs(files: string[]): string[] {
   const result: string[] = [];
   for (const f of files) {
@@ -468,7 +679,11 @@ function expandGlobs(files: string[]): string[] {
       continue;
     }
     try {
-      const matches = globSync(f).filter(m => !shouldExcludeFromGlob(m) && !isDirectoryPath(m));
+      const matches = (
+        typeof globSync === 'function'
+          ? globSync(f)
+          : fallbackGlobMatches(f)
+      ).filter(m => !shouldExcludeFromGlob(m) && !isDirectoryPath(m));
       if (matches.length === 0) {
         throw new NoFilesMatchedError(f);
       }
@@ -614,6 +829,12 @@ function validateConfigShape(raw: unknown, sourcePath: string): CLIConfigFile {
     }
     cfg.maxTokenCount = value;
   }
+  if (obj.dialect !== undefined) {
+    if (typeof obj.dialect !== 'string') {
+      throw new CLIUsageError(`${sourcePath}: dialect must be one of ansi, postgres, mysql, tsql`);
+    }
+    cfg.dialect = parseDialectArg(obj.dialect);
+  }
   if (obj.strict !== undefined) {
     if (typeof obj.strict !== 'boolean') {
       throw new CLIUsageError(`${sourcePath}: strict must be a boolean`);
@@ -637,7 +858,12 @@ function loadConfig(cwd: string, explicitPath: string | null): CLIConfigFile {
     return validateConfigShape(parsed, explicitPath ? configPath : CONFIG_FILE_NAME);
   } catch (err) {
     const ioErr = err as NodeJS.ErrnoException;
-    if (ioErr?.code === 'ENOENT') return {};
+    if (ioErr?.code === 'ENOENT') {
+      if (explicitPath) {
+        throw new CLIUsageError(`Config file not found: ${configPath}`);
+      }
+      return {};
+    }
     if (err instanceof CLIUsageError) throw err;
     if (err instanceof SyntaxError) {
       throw new CLIUsageError(`Invalid JSON in ${explicitPath ? configPath : CONFIG_FILE_NAME}: ${err.message}`);
@@ -729,29 +955,43 @@ function isInsideDirectory(baseDir: string, targetPath: string): boolean {
   return relPath === '' || (!relPath.startsWith('..') && !isAbsolute(relPath));
 }
 
-// Validate that a file path doesn't escape the current working directory via traversal.
-// Returns the resolved absolute path, or null if the path resolves outside CWD.
-// Both relative and absolute paths are checked for CWD containment.
-// Symlinks inside CWD that point outside CWD are also rejected.
+function resolveExistingRealPath(targetPath: string): string | null {
+  let current = targetPath;
+  while (true) {
+    try {
+      return realpathSync(current);
+    } catch (err) {
+      const ioErr = err as NodeJS.ErrnoException;
+      if (ioErr?.code !== 'ENOENT' && ioErr?.code !== 'ENOTDIR') throw err;
+      const parent = dirname(current);
+      if (parent === current) return null;
+      current = parent;
+    }
+  }
+}
+
+// Validate that write targets remain inside the real CWD tree.
+// This blocks both direct traversal and symlinked directory escapes.
 function validateWritePath(file: string): string | null {
   const resolved = resolve(file);
   const cwd = process.cwd();
-  // Enforce CWD containment for both relative and absolute paths.
+  // Enforce lexical CWD containment first (for ../ and absolute escapes).
   if (!isInsideDirectory(cwd, resolved)) {
     return null;
   }
-  // Detect symlinks that escape CWD
+
+  // Then enforce realpath containment to block symlinked directory escapes.
   try {
-    const stats = lstatSync(resolved);
-    if (stats.isSymbolicLink()) {
-      const realTarget = realpathSync(resolved);
-      if (!isInsideDirectory(cwd, realTarget)) {
-        return null; // Symlink points outside CWD
-      }
+    const realCwd = resolveExistingRealPath(cwd) ?? cwd;
+    const realTargetAncestor = resolveExistingRealPath(resolved);
+    if (realTargetAncestor && !isInsideDirectory(realCwd, realTargetAncestor)) {
+      return null;
     }
   } catch {
-    // File doesn't exist yet; safe to write
+    // If we can't safely resolve ancestry (permission/broken links), skip writing.
+    return null;
   }
+
   return resolved;
 }
 
@@ -839,44 +1079,106 @@ function toLines(text: string): string[] {
   return lines;
 }
 
+// Myers diff algorithm — O(ND) time, O(N+M) space per snapshot.
+// For a formatter where D (edit count) << N (line count), this is near-linear.
+// Falls back to brute-force replacement if D exceeds safety cutoff.
+function myersDiffEdits(a: string[], b: string[]): Array<{ type: 'equal' | 'delete' | 'insert'; line: string }> {
+  const n = a.length;
+  const m = b.length;
+  if (n === 0 && m === 0) return [];
+  if (n === 0) return b.map(line => ({ type: 'insert' as const, line }));
+  if (m === 0) return a.map(line => ({ type: 'delete' as const, line }));
+
+  const maxD = Math.min(n + m, 50_000);
+  const offset = maxD;
+  const size = 2 * maxD + 1;
+  const v = new Int32Array(size);
+  v[offset + 1] = 0;
+  const trace: Int32Array[] = [];
+
+  let solvedD = -1;
+  for (let d = 0; d <= maxD; d++) {
+    trace.push(Int32Array.from(v));
+    for (let k = -d; k <= d; k += 2) {
+      let x: number;
+      if (k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1])) {
+        x = v[offset + k + 1];
+      } else {
+        x = v[offset + k - 1] + 1;
+      }
+      let y = x - k;
+      while (x < n && y < m && a[x] === b[y]) { x++; y++; }
+      v[offset + k] = x;
+      if (x >= n && y >= m) { solvedD = d; break; }
+    }
+    if (solvedD >= 0) break;
+  }
+
+  if (solvedD < 0) {
+    // Safety fallback: files too different, show full replacement
+    const result: Array<{ type: 'equal' | 'delete' | 'insert'; line: string }> = [];
+    for (const line of a) result.push({ type: 'delete', line });
+    for (const line of b) result.push({ type: 'insert', line });
+    return result;
+  }
+
+  // Backtrack through trace to recover edit script
+  const edits: Array<{ type: 'equal' | 'delete' | 'insert'; line: string }> = [];
+  let x = n;
+  let y = m;
+  for (let d = solvedD; d > 0; d--) {
+    const vSnap = trace[d];
+    const k = x - y;
+    let prevK: number;
+    if (k === -d || (k !== d && vSnap[offset + k - 1] < vSnap[offset + k + 1])) {
+      prevK = k + 1;
+    } else {
+      prevK = k - 1;
+    }
+    const prevX = vSnap[offset + prevK];
+    const prevY = prevX - prevK;
+    // Diagonal moves (equal lines) from current pos back to just after the non-diagonal move
+    while (x > prevX + (prevK < k ? 1 : 0) && y > prevY + (prevK > k ? 1 : 0)) {
+      x--; y--;
+      edits.push({ type: 'equal', line: a[x] });
+    }
+    // The non-diagonal move
+    if (prevK < k) {
+      // Came from k-1: delete (move right)
+      x--;
+      edits.push({ type: 'delete', line: a[x] });
+    } else {
+      // Came from k+1: insert (move down)
+      y--;
+      edits.push({ type: 'insert', line: b[y] });
+    }
+  }
+  // Remaining diagonal moves back to (0,0)
+  while (x > 0 && y > 0) {
+    x--; y--;
+    edits.push({ type: 'equal', line: a[x] });
+  }
+
+  edits.reverse();
+  return edits;
+}
+
 function unifiedDiff(aText: string, bText: string, aLabel: string = 'a/input.sql', bLabel: string = 'b/formatted.sql'): string {
   const a = toLines(aText);
   const b = toLines(bText);
   const n = a.length;
   const m = b.length;
 
-  const dp: number[][] = Array.from({ length: n + 1 }, () => Array<number>(m + 1).fill(0));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-
+  const edits = myersDiffEdits(a, b);
   const body: string[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    if (a[i] === b[j]) {
-      body.push(` ${a[i]}`);
-      i++;
-      j++;
-      continue;
-    }
-    if (dp[i + 1][j] >= dp[i][j + 1]) {
-      body.push(red(`-${a[i]}`));
-      i++;
+  for (const edit of edits) {
+    if (edit.type === 'equal') {
+      body.push(` ${edit.line}`);
+    } else if (edit.type === 'delete') {
+      body.push(red(`-${edit.line}`));
     } else {
-      body.push(green(`+${b[j]}`));
-      j++;
+      body.push(green(`+${edit.line}`));
     }
-  }
-  while (i < n) {
-    body.push(red(`-${a[i]}`));
-    i++;
-  }
-  while (j < m) {
-    body.push(green(`+${b[j]}`));
-    j++;
   }
 
   return [
@@ -887,14 +1189,16 @@ function unifiedDiff(aText: string, bText: string, aLabel: string = 'a/input.sql
   ].join('\n');
 }
 
-function formatOneInput(input: string, options: RuntimeFormatOptions): { output: string; recoveries: RecoveryEvent[] } {
+function formatOneInput(input: string, options: RuntimeFormatOptions): { output: string; recoveries: RecoveryEvent[]; passthroughCount: number } {
   const recoveries: RecoveryEvent[] = [];
+  let passthroughCount = 0;
   const output = formatSQL(input, {
     recover: options.recover,
     maxLineLength: options.maxLineLength,
     maxDepth: options.maxDepth,
     maxInputSize: options.maxInputSize,
     maxTokenCount: options.maxTokenCount,
+    dialect: options.dialect,
     onRecover: (error: ParseError, raw: RawExpression | null, context) => {
       if (!raw) return;
       recoveries.push({
@@ -913,8 +1217,11 @@ function formatOneInput(input: string, options: RuntimeFormatOptions): { output:
         totalStatements: context.totalStatements,
       });
     },
+    onPassthrough: () => {
+      passthroughCount++;
+    },
   });
-  return { output, recoveries };
+  return { output, recoveries, passthroughCount };
 }
 
 function getSourceLines(input: string): string[] {
@@ -1047,6 +1354,7 @@ function main(): void {
       maxDepth: config.maxDepth,
       maxInputSize: config.maxInputSize,
       maxTokenCount: opts.maxTokenCount ?? config.maxTokenCount,
+      dialect: opts.dialect ?? config.dialect,
     };
 
     let expandedFiles = expandGlobs(opts.files);
@@ -1064,20 +1372,23 @@ function main(): void {
     let checkFailures = 0;
     let changedCount = 0;
     let recoveryFailures = 0;
+    let totalPassthroughCount = 0;
 
     if (expandedFiles.length === 0 && opts.files.length === 0) {
       // stdin mode
       const input = readSqlTextFd(0);
       let output: string;
       let recoveries: RecoveryEvent[];
+      let passthroughCount: number;
       try {
-        ({ output, recoveries } = formatOneInput(input, runtimeFormatOptions));
+        ({ output, recoveries, passthroughCount } = formatOneInput(input, runtimeFormatOptions));
       } catch (err) {
         handleParseError(err, input, opts.stdinFilepath);
       }
 
       printRecoveryWarnings(recoveries);
       recoveryFailures += recoveries.length;
+      totalPassthroughCount += passthroughCount;
 
       if (opts.check) {
         const normalizedInput = normalizeForComparison(input);
@@ -1119,14 +1430,16 @@ function main(): void {
 
         let output: string;
         let recoveries: RecoveryEvent[];
+        let passthroughCount: number;
         try {
-          ({ output, recoveries } = formatOneInput(input, runtimeFormatOptions));
+          ({ output, recoveries, passthroughCount } = formatOneInput(input, runtimeFormatOptions));
         } catch (err) {
           handleParseError(err, input, file);
         }
 
         printRecoveryWarnings(recoveries);
         recoveryFailures += recoveries.length;
+        totalPassthroughCount += passthroughCount;
 
         if (opts.write) {
           if (input !== output) {
@@ -1172,6 +1485,14 @@ function main(): void {
       if (opts.verbose) {
         console.error(`Formatted ${expandedFiles.length} file${expandedFiles.length === 1 ? '' : 's'} (${changedCount} changed)`);
       }
+    }
+
+    // Passthrough warnings always go to stderr. These are informational (exit 0)
+    // but important so users know some statements were not formatted.
+    if (totalPassthroughCount > 0) {
+      console.error(
+        `Warning: ${totalPassthroughCount} statement(s) were passed through unformatted (unsupported syntax)`
+      );
     }
 
     if (opts.check && checkFailures === 0 && expandedFiles.length > 0) {

@@ -64,6 +64,18 @@ describe('cli flags and UX', () => {
     expect(res.err).toContain('--help');
   });
 
+  it('accepts --dialect with a valid value', () => {
+    const res = runCliWithStdin(['--dialect', 'postgres'], 'select 1;');
+    expect(res.code).toBe(0);
+    expect(res.out).toContain('SELECT 1;');
+  });
+
+  it('rejects --dialect with an invalid value', () => {
+    const res = runCli(['--dialect', 'oracle']);
+    expect(res.code).toBe(3);
+    expect(res.err).toContain('--dialect must be one of');
+  });
+
   it('returns parse exit code 2 with a clean message', () => {
     const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
     const file = join(dir, 'broken.sql');
@@ -564,6 +576,15 @@ describe('.holywellrc.json config support', () => {
     expect(res.out).toContain('SELECT customer_identifier, product_identifier, order_identifier, shipment_identifier');
   });
 
+  it('errors when explicit --config path does not exist', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-config-'));
+    writeFileSync(join(dir, 'q.sql'), longSql, 'utf8');
+
+    const res = runCli(['--config', 'missing.json', 'q.sql'], dir);
+    expect(res.code).toBe(3);
+    expect(res.err).toContain('Config file not found');
+  });
+
   it('lets CLI flags override config values', () => {
     const dir = mkdtempSync(join(tmpdir(), 'holywell-config-'));
     writeFileSync(join(dir, '.holywellrc.json'), JSON.stringify({ maxLineLength: 140 }) + '\n', 'utf8');
@@ -590,6 +611,21 @@ describe('symlink path validation', () => {
     expect(res.code).toBe(0);
     expect(res.err).toContain('path resolves outside working directory');
     // The target file should be unchanged
+    expect(readFileSync(target, 'utf8')).toBe('select 1;');
+  });
+
+  it('rejects paths inside symlinked directories that point outside CWD', () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), 'holywell-symlink-outside-dir-'));
+    const target = join(outsideDir, 'escaped.sql');
+    writeFileSync(target, 'select 1;', 'utf8');
+
+    const workDir = mkdtempSync(join(tmpdir(), 'holywell-symlink-dir-cwd-'));
+    const linkDir = join(workDir, 'linked');
+    symlinkSync(outsideDir, linkDir);
+
+    const res = runCli(['--write', 'linked/escaped.sql'], workDir);
+    expect(res.code).toBe(0);
+    expect(res.err).toContain('path resolves outside working directory');
     expect(readFileSync(target, 'utf8')).toBe('select 1;');
   });
 });
