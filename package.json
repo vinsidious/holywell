@@ -1,6 +1,6 @@
 {
   "name": "holywell",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "description": "Zero-config SQL formatter implementing Simon Holywell's SQL Style Guide (sqlstyle.guide). Zero dependencies.",
   "sideEffects": false,
   "type": "module",
