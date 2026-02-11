@@ -2756,13 +2756,17 @@ export class Parser {
 
   private parseAddSub(): AST.Expression {
     let left = this.parseMulDiv();
-    while (this.peek().type === 'operator' && (this.peek().value === '+' || this.peek().value === '-')) {
+    while (true) {
+      const preCommentStart = this.pos;
+      const preCommentCount = this.consumeCommentsIfFollowedByOperator(['+', '-']);
+      if (!(this.peek().type === 'operator' && (this.peek().value === '+' || this.peek().value === '-'))) break;
       const op = this.advance().value;
       const rightStart = this.pos;
       const comments = this.consumeComments();
       const parsedRight = this.parseMulDiv();
-      const right = comments.length > 0
-        ? this.rawExpressionFromTokenRange(rightStart, this.pos)
+      const rawStart = preCommentCount > 0 ? preCommentStart : rightStart;
+      const right = (preCommentCount > 0 || comments.length > 0)
+        ? this.rawExpressionFromTokenRange(rawStart, this.pos)
         : parsedRight;
       left = { type: 'binary', left, operator: op, right };
     }
@@ -2771,13 +2775,17 @@ export class Parser {
 
   private parseMulDiv(): AST.Expression {
     let left = this.parseJsonOps();
-    while (this.peek().type === 'operator' && (this.peek().value === '*' || this.peek().value === '/' || this.peek().value === '%' || this.peek().value === '||')) {
+    while (true) {
+      const preCommentStart = this.pos;
+      const preCommentCount = this.consumeCommentsIfFollowedByOperator(['*', '/', '%', '||']);
+      if (!(this.peek().type === 'operator' && (this.peek().value === '*' || this.peek().value === '/' || this.peek().value === '%' || this.peek().value === '||'))) break;
       const op = this.advance().value;
       const rightStart = this.pos;
       const comments = this.consumeComments();
       const parsedRight = this.parseJsonOps();
-      const right = comments.length > 0
-        ? this.rawExpressionFromTokenRange(rightStart, this.pos)
+      const rawStart = preCommentCount > 0 ? preCommentStart : rightStart;
+      const right = (preCommentCount > 0 || comments.length > 0)
+        ? this.rawExpressionFromTokenRange(rawStart, this.pos)
         : parsedRight;
       left = { type: 'binary', left, operator: op, right };
     }
@@ -2787,11 +2795,20 @@ export class Parser {
   // JSON, Array, Bitwise operators
   private parseJsonOps(): AST.Expression {
     let left = this.parseUnaryExpr();
+    const jsonAndBitwiseOps = new Set([
+      '->', '->>', '#>', '#>>',
+      '@>', '<@',
+      '?', '?|', '?&', '@?', '@@',
+      '&', '|', '#', '<<', '>>',
+    ]);
 
     while (true) {
+      const preCommentStart = this.pos;
+      const preCommentCount = this.consumeCommentsIfFollowedByOperator([...jsonAndBitwiseOps]);
       const t = this.peek();
       if (t.type !== 'operator') break;
       const v = t.value;
+      if (!jsonAndBitwiseOps.has(v)) break;
 
       // JSON operators
       if (v === '->' || v === '->>' || v === '#>' || v === '#>>') {
@@ -2799,8 +2816,9 @@ export class Parser {
         const rightStart = this.pos;
         const comments = this.consumeComments();
         const parsedRight = this.parseUnaryExpr();
-        const right = comments.length > 0
-          ? this.rawExpressionFromTokenRange(rightStart, this.pos)
+        const rawStart = preCommentCount > 0 ? preCommentStart : rightStart;
+        const right = (preCommentCount > 0 || comments.length > 0)
+          ? this.rawExpressionFromTokenRange(rawStart, this.pos)
           : parsedRight;
         left = { type: 'binary', left, operator: v, right };
         continue;
@@ -2812,8 +2830,9 @@ export class Parser {
         const rightStart = this.pos;
         const comments = this.consumeComments();
         const parsedRight = this.parseUnaryExpr();
-        const right = comments.length > 0
-          ? this.rawExpressionFromTokenRange(rightStart, this.pos)
+        const rawStart = preCommentCount > 0 ? preCommentStart : rightStart;
+        const right = (preCommentCount > 0 || comments.length > 0)
+          ? this.rawExpressionFromTokenRange(rawStart, this.pos)
           : parsedRight;
         left = { type: 'binary', left, operator: v, right };
         continue;
@@ -2825,8 +2844,9 @@ export class Parser {
         const rightStart = this.pos;
         const comments = this.consumeComments();
         const parsedRight = this.parseUnaryExpr();
-        const right = comments.length > 0
-          ? this.rawExpressionFromTokenRange(rightStart, this.pos)
+        const rawStart = preCommentCount > 0 ? preCommentStart : rightStart;
+        const right = (preCommentCount > 0 || comments.length > 0)
+          ? this.rawExpressionFromTokenRange(rawStart, this.pos)
           : parsedRight;
         left = { type: 'binary', left, operator: v, right };
         continue;
@@ -2838,8 +2858,9 @@ export class Parser {
         const rightStart = this.pos;
         const comments = this.consumeComments();
         const parsedRight = this.parseUnaryExpr();
-        const right = comments.length > 0
-          ? this.rawExpressionFromTokenRange(rightStart, this.pos)
+        const rawStart = preCommentCount > 0 ? preCommentStart : rightStart;
+        const right = (preCommentCount > 0 || comments.length > 0)
+          ? this.rawExpressionFromTokenRange(rawStart, this.pos)
           : parsedRight;
         left = { type: 'binary', left, operator: v, right };
         continue;
@@ -4029,7 +4050,15 @@ export class Parser {
       rows.push({ values: vals });
     }
 
-    return { type: 'standalone_values', rows, leadingComments: comments };
+    const { alias, aliasColumns } = this.parseOptionalAlias({ allowColumnList: true });
+    const valuesAlias = alias
+      ? {
+          name: alias,
+          columns: aliasColumns && aliasColumns.length > 0 ? aliasColumns : undefined,
+        }
+      : undefined;
+
+    return { type: 'standalone_values', rows, alias: valuesAlias, leadingComments: comments };
   }
 
   private parseTableElements(): { elements: AST.TableElement[]; trailingComma: boolean } {
@@ -4926,6 +4955,29 @@ export class Parser {
 
     if (lookahead >= this.tokens.length) return 0;
     if (this.tokens[lookahead].upper !== keyword) return 0;
+
+    let consumed = 0;
+    while (this.peekType() === 'line_comment' || this.peekType() === 'block_comment') {
+      this.advance();
+      consumed++;
+    }
+    return consumed;
+  }
+
+  private consumeCommentsIfFollowedByOperator(operators: readonly string[]): number {
+    let lookahead = this.pos;
+    while (lookahead < this.tokens.length) {
+      const token = this.tokens[lookahead];
+      if (token.type === 'line_comment' || token.type === 'block_comment') {
+        lookahead++;
+        continue;
+      }
+      break;
+    }
+
+    if (lookahead >= this.tokens.length) return 0;
+    const next = this.tokens[lookahead];
+    if (next.type !== 'operator' || !operators.includes(next.value)) return 0;
 
     let consumed = 0;
     while (this.peekType() === 'line_comment' || this.peekType() === 'block_comment') {

@@ -425,6 +425,10 @@ export interface TruncateStatement {
 export interface StandaloneValuesStatement {
   readonly type: 'standalone_values';
   readonly rows: readonly ValuesRow[];
+  readonly alias?: {
+    readonly name: string;
+    readonly columns?: readonly string[];
+  };
   readonly leadingComments: readonly CommentNode[];
 }
 

@@ -1768,6 +1768,27 @@ function splitLeadingLineComment(
   };
 }
 
+function normalizeRawBinaryRight(text: string, operator: string): string {
+  const escaped = escapeRegExp(operator);
+  const lineCommentMatch = text.match(/^(\s*(?:--[^\n]*\n)+\s*)([\s\S]*)$/);
+  if (lineCommentMatch) {
+    const commentBlock = lineCommentMatch[1];
+    let remainder = (lineCommentMatch[2] || '').trimStart();
+    remainder = remainder.replace(new RegExp(`^${escaped}(?:\\s+|$)`), '');
+    return commentBlock.trimEnd() + '\n' + remainder;
+  }
+
+  const blockCommentMatch = text.match(/^(\s*\/\*[\s\S]*?\*\/\s*)([\s\S]*)$/);
+  if (blockCommentMatch) {
+    const commentBlock = blockCommentMatch[1];
+    let remainder = (blockCommentMatch[2] || '').trimStart();
+    remainder = remainder.replace(new RegExp(`^${escaped}(?:\\s+|$)`), '');
+    return commentBlock + remainder;
+  }
+
+  return text;
+}
+
 function formatGroupByClause(groupBy: AST.GroupByClause, ctx: FormatContext): string {
   const plainItems = groupBy.items.map(e => formatExpr(e));
   const quantifier = groupBy.setQuantifier;
@@ -2658,12 +2679,25 @@ function formatStandaloneValues(node: AST.StandaloneValuesStatement, ctx: Format
   const rows = node.rows.map(r => '(' + r.values.map(formatExpr).join(', ') + ')');
   const contPad = ' '.repeat('VALUES '.length);
   for (let i = 0; i < rows.length; i++) {
-    const comma = i < rows.length - 1 ? ',' : ';';
     const prefix = i === 0 ? 'VALUES ' : contPad;
-    lines.push(prefix + rows[i] + comma);
+    if (i < rows.length - 1) {
+      lines.push(prefix + rows[i] + ',');
+      continue;
+    }
+
+    const alias = node.alias ? formatStandaloneValuesAlias(node.alias) : '';
+    lines.push(prefix + rows[i] + alias + ';');
   }
 
   return lines.join('\n');
+}
+
+function formatStandaloneValuesAlias(alias: NonNullable<AST.StandaloneValuesStatement['alias']>): string {
+  let out = ' ' + lowerIdent(alias.name);
+  if (alias.columns && alias.columns.length > 0) {
+    out += ' (' + alias.columns.map(lowerIdent).join(', ') + ')';
+  }
+  return out;
 }
 
 function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): string {
@@ -3929,6 +3963,10 @@ function formatExpr(expr: AST.Expression, depth: number = 0): string {
     case 'binary':
       if (expr.operator === ':') {
         return formatExpr(expr.left, d) + ':' + formatExpr(expr.right, d);
+      }
+      if (expr.right.type === 'raw') {
+        const normalizedRight = normalizeRawBinaryRight(expr.right.text, expr.operator);
+        return formatExpr(expr.left, d) + ' ' + expr.operator + ' ' + normalizedRight;
       }
       return formatExpr(expr.left, d) + ' ' + expr.operator + ' ' + formatExpr(expr.right, d);
     case 'unary':
