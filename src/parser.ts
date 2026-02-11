@@ -1673,20 +1673,32 @@ export class Parser {
       this.advance();
       from = this.parseFromItem();
 
-      // Parse comma-separated additional FROM items
       const extraFromItems: AST.FromClause[] = [];
       while (this.check(',')) {
         this.advance();
         extraFromItems.push(this.parseFromItem());
       }
-      if (extraFromItems.length > 0) additionalFromItems = extraFromItems;
 
-      // Parse JOINs
-      while (true) {
-        this.consumeCommentsIfFollowedByJoinKeyword();
-        if (!this.isJoinKeyword()) break;
-        joins.push(this.parseJoin());
+      const parseJoinChain = (): void => {
+        while (true) {
+          this.consumeCommentsIfFollowedByJoinKeyword();
+          if (!this.isJoinKeyword()) break;
+          joins.push(this.parseJoin());
+        }
+      };
+
+      // Parse JOINs attached to the current source.
+      parseJoinChain();
+
+      // Support mixed FROM forms like:
+      //   FROM a LEFT JOIN b ON ..., c, d JOIN e ON ...
+      while (this.check(',')) {
+        this.advance();
+        extraFromItems.push(this.parseFromItem());
+        parseJoinChain();
       }
+
+      if (extraFromItems.length > 0) additionalFromItems = extraFromItems;
 
       if (!this.hasImplicitStatementBoundary()) {
         const trailingFromComments = this.consumeComments();
@@ -1841,6 +1853,8 @@ export class Parser {
   }
 
   private parseFromItem(): AST.FromClause {
+    const leadingComments = this.consumeComments();
+
     let lateral = false;
     if (this.peekUpper() === 'LATERAL') {
       this.advance();
@@ -1880,7 +1894,16 @@ export class Parser {
     });
     const pivotClause = this.parseOptionalPivotClause();
 
-    return { table, alias, aliasColumns, pivotClause, lateral, ordinality, tablesample };
+    return {
+      table,
+      alias,
+      aliasColumns,
+      pivotClause,
+      lateral,
+      ordinality,
+      tablesample,
+      trailingComments: leadingComments.length > 0 ? leadingComments : undefined,
+    };
   }
 
   // Shared alias parsing for FROM items, JOINs, SELECT columns, and RETURNING.
@@ -2070,6 +2093,7 @@ export class Parser {
     if (!this.check('(')) return null;
     return this.tryParse(() => {
       this.advance();
+      this.consumeComments();
       const query = this.parseQueryExpression();
       this.expect(')');
       return { type: 'subquery', query } as AST.SubqueryExpr;
@@ -2078,6 +2102,7 @@ export class Parser {
 
   private parseSubquery(): AST.SubqueryExpr {
     this.expect('(');
+    this.consumeComments();
     const query = this.parseQueryExpression();
     this.expect(')');
     return { type: 'subquery', query };
@@ -2115,6 +2140,7 @@ export class Parser {
         stopKeywords: ['PIVOT', 'UNPIVOT'],
       });
       const pivotClause = this.parseOptionalPivotClause();
+      const commentsBeforeJoinPredicate = this.consumeComments();
 
       let on: AST.Expression | undefined;
       let usingClause: string[] | undefined;
@@ -2141,6 +2167,10 @@ export class Parser {
         const usingAliasResult = this.parseOptionalAlias({ allowColumnList: true });
         usingAlias = usingAliasResult.alias;
         usingAliasColumns = usingAliasResult.aliasColumns;
+      }
+
+      if (!trailingComment && commentsBeforeJoinPredicate.length > 0) {
+        trailingComment = commentsBeforeJoinPredicate[commentsBeforeJoinPredicate.length - 1];
       }
 
       if (this.peekType() === 'line_comment') {
@@ -2203,6 +2233,7 @@ export class Parser {
       stopKeywords: ['PIVOT', 'UNPIVOT'],
     });
     const pivotClause = this.parseOptionalPivotClause();
+    const commentsBeforeJoinPredicate = this.consumeComments();
 
     let on: AST.Expression | undefined;
     let usingClause: string[] | undefined;
@@ -2229,6 +2260,10 @@ export class Parser {
       const usingAliasResult = this.parseOptionalAlias({ allowColumnList: true });
       usingAlias = usingAliasResult.alias;
       usingAliasColumns = usingAliasResult.aliasColumns;
+    }
+
+    if (!trailingComment && commentsBeforeJoinPredicate.length > 0) {
+      trailingComment = commentsBeforeJoinPredicate[commentsBeforeJoinPredicate.length - 1];
     }
 
     if (this.peekType() === 'line_comment') {
@@ -2838,6 +2873,7 @@ export class Parser {
 
   // Parse primary then handle postfix :: cast
   private parsePrimaryWithPostfix(): AST.Expression {
+    const exprStart = this.pos;
     let expr = this.parsePrimary();
 
     while (true) {
@@ -2847,6 +2883,29 @@ export class Parser {
         const targetType = this.consumeTypeSpecifier();
         expr = { type: 'pg_cast', expr, targetType } as AST.PgCastExpr;
         continue;
+      }
+
+      // Postfix field access on parenthesized/composite expressions:
+      // (expr).field, (expr).*, (expr).a.b
+      if (this.check('.')) {
+        let consumedAccessor = false;
+        while (this.check('.')) {
+          const next = this.peekAt(1);
+          const nextIsAccessorToken =
+            next.value === '*'
+            || next.type === 'identifier'
+            || next.type === 'keyword'
+            || next.type === 'number'
+            || next.type === 'string';
+          if (!nextIsAccessorToken) break;
+          this.advance(); // .
+          this.advance(); // accessor token
+          consumedAccessor = true;
+        }
+        if (consumedAccessor) {
+          expr = this.rawExpressionFromTokenRange(exprStart, this.pos);
+          continue;
+        }
       }
 
       // Handle array subscript: expr[idx] or expr[lo:hi]
@@ -3203,6 +3262,7 @@ export class Parser {
       this.consumeComments();
       if (this.peekUpper() !== 'WHEN') break;
       this.advance();
+      this.consumeComments();
       const condition = this.parseExpression();
       this.expect('THEN');
       this.consumeComments();
@@ -3234,9 +3294,13 @@ export class Parser {
   private parseCast(): AST.CastExpr {
     this.expect('CAST');
     this.expect('(');
+    this.consumeComments();
     const expr = this.parseExpression();
+    this.consumeComments();
     this.expect('AS');
+    this.consumeComments();
     const targetType = this.consumeTypeSpecifier();
+    this.consumeComments();
     this.expect(')');
     return { type: 'cast', expr, targetType };
   }
