@@ -637,8 +637,10 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
   if (firstColumnHasLeadingComments) {
     lines.push(selectKw + distinctStr + topStr);
     lines.push(colStr);
-  } else {
+  } else if (colStr) {
     lines.push(selectKw + distinctStr + topStr + ' ' + colStr);
+  } else {
+    lines.push(selectKw + distinctStr + topStr);
   }
 
   if (node.into) {
@@ -1448,7 +1450,7 @@ function formatJoin(join: AST.JoinClause, ctx: FormatContext, needsBlank: boolea
       lines.push(onPad + 'ON ' + cond);
     } else if (join.usingClause && join.usingClause.length > 0) {
       const usingPad = ' '.repeat(ctx.indentOffset + 4);
-      lines.push(usingPad + 'USING (' + join.usingClause.join(', ') + ')');
+      lines.push(usingPad + formatJoinUsingClause(join));
     }
   } else {
     const isFullOuter = /^FULL(?:\s+OUTER)?\s+JOIN$/i.test(join.joinType);
@@ -1464,7 +1466,7 @@ function formatJoin(join: AST.JoinClause, ctx: FormatContext, needsBlank: boolea
         lines.push(indent + 'ON ' + cond);
       } else if (join.usingClause && join.usingClause.length > 0) {
         const indent = ' '.repeat(cCol);
-        lines.push(indent + 'USING (' + join.usingClause.join(', ') + ')');
+        lines.push(indent + formatJoinUsingClause(join));
       }
     } else {
       // Qualified JOIN: indented at content column
@@ -1476,7 +1478,7 @@ function formatJoin(join: AST.JoinClause, ctx: FormatContext, needsBlank: boolea
         const cond = formatJoinOn(join.on, cCol + 3, ctx.runtime); // 3 for "ON "
         lines.push(indent + 'ON ' + cond);
       } else if (join.usingClause && join.usingClause.length > 0) {
-        lines.push(indent + 'USING (' + join.usingClause.join(', ') + ')');
+        lines.push(indent + formatJoinUsingClause(join));
       }
     }
   }
@@ -1486,6 +1488,18 @@ function formatJoin(join: AST.JoinClause, ctx: FormatContext, needsBlank: boolea
   }
 
   return lines.join('\n');
+}
+
+function formatJoinUsingClause(join: AST.JoinClause): string {
+  const using = join.usingClause ?? [];
+  let text = 'USING (' + using.join(', ') + ')';
+  if (join.usingAlias) {
+    text += ' AS ' + formatAlias(join.usingAlias);
+    if (join.usingAliasColumns && join.usingAliasColumns.length > 0) {
+      text += '(' + join.usingAliasColumns.join(', ') + ')';
+    }
+  }
+  return text;
 }
 
 function formatSelectOrderByLines(items: readonly AST.OrderByItem[], orderKeyword: string, continuationPad: string): string[] {
@@ -1646,14 +1660,21 @@ function splitLeadingLineComment(
 
 function formatGroupByClause(groupBy: AST.GroupByClause, ctx: FormatContext): string {
   const plainItems = groupBy.items.map(e => formatExpr(e));
+  const quantifier = groupBy.setQuantifier;
   const withRollup = groupBy.withRollup ? ' WITH ROLLUP' : '';
   if (!groupBy.groupingSets || groupBy.groupingSets.length === 0) {
-    return plainItems.join(', ') + withRollup;
+    const body = plainItems.join(', ');
+    if (quantifier && body) return quantifier + ' ' + body + withRollup;
+    if (quantifier) return quantifier + withRollup;
+    return body + withRollup;
   }
 
   const specs = groupBy.groupingSets.map(spec => formatGroupingSpec(spec, ctx));
   const all = [...plainItems, ...specs];
-  return all.join(', ') + withRollup;
+  const body = all.join(', ');
+  if (quantifier && body) return quantifier + ' ' + body + withRollup;
+  if (quantifier) return quantifier + withRollup;
+  return body + withRollup;
 }
 
 function formatGroupingSpec(
@@ -3081,10 +3102,14 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
   const createPrefix = node.orReplace ? 'CREATE OR REPLACE TABLE ' : 'CREATE TABLE ';
   const tableName = lowerMaybeQualifiedNameWithIfNotExists(node.tableName);
 
-  if (node.asQuery && node.elements.length === 0) {
+  if (node.elements.length === 0 && (node.asQuery || node.asExecute)) {
     const options = node.tableOptions ? formatCreateTableOptions(node.tableOptions) : '';
+    if (node.asExecute) {
+      lines.push(createPrefix + tableName + options + ' AS ' + node.asExecute + ';');
+      return lines.join('\n');
+    }
     lines.push(createPrefix + tableName + options + ' AS');
-    const query = formatQueryExpressionForSubquery(node.asQuery, ctx.runtime);
+    const query = formatQueryExpressionForSubquery(node.asQuery!, ctx.runtime);
     const queryLines = query.split('\n');
     if (queryLines.length > 0) {
       queryLines[queryLines.length - 1] = queryLines[queryLines.length - 1].replace(/;$/, '') + ';';
@@ -3241,6 +3266,10 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       queryLines[queryLines.length - 1] = queryLines[queryLines.length - 1].replace(/;$/, '') + ';';
     }
     lines.push(...queryLines);
+    return lines.join('\n');
+  }
+  if (node.asExecute) {
+    lines.push(')' + options + ' AS ' + node.asExecute + ';');
     return lines.join('\n');
   }
   lines.push(')' + options + ';');

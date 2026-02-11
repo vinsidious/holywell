@@ -123,6 +123,17 @@ function parseCreateTableStatement(
   // CREATE TABLE ... AS SELECT ...
   if (ctx.peekUpper() === 'AS') {
     ctx.advance(); // AS
+    const asExecute = tryParseCreateTableAsExecute(ctx);
+    if (asExecute) {
+      return {
+        type: 'create_table',
+        orReplace: orReplace || undefined,
+        tableName: fullName,
+        elements: [],
+        asExecute,
+        leadingComments: comments,
+      };
+    }
     const query = ctx.parseStatement();
     if (!query || (query.type !== 'select' && query.type !== 'union' && query.type !== 'cte')) {
       throw ctx.parseError('SELECT, UNION, or WITH query in CREATE TABLE AS', ctx.peek());
@@ -160,6 +171,7 @@ function parseCreateTableStatement(
   let elements: AST.TableElement[] = [];
   let trailingComma = false;
   let asQuery: AST.QueryExpression | undefined = parenthesizedQuery || undefined;
+  let asExecute: string | undefined;
 
   if (!parenthesizedQuery && !ctx.check('(')) {
     ctx.setPos(statementStart);
@@ -181,7 +193,12 @@ function parseCreateTableStatement(
   if (!ctx.isAtEnd() && !ctx.check(';')) {
     const optionTokens: Token[] = [];
     while (!ctx.isAtEnd() && !ctx.check(';')) {
-      if (!asQuery) {
+      if (!asQuery && !asExecute) {
+        const parsedAsExecute = tryParseCreateTableAsExecute(ctx);
+        if (parsedAsExecute) {
+          asExecute = parsedAsExecute;
+          break;
+        }
         const parsedAsQuery = tryParseCreateTableAsQuery(ctx);
         if (parsedAsQuery) {
           asQuery = parsedAsQuery;
@@ -202,6 +219,7 @@ function parseCreateTableStatement(
     trailingComma: trailingComma || undefined,
     tableOptions,
     asQuery,
+    asExecute,
     leadingComments: comments,
   };
 }
@@ -227,6 +245,18 @@ function tryParseCreateTableAsQuery(ctx: DdlParser): AST.QueryExpression | null 
 
   ctx.setPos(start);
   return null;
+}
+
+function tryParseCreateTableAsExecute(ctx: DdlParser): string | null {
+  if (ctx.peekUpper() !== 'EXECUTE' && ctx.peekUpper() !== 'EXEC') return null;
+
+  const tokens: Token[] = [];
+  tokens.push(ctx.advance());
+  while (!ctx.isAtEnd() && !ctx.check(';')) {
+    if (ctx.hasImplicitStatementBoundary?.()) break;
+    tokens.push(ctx.advance());
+  }
+  return ctx.tokensToSql(tokens) || null;
 }
 
 function tryParseParenthesizedCreateTableQuery(ctx: DdlParser): AST.QueryExpression | null {

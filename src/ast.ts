@@ -178,6 +178,7 @@ export interface CreateTableStatement {
   readonly trailingComma?: boolean;
   readonly tableOptions?: string;
   readonly asQuery?: QueryExpression;
+  readonly asExecute?: string;
   readonly leadingComments: readonly CommentNode[];
 }
 
@@ -779,6 +780,8 @@ export interface JoinClause {
   readonly ordinality?: boolean;
   readonly on?: Expression;
   readonly usingClause?: readonly string[];
+  readonly usingAlias?: string;
+  readonly usingAliasColumns?: readonly string[];
   readonly trailingComment?: CommentNode;
 }
 
@@ -788,6 +791,7 @@ export interface WhereClause {
 }
 
 export interface GroupByClause {
+  readonly setQuantifier?: 'ALL' | 'DISTINCT';
   readonly items: readonly Expression[];
   readonly groupingSets?: readonly { readonly type: 'grouping_sets' | 'rollup' | 'cube'; readonly sets: readonly (readonly Expression[])[] }[];
   readonly withRollup?: boolean;

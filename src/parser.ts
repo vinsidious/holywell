@@ -1473,6 +1473,19 @@ export class Parser {
       this.expect(')');
       return { statement: query, parenthesized: true };
     }
+    if (this.peekUpper() === 'VALUES') {
+      const values = this.parseValuesClause();
+      if (leadingComments.length === 0) {
+        return { statement: values, parenthesized: false };
+      }
+      return {
+        statement: {
+          ...values,
+          leadingComments,
+        },
+        parenthesized: false,
+      };
+    }
     const select = this.parseSelect();
     if (leadingComments.length === 0) {
       return { statement: select, parenthesized: false };
@@ -1537,7 +1550,7 @@ export class Parser {
       top = this.tokensToSql(topTokens);
     }
 
-    const columns = this.parseColumnList();
+    const columns = this.isSelectListBoundary() ? [] : this.parseColumnList();
     let into: string | undefined;
     if (this.peekUpper() === 'INTO') {
       this.advance();
@@ -2014,6 +2027,8 @@ export class Parser {
 
       let on: AST.Expression | undefined;
       let usingClause: string[] | undefined;
+      let usingAlias: string | undefined;
+      let usingAliasColumns: string[] | undefined;
       let trailingComment: AST.CommentNode | undefined;
 
       if (this.peekUpper() === 'ON') {
@@ -2031,6 +2046,12 @@ export class Parser {
         this.expect(')');
       }
 
+      if (usingClause) {
+        const usingAliasResult = this.parseOptionalAlias({ allowColumnList: true });
+        usingAlias = usingAliasResult.alias;
+        usingAliasColumns = usingAliasResult.aliasColumns;
+      }
+
       if (this.peekType() === 'line_comment') {
         const t = this.advance();
         trailingComment = {
@@ -2040,7 +2061,19 @@ export class Parser {
         };
       }
 
-      return { joinType, table, alias, aliasColumns, pivotClause, ordinality, on, usingClause, trailingComment };
+      return {
+        joinType,
+        table,
+        alias,
+        aliasColumns,
+        pivotClause,
+        ordinality,
+        on,
+        usingClause,
+        usingAlias,
+        usingAliasColumns,
+        trailingComment,
+      };
     }
 
     if ((this.peekUpper() === 'CROSS' || this.peekUpper() === 'OUTER') && this.peekUpperAt(1) === 'APPLY') {
@@ -2082,6 +2115,8 @@ export class Parser {
 
     let on: AST.Expression | undefined;
     let usingClause: string[] | undefined;
+    let usingAlias: string | undefined;
+    let usingAliasColumns: string[] | undefined;
     let trailingComment: AST.CommentNode | undefined;
 
     if (this.peekUpper() === 'ON') {
@@ -2099,6 +2134,12 @@ export class Parser {
       this.expect(')');
     }
 
+    if (usingClause) {
+      const usingAliasResult = this.parseOptionalAlias({ allowColumnList: true });
+      usingAlias = usingAliasResult.alias;
+      usingAliasColumns = usingAliasResult.aliasColumns;
+    }
+
     if (this.peekType() === 'line_comment') {
       const t = this.advance();
       trailingComment = {
@@ -2108,10 +2149,29 @@ export class Parser {
       };
     }
 
-    return { joinType: joinType.trim(), table, alias, aliasColumns, pivotClause, lateral, ordinality, on, usingClause, trailingComment };
+    return {
+      joinType: joinType.trim(),
+      table,
+      alias,
+      aliasColumns,
+      pivotClause,
+      lateral,
+      ordinality,
+      on,
+      usingClause,
+      usingAlias,
+      usingAliasColumns,
+      trailingComment,
+    };
   }
 
   private parseGroupByClause(): AST.GroupByClause {
+    let setQuantifier: 'ALL' | 'DISTINCT' | undefined;
+    if (this.peekUpper() === 'ALL' || this.peekUpper() === 'DISTINCT') {
+      setQuantifier = this.advance().upper as 'ALL' | 'DISTINCT';
+      this.consumeComments();
+    }
+
     const items: AST.Expression[] = [];
     const groupingSetsArr: { type: 'grouping_sets' | 'rollup' | 'cube'; sets: AST.Expression[][] }[] = [];
     let withRollup = false;
@@ -2124,7 +2184,7 @@ export class Parser {
       groupingSetsArr.push(this.parseGroupingSetsSpec('rollup'));
     } else if (kw === 'CUBE') {
       groupingSetsArr.push(this.parseGroupingSetsSpec('cube'));
-    } else {
+    } else if (!this.isGroupByBoundary()) {
       // Normal GROUP BY items
       items.push(this.parseExpression());
       while (this.check(',')) {
@@ -2147,10 +2207,29 @@ export class Parser {
     }
 
     return {
+      setQuantifier,
       items,
       groupingSets: groupingSetsArr.length > 0 ? groupingSetsArr : undefined,
       withRollup: withRollup || undefined,
     };
+  }
+
+  private isGroupByBoundary(): boolean {
+    if (this.isAtEnd() || this.check(';') || this.check(')')) return true;
+    const kw = this.peekUpper();
+    return (
+      kw === 'HAVING'
+      || kw === 'WINDOW'
+      || kw === 'ORDER'
+      || kw === 'LIMIT'
+      || kw === 'OFFSET'
+      || kw === 'FETCH'
+      || kw === 'FOR'
+      || kw === 'UNION'
+      || kw === 'INTERSECT'
+      || kw === 'EXCEPT'
+      || (kw === 'WITH' && this.peekUpperAt(1) === 'ROLLUP')
+    );
   }
 
   private parseGroupingSetsSpec(specType: 'grouping_sets' | 'rollup' | 'cube'): { type: 'grouping_sets' | 'rollup' | 'cube'; sets: AST.Expression[][] } {
@@ -2382,7 +2461,7 @@ export class Parser {
     let usingOperator: string | undefined;
     if (this.peekUpper() === 'USING') {
       this.advance();
-      usingOperator = this.advance().value;
+      usingOperator = this.parseOrderByUsingOperator();
     }
     let direction: 'ASC' | 'DESC' | undefined;
     if (this.peekUpper() === 'ASC') { this.advance(); direction = 'ASC'; }
@@ -2413,6 +2492,35 @@ export class Parser {
       };
     }
     return { expr, usingOperator, direction, nulls, trailingComment };
+  }
+
+  private parseOrderByUsingOperator(): string {
+    if (this.peekUpper() === 'OPERATOR' && this.peekAt(1).value === '(') {
+      const tokens: Token[] = [];
+      tokens.push(this.advance()); // OPERATOR
+      const openParen = this.expect('(');
+      tokens.push(openParen);
+      let depth = 1;
+      while (!this.isAtEnd() && depth > 0) {
+        const token = this.advance();
+        tokens.push(token);
+        if (token.value === '(') depth++;
+        else if (token.value === ')') depth--;
+      }
+      if (depth !== 0) {
+        throw new ParseError(')', this.peek());
+      }
+      return this.tokensToSqlPreserveCase(tokens);
+    }
+
+    let operator = '';
+    while (this.peek().type === 'operator') {
+      operator += this.advance().value;
+    }
+    if (!operator) {
+      throw new ParseError('operator', this.peek());
+    }
+    return operator;
   }
 
   // Expression parser using precedence climbing
@@ -4706,30 +4814,23 @@ export class Parser {
 
     let query: AST.SelectStatement | AST.UnionStatement | AST.ValuesClause;
     const queryComments = [...postAsComments, ...postHintComments, ...this.consumeComments()];
-    if (this.peekUpper() === 'VALUES') {
-      const values = this.parseValuesClause();
-      query = queryComments.length > 0
-        ? { ...values, leadingComments: queryComments }
-        : values;
-    } else {
-      const first = this.parseSelect();
-      const firstWithComments = queryComments.length > 0
-        ? { ...first, leadingComments: queryComments }
-        : first;
-      if (this.checkUnionKeyword()) {
-        const members: { statement: AST.QueryExpression; parenthesized: boolean }[] = [
-          { statement: firstWithComments, parenthesized: false }
-        ];
-        const operators: string[] = [];
-        while (this.checkUnionKeyword()) {
-          operators.push(this.consumeUnionKeyword());
-          const memberComments = this.consumeComments();
-          members.push(this.parseQueryMember(memberComments));
-        }
-        query = { type: 'union', members, operators, leadingComments: queryComments };
-      } else {
-        query = firstWithComments;
+    const first = this.peekUpper() === 'VALUES' ? this.parseValuesClause() : this.parseSelect();
+    const firstWithComments = queryComments.length > 0
+      ? { ...first, leadingComments: queryComments }
+      : first;
+    if (this.checkUnionKeyword()) {
+      const members: { statement: AST.QueryExpression; parenthesized: boolean }[] = [
+        { statement: firstWithComments, parenthesized: false }
+      ];
+      const operators: string[] = [];
+      while (this.checkUnionKeyword()) {
+        operators.push(this.consumeUnionKeyword());
+        const memberComments = this.consumeComments();
+        members.push(this.parseQueryMember(memberComments));
       }
+      query = { type: 'union', members, operators, leadingComments: queryComments };
+    } else {
+      query = firstWithComments;
     }
 
     this.expect(')');
