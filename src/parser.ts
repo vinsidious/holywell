@@ -462,9 +462,24 @@ export class Parser {
 
   private isStatementStarterToken(token: Token | undefined): boolean {
     if (!token || token.type === 'eof') return false;
-    if (token.value === '/' || token.value.startsWith('@')) return true;
+    if (token.value === '/') return true;
     if (IMPLICIT_STATEMENT_STARTERS.has(token.upper)) return true;
     return false;
+  }
+
+  private isTransactionBeginStatement(): boolean {
+    if (this.peekUpper() !== 'BEGIN') return false;
+    const next = this.peekUpperSkippingComments(1);
+    return (
+      next === ';'
+      || next === ''
+      || next === 'TRAN'
+      || next === 'TRANSACTION'
+      || next === 'WORK'
+      || next === 'IMMEDIATE'
+      || next === 'DEFERRED'
+      || next === 'EXCLUSIVE'
+    );
   }
 
   private hasImplicitStatementBoundary(): boolean {
@@ -571,7 +586,7 @@ export class Parser {
         allowPreBeginSemicolons,
       });
     }
-    if (kw === 'BEGIN' && this.hasKeywordAhead('END')) {
+    if (kw === 'BEGIN' && !this.isTransactionBeginStatement() && this.hasKeywordAhead('END')) {
       return this.parseStatementUntilEndBlock(comments, 'unsupported');
     }
     if (kw === 'IF' && this.hasKeywordAhead('BEGIN') && this.hasKeywordAhead('END')) {
@@ -2989,7 +3004,6 @@ export class Parser {
   private parseIdentifierOrFunction(): AST.Expression {
     const name = this.advance();
     let fullName = name.value;
-    let lastNameToken = name;
     const quoted = isQuotedIdentifierToken(name.value);
 
     // Qualified name: a.b or a.*
@@ -3001,14 +3015,12 @@ export class Parser {
       }
       const next = this.advance();
       fullName += '.' + next.value;
-      lastNameToken = next;
     }
 
     // MySQL charset introducers: _utf8'text', _latin1'text', ...
     if (
       /^_[A-Za-z][A-Za-z0-9_]*$/.test(fullName)
       && this.peekType() === 'string'
-      && this.peek().position === lastNameToken.position + lastNameToken.value.length
     ) {
       const textLiteral = this.advance().value;
       return {
@@ -3635,6 +3647,8 @@ export class Parser {
       peekUpper: () => this.peekUpper(),
       peekUpperAt: (offset: number) => this.peekUpperAt(offset),
       isAtEnd: () => this.isAtEnd(),
+      hasImplicitStatementBoundary: () => this.hasImplicitStatementBoundary(),
+      tokensToSql: (tokens: Token[]) => this.tokensToSql(tokens),
       isJoinKeyword: () => this.isJoinKeyword(),
       parseJoin: () => this.parseJoin(),
       parseExpression: () => this.parseExpression(),
