@@ -338,6 +338,7 @@ function deriveSelectRiverWidth(node: AST.SelectStatement): number {
   if (node.offset) width = Math.max(width, 'OFFSET'.length);
   if (node.fetch) width = Math.max(width, 'FETCH'.length);
   if (node.lockingClause) width = Math.max(width, 'FOR'.length);
+  if (node.optionClause) width = Math.max(width, 'OPTION'.length);
   return width;
 }
 
@@ -860,6 +861,10 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
 
   if (node.lockingClause) {
     lines.push(rightAlign('FOR', ctx) + ' ' + node.lockingClause);
+  }
+
+  if (node.optionClause) {
+    lines.push(contentPad(ctx) + node.optionClause.replace(/^OPTION\(/i, 'OPTION ('));
   }
 
   let result = lines.join('\n');
@@ -2428,7 +2433,10 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
     if (node.onConflict.constraintName) {
       conflictTarget = ' ON CONSTRAINT ' + node.onConflict.constraintName;
     } else if (node.onConflict.columns && node.onConflict.columns.length > 0) {
-      conflictTarget = ' (' + node.onConflict.columns.join(', ') + ')';
+      conflictTarget = ' (' + node.onConflict.columns.map(expr => formatExpr(expr)).join(', ') + ')';
+    }
+    if (node.onConflict.targetWhere) {
+      conflictTarget += ' WHERE ' + formatCondition(node.onConflict.targetWhere, dmlCtx);
     }
     lines.push(rightAlign('ON', dmlCtx) + ' CONFLICT' + conflictTarget);
 

@@ -231,21 +231,31 @@ function parseInsertExecuteSource(ctx: DmlParser): string {
 }
 
 export function parseInsertOnConflictClause(ctx: DmlParser): AST.InsertStatement['onConflict'] {
-  let conflictColumns: string[] | undefined;
+  let conflictColumns: AST.Expression[] | undefined;
   let constraintName: string | undefined;
+  let targetWhere: AST.Expression | undefined;
 
   if (ctx.peekUpper() === 'ON' && ctx.peekUpperAt(1) === 'CONSTRAINT') {
     ctx.advance();
     ctx.advance();
     constraintName = ctx.advance().value;
   } else if (ctx.check('(')) {
-    conflictColumns = parseParenthesizedIdentifierList(ctx);
+    ctx.expect('(');
+    conflictColumns = ctx.check(')') ? [] : ctx.parseExpressionList();
+    ctx.expect(')');
+  }
+
+  ctx.consumeComments?.();
+  if (ctx.peekUpper() === 'WHERE') {
+    ctx.advance();
+    ctx.consumeComments?.();
+    targetWhere = ctx.parseExpression();
   }
 
   ctx.expect('DO');
   if (ctx.peekUpper() === 'NOTHING') {
     ctx.advance();
-    return { columns: conflictColumns, constraintName, action: 'nothing' };
+    return { columns: conflictColumns, constraintName, targetWhere, action: 'nothing' };
   }
 
   ctx.expect('UPDATE');
@@ -267,7 +277,7 @@ export function parseInsertOnConflictClause(ctx: DmlParser): AST.InsertStatement
     where = ctx.parseExpression();
   }
 
-  return { columns: conflictColumns, constraintName, action: 'update', setItems, where };
+  return { columns: conflictColumns, constraintName, targetWhere, action: 'update', setItems, where };
 }
 
 export function parseValuesTuple(
@@ -392,14 +402,19 @@ export function parseUpdateStatement(
 
 export function parseSetItem(ctx: DmlParser): AST.SetItem {
   ctx.consumeComments?.();
-  let column = ctx.advance().value;
-  while (ctx.check('.')) {
-    ctx.advance(); // consume dot
-    column += '.' + ctx.advance().value;
+  let column: string;
+  let tupleTarget = false;
+
+  if (ctx.check('(')) {
+    const tupleColumns = parseParenthesizedSetTargetList(ctx);
+    column = '(' + tupleColumns.join(', ') + ')';
+    tupleTarget = true;
+  } else {
+    column = parseDottedName(ctx);
   }
 
-   // T-SQL XML method syntax in SET: column.method(...)
-  if (ctx.check('(')) {
+  // T-SQL XML method syntax in SET: column.method(...)
+  if (!tupleTarget && ctx.check('(')) {
     ctx.advance();
     const args: AST.Expression[] = [];
     if (!ctx.check(')')) {
@@ -549,6 +564,22 @@ function parseParenthesizedIdentifierList(ctx: DmlParser): string[] {
   }
   ctx.expect(')');
   return items;
+}
+
+function parseParenthesizedSetTargetList(ctx: DmlParser): string[] {
+  ctx.expect('(');
+  const columns: string[] = [];
+  ctx.consumeComments?.();
+  while (!ctx.isAtEnd() && !ctx.check(')')) {
+    columns.push(parseDottedName(ctx));
+    ctx.consumeComments?.();
+    if (ctx.check(',')) {
+      ctx.advance();
+      ctx.consumeComments?.();
+    }
+  }
+  ctx.expect(')');
+  return columns;
 }
 
 function parseOptionalInsertSourceAlias(ctx: DmlParser): AST.InsertStatement['valuesAlias'] {

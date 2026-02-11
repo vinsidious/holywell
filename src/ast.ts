@@ -102,6 +102,7 @@ export interface SelectStatement {
   readonly offset?: OffsetClause;
   readonly fetch?: { readonly count: Expression; readonly withTies?: boolean };
   readonly lockingClause?: string;
+  readonly optionClause?: string;
   readonly windowClause?: readonly { readonly name: string; readonly spec: WindowSpec }[];
   readonly leadingComments: readonly CommentNode[];
   readonly parenthesized?: boolean;
@@ -134,8 +135,9 @@ export interface InsertStatement {
   readonly returning?: readonly Expression[];
   readonly returningInto?: readonly string[];
   readonly onConflict?: {
-    readonly columns?: readonly string[];
+    readonly columns?: readonly Expression[];
     readonly constraintName?: string;
+    readonly targetWhere?: Expression;
     readonly action: 'nothing' | 'update';
     readonly setItems?: readonly SetItem[];
     readonly where?: Expression;
