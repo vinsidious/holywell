@@ -8,6 +8,8 @@ export interface DmlParser {
   peekUpper(): string;
   peekUpperAt(offset: number): string;
   isAtEnd(): boolean;
+  hasImplicitStatementBoundary?(): boolean;
+  tokensToSql?(tokens: Token[]): string;
   isJoinKeyword(): boolean;
   parseJoin(): AST.JoinClause;
   parseExpression(): AST.Expression;
@@ -39,13 +41,14 @@ export function parseInsertStatement(
   }
   const alias = parseOptionalTableAlias(
     ctx,
-    new Set(['OVERRIDING', 'DEFAULT', 'VALUE', 'VALUES', 'SET', 'TABLE', 'SELECT', 'WITH', 'ON', 'RETURNING'])
+    new Set(['OVERRIDING', 'DEFAULT', 'VALUE', 'VALUES', 'SET', 'TABLE', 'SELECT', 'WITH', 'ON', 'RETURNING', 'EXEC', 'EXECUTE'])
   );
 
   let columns: string[] = [];
   let selectQuery: AST.QueryExpression | undefined;
   let setItems: AST.SetItem[] | undefined;
   let valuesAlias: AST.InsertStatement['valuesAlias'];
+  let executeSource: string | undefined;
   let tableSource: AST.InsertStatement['tableSource'];
   if (ctx.check('(')) {
     const queryAtCurrent = ctx.tryParseQueryExpressionAtCurrent?.();
@@ -125,6 +128,8 @@ export function parseInsertStatement(
     };
   } else if (ctx.peekUpper() === 'SELECT' || ctx.peekUpper() === 'WITH' || ctx.check('(')) {
     selectQuery = ctx.parseQueryExpression();
+  } else if (ctx.peekUpper() === 'EXEC' || ctx.peekUpper() === 'EXECUTE') {
+    executeSource = parseInsertExecuteSource(ctx);
   }
 
   let onConflict: AST.InsertStatement['onConflict'];
@@ -171,6 +176,7 @@ export function parseInsertStatement(
     values,
     setItems,
     valuesAlias,
+    executeSource,
     tableSource,
     selectQuery,
     onConflict,
@@ -179,6 +185,27 @@ export function parseInsertStatement(
     returningInto: returningClause.returningInto,
     leadingComments: comments,
   };
+}
+
+function parseInsertExecuteSource(ctx: DmlParser): string {
+  const tokens: Token[] = [ctx.advance()];
+  let depth = 0;
+
+  while (!ctx.isAtEnd() && !ctx.check(';')) {
+    if (depth === 0 && ctx.hasImplicitStatementBoundary?.()) break;
+    const token = ctx.advance();
+    tokens.push(token);
+    if (token.value === '(' || token.value === '[' || token.value === '{') {
+      depth++;
+    } else if (token.value === ')' || token.value === ']' || token.value === '}') {
+      depth = Math.max(0, depth - 1);
+    }
+  }
+
+  if (ctx.tokensToSql) {
+    return ctx.tokensToSql(tokens);
+  }
+  return tokens.map(token => token.type === 'keyword' ? token.upper : token.value).join(' ');
 }
 
 export function parseInsertOnConflictClause(ctx: DmlParser): AST.InsertStatement['onConflict'] {

@@ -122,6 +122,7 @@ export interface InsertStatement {
     readonly name: string;
     readonly columns?: readonly string[];
   };
+  readonly executeSource?: string;
   readonly tableSource?: {
     readonly table: string;
     readonly alias?: string;
