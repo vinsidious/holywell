@@ -815,13 +815,17 @@ function tryParseAlterAddColumnAction(ctx: DdlParser): AST.AlterAction | null {
 }
 
 function tryParseAlterDropColumnAction(ctx: DdlParser): AST.AlterAction | null {
+  const start = ctx.getPos();
   if (ctx.peekUpper() !== 'DROP' || ctx.peekUpperAt(1) !== 'COLUMN') return null;
   ctx.advance(); // DROP
   ctx.advance(); // COLUMN
 
   const ifExists = ctx.consumeIfExists();
 
-  if (ctx.peekType() !== 'identifier' && ctx.peekType() !== 'keyword') return null;
+  if (ctx.peekType() !== 'identifier' && ctx.peekType() !== 'keyword') {
+    ctx.setPos(start);
+    return null;
+  }
   const columnName = ctx.advance().value;
 
   let behavior: 'CASCADE' | 'RESTRICT' | undefined;
@@ -842,6 +846,7 @@ function tryParseAlterDropColumnAction(ctx: DdlParser): AST.AlterAction | null {
 }
 
 function tryParseAlterRenameAction(ctx: DdlParser): AST.AlterAction | null {
+  const start = ctx.getPos();
   if (ctx.peekUpper() !== 'RENAME') return null;
   ctx.advance(); // RENAME
 
@@ -859,17 +864,22 @@ function tryParseAlterRenameAction(ctx: DdlParser): AST.AlterAction | null {
     return { type: 'rename_column', columnName, newName };
   }
 
+  ctx.setPos(start);
   return null;
 }
 
 function tryParseAlterDropConstraintAction(ctx: DdlParser): AST.AlterAction | null {
+  const start = ctx.getPos();
   if (ctx.peekUpper() !== 'DROP' || ctx.peekUpperAt(1) !== 'CONSTRAINT') return null;
   ctx.advance(); // DROP
   ctx.advance(); // CONSTRAINT
 
   const ifExists = ctx.consumeIfExists();
 
-  if (ctx.peekType() !== 'identifier' && ctx.peekType() !== 'keyword') return null;
+  if (ctx.peekType() !== 'identifier' && ctx.peekType() !== 'keyword') {
+    ctx.setPos(start);
+    return null;
+  }
   const constraintName = ctx.advance().value;
 
   let behavior: 'CASCADE' | 'RESTRICT' | undefined;
@@ -890,15 +900,22 @@ function tryParseAlterDropConstraintAction(ctx: DdlParser): AST.AlterAction | nu
 }
 
 function tryParseAlterAlterColumnAction(ctx: DdlParser): AST.AlterAction | null {
+  const start = ctx.getPos();
   if (ctx.peekUpper() !== 'ALTER') return null;
   ctx.advance();
   if (ctx.peekUpper() === 'COLUMN') ctx.advance();
 
-  if (ctx.peekType() !== 'identifier' && ctx.peekType() !== 'keyword') return null;
+  if (ctx.peekType() !== 'identifier' && ctx.peekType() !== 'keyword' && ctx.peekType() !== 'number') {
+    ctx.setPos(start);
+    return null;
+  }
   const columnName = ctx.advance().value;
   const operationTokens = ctx.consumeTokensUntilActionBoundary();
   const operation = ctx.tokensToSql(operationTokens);
-  if (!operation) return null;
+  if (!operation) {
+    ctx.setPos(start);
+    return null;
+  }
 
   return {
     type: 'alter_column',
@@ -908,6 +925,7 @@ function tryParseAlterAlterColumnAction(ctx: DdlParser): AST.AlterAction | null 
 }
 
 function tryParseAlterOwnerToAction(ctx: DdlParser): AST.AlterAction | null {
+  const start = ctx.getPos();
   if (ctx.peekUpper() !== 'OWNER') return null;
   ctx.advance();
 
@@ -916,6 +934,7 @@ function tryParseAlterOwnerToAction(ctx: DdlParser): AST.AlterAction | null {
   }
 
   if (ctx.peekType() !== 'identifier' && ctx.peekType() !== 'keyword' && ctx.peekType() !== 'string') {
+    ctx.setPos(start);
     return null;
   }
 
@@ -929,17 +948,27 @@ function tryParseAlterOwnerToAction(ctx: DdlParser): AST.AlterAction | null {
 }
 
 function tryParseAlterSetSchemaAction(ctx: DdlParser): AST.AlterAction | null {
+  const start = ctx.getPos();
   if (ctx.peekUpper() !== 'SET' || ctx.peekUpperAt(1) !== 'SCHEMA') return null;
   ctx.advance();
   ctx.advance();
+  if (ctx.peekType() !== 'identifier' && ctx.peekType() !== 'keyword') {
+    ctx.setPos(start);
+    return null;
+  }
   const schema = ctx.advance().value;
   return { type: 'set_schema', schema };
 }
 
 function tryParseAlterSetTablespaceAction(ctx: DdlParser): AST.AlterAction | null {
+  const start = ctx.getPos();
   if (ctx.peekUpper() !== 'SET' || ctx.peekUpperAt(1) !== 'TABLESPACE') return null;
   ctx.advance();
   ctx.advance();
+  if (ctx.peekType() !== 'identifier' && ctx.peekType() !== 'keyword') {
+    ctx.setPos(start);
+    return null;
+  }
   const tablespace = ctx.advance().value;
   return { type: 'set_tablespace', tablespace };
 }
