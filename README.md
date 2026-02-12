@@ -4,7 +4,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/holywell)](https://www.npmjs.com/package/holywell)
 [![license](https://img.shields.io/npm/l/holywell)](https://github.com/vinsidious/holywell/blob/main/LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/vinsidious/holywell/ci.yml?branch=main&label=CI)](https://github.com/vinsidious/holywell/actions)
-[![coverage](https://img.shields.io/badge/coverage-regression%20suite-brightgreen)](https://github.com/vinsidious/holywell/tree/main/tests)
+[![coverage](https://img.shields.io/badge/coverage-97%25-brightgreen)](https://github.com/vinsidious/holywell/tree/main/tests)
 
 An opinionated SQL formatter that implements [Simon Holywell's SQL Style Guide](https://www.sqlstyle.guide/). It faithfully applies the guide's formatting rules -- including river alignment, keyword uppercasing, and consistent indentation -- to produce deterministic, readable SQL with minimal configuration.
 
@@ -115,7 +115,6 @@ SELECT o.id, c.name, p.title, o.total
   FROM orders AS o
   JOIN customers AS c
     ON o.customer_id = c.id
-
        LEFT JOIN products AS p
        ON o.product_id = p.id
 
@@ -194,34 +193,36 @@ SELECT name,
 
 ## SQL Dialect Support
 
-Coverage is PostgreSQL-first, but materially broader than ANSI + PostgreSQL alone. The list below reflects current implementation and regression tests.
+holywell ships four selectable dialect profiles: **ansi**, **postgres**, **mysql**, and **tsql**. These profiles control keyword recognition, clause boundaries, and statement-handler behavior during tokenization and parsing. PostgreSQL is the default when no dialect is specified.
 
-| Dialect / Syntax Family | Coverage | Notes |
+Syntax from other database engines (Oracle, SQLite, Snowflake, ClickHouse, BigQuery, Exasol, DB2, H2) is recognized and formatted through the existing profiles -- typically `ansi` or `postgres` -- rather than via dedicated dialect configurations. The tokenizer and parser handle many vendor-specific patterns (hierarchical queries, q-quoted strings, numbered parameters, etc.), but there is no `--dialect oracle` or `--dialect snowflake` flag. If you work primarily with one of these engines, use whichever built-in profile is the closest match and validate the output with `--check`.
+
+| Syntax Family | Status | Notes |
 |---|---|---|
-| ANSI SQL core | First-class | Structured parsing/formatting for SELECT/CTE/DML/MERGE, joins, windows, and common DDL |
-| PostgreSQL | First-class / continuously tested | Casts, arrays, JSON operators, FILTER/WITHIN GROUP, ON CONFLICT, RETURNING, COPY stdin handling |
-| MySQL / MariaDB | Substantial / continuously tested | Backticks, LIMIT offset normalization, STRAIGHT_JOIN, RLIKE, INTERVAL, ALTER key actions, FULLTEXT, DELIMITER scripts |
-| SQL Server (T-SQL) | Substantial / continuously tested | GO batches, IF/BEGIN/END chains, CROSS APPLY, PIVOT, bracket identifiers, BACKUP/BULK, PRINT, compound assignments |
-| Oracle / PL/SQL surface syntax | Substantial / continuously tested | START WITH/CONNECT BY, q-quoted strings, slash terminators, RETURNING INTO, type declarations, nested table storage |
-| SQLite | Targeted | Numbered positional parameters (`?1`, `?2`, ...) plus ANSI-compatible statements |
-| Snowflake | Targeted | CREATE STAGE, CREATE FILE FORMAT, CREATE VIEW COMMENT, COPY INTO handling |
-| ClickHouse | Targeted | CREATE MATERIALIZED VIEW ... TO ... AS and CREATE TABLE option clauses |
-| BigQuery / Exasol / DB2 / H2 | Targeted | Backtick multipart identifiers + SAFE_CAST/TRY_CAST, Lua bracket strings, slash delimiters, MERGE ... VALUES shorthand |
+| **ANSI SQL core** | Selectable profile (`--dialect ansi`) | Structured parsing/formatting for SELECT/CTE/DML/MERGE, joins, windows, and common DDL |
+| **PostgreSQL** | Selectable profile (`--dialect postgres`); default | Casts, arrays, JSON operators, FILTER/WITHIN GROUP, ON CONFLICT, RETURNING, COPY stdin handling |
+| **MySQL / MariaDB** | Selectable profile (`--dialect mysql`) | Backticks, LIMIT offset normalization, STRAIGHT_JOIN, RLIKE, INTERVAL, ALTER key actions, FULLTEXT, DELIMITER scripts |
+| **SQL Server (T-SQL)** | Selectable profile (`--dialect tsql`) | GO batches, IF/BEGIN/END chains, CROSS APPLY, PIVOT, bracket identifiers, BACKUP/BULK, PRINT, compound assignments |
+| Oracle / PL/SQL surface syntax | Recognized via existing profiles; regression-tested | START WITH/CONNECT BY, q-quoted strings, slash terminators, RETURNING INTO, type declarations, nested table storage |
+| SQLite | Recognized via `ansi` profile; regression-tested | Numbered positional parameters (`?1`, `?2`, ...), INSERT OR conflict actions, plus ANSI-compatible statements |
+| Snowflake | Recognized via `ansi` profile; regression-tested | Variant path access, CREATE STAGE, CREATE FILE FORMAT, CREATE VIEW COMMENT, COPY INTO handling |
+| ClickHouse | Recognized via `ansi` profile; lightly tested | CREATE MATERIALIZED VIEW ... TO ... AS and CREATE TABLE option clauses |
+| BigQuery / Exasol / DB2 / H2 | Recognized via `ansi` profile; lightly tested | Backtick multipart identifiers + SAFE_CAST/TRY_CAST, Lua bracket strings, slash delimiters, MERGE ... VALUES shorthand |
 | Client/meta command syntax | First-class passthrough | psql `\` commands/variables, SQL*Plus slash run terminators, MySQL DELIMITER blocks, T-SQL GO separators |
 
-If you rely heavily on vendor extensions, run `--check` in CI and use `--strict` where parse failures should block merges.
+If you rely heavily on vendor extensions not covered by a built-in profile, run `--check` in CI and use `--strict` where parse failures should block merges.
 
-Choose a built-in dialect explicitly when formatting:
+Choose a built-in dialect profile explicitly when formatting:
 
 ```typescript
 import { formatSQL } from 'holywell';
 
 const formatted = formatSQL(sql, {
-  dialect: 'postgres',
+  dialect: 'postgres', // ansi | postgres | mysql | tsql
 });
 ```
 
-### PostgreSQL + ANSI (First-class)
+### PostgreSQL + ANSI (selectable profiles)
 
 - Type casts (`::integer`), JSON operators (`->`, `->>`), dollar-quoting (`$$...$$`)
 - Array constructors, window functions, CTEs, LATERAL joins
@@ -229,16 +230,20 @@ const formatted = formatSQL(sql, {
 - COPY stdin blocks and psql interpolation forms are preserved and formatted safely
 - **Note:** procedural bodies are block-aware, but not modeled as full procedural ASTs
 
-### MySQL / MariaDB (Substantial)
+### MySQL / MariaDB (selectable profile)
 
 - STRAIGHT_JOIN, RLIKE, INSERT ... VALUE, UPDATE multi-target/join forms
 - CREATE/ALTER TABLE options including ENGINE/CHARSET and FULLTEXT/KEY constraints
 - DELIMITER script boundaries and conditional comments are preserved
 
-### SQL Server (T-SQL) + Oracle (Substantial)
+### SQL Server / T-SQL (selectable profile)
 
-- SQL Server: GO separators, IF/BEGIN/END and ELSE IF chains, CROSS APPLY, PIVOT, BACKUP/BULK statements
-- Oracle: hierarchical queries, q-quoted strings, slash run terminators, DELETE shorthand normalization, RETURNING ... INTO
+- GO separators, IF/BEGIN/END and ELSE IF chains, CROSS APPLY, PIVOT, BACKUP/BULK statements
+
+### Oracle (syntax recognized, no dedicated profile)
+
+- Hierarchical queries, q-quoted strings, slash run terminators, DELETE shorthand normalization, RETURNING ... INTO
+- Uses `ansi` or `postgres` profile; common Oracle patterns are handled by the tokenizer and parser directly
 
 ### Pass-Through Model and Strict Mode
 
@@ -287,6 +292,7 @@ It does support a focused optional config file (`.holywellrc.json`) for operatio
 - `maxLineLength`
 - `maxDepth`
 - `maxInputSize`
+- `maxTokenCount`
 - `dialect`
 - `strict`
 - `recover`
@@ -382,7 +388,7 @@ This keeps editor/CLI integration predictable and avoids hidden async overhead.
 const warnings: string[] = [];
 const formatted = formatSQL(sql, {
   recover: true,
-  onRecover: (error, raw) => {
+  onRecover: (error, raw, context) => {
     warnings.push(`Line ${error.token.line}: ${error.message}`);
   }
 });
@@ -407,7 +413,7 @@ try {
 ### Depth Limits
 
 ```typescript
-formatSQL(sql, { maxDepth: 300 }); // Increase for deeply nested CTEs
+formatSQL(sql, { maxDepth: 300 }); // Increase for deeply nested CTEs (default: 200)
 ```
 
 ### Input Size Limits
@@ -450,13 +456,13 @@ try {
 } catch (err) {
   if (err instanceof TokenizeError) {
     // Invalid token encountered during lexing (e.g., unterminated string)
-    console.error(`Tokenize error at position ${err.position}: ${err.message}`);
+    console.error(`Tokenize error at ${err.line}:${err.column}: ${err.message}`);
   } else if (err instanceof MaxDepthError) {
     // Parser nesting exceeded configured maxDepth
     console.error(`Parse depth exceeded: ${err.message}`);
   } else if (err instanceof ParseError) {
     // Structural error in the SQL (e.g., unmatched parentheses)
-    console.error(`Parse error: ${err.message}`);
+    console.error(`Parse error at ${err.line}:${err.column}: ${err.message}`);
   } else if (err instanceof Error && err.message.includes('Input exceeds maximum size')) {
     // Input exceeded maxInputSize
     console.error(`Input too large: ${err.message}`);
@@ -469,7 +475,7 @@ try {
 ## How the formatter works
 
 ```
-SQL Text → Tokenizer → Parser → AST → Formatter → Formatted SQL
+SQL Text -> Tokenizer -> Parser -> AST -> Formatter -> Formatted SQL
 ```
 
 1. **Tokenizer** (`src/tokenizer.ts`) -- Splits SQL text into tokens (keywords, identifiers, literals, operators, comments)
@@ -508,7 +514,7 @@ For the API, `formatSQL` is strict by default and throws on parse errors. For th
 
 **Q: How fast is holywell?**
 
-~23,000 statements/second on modern hardware. A typical migration file formats in <10ms.
+Throughput varies by statement complexity: ~6,000 simple statements/sec or ~5,500 complex statements/sec when formatting individually, and higher in batch mode (multiple statements in a single `formatSQL` call). A typical migration file formats in under 10ms.
 
 **Q: Does holywell modify SQL semantics?**
 
@@ -524,7 +530,7 @@ Not directly. River width is derived automatically from statement structure. You
 
 **Q: Does holywell work with MySQL / SQL Server / SQLite / Oracle?**
 
-Yes. holywell is PostgreSQL-first, but it has substantial tested coverage for MySQL, SQL Server, and Oracle surface syntax, plus targeted support for SQLite/Snowflake/ClickHouse and client scripting commands (`GO`, `DELIMITER`, `\gset`, slash terminators). See [SQL Dialect Support](#sql-dialect-support) for the current matrix.
+MySQL and SQL Server (T-SQL) have dedicated selectable profiles (`--dialect mysql`, `--dialect tsql`) with tailored keyword sets and statement handlers. Oracle and SQLite do not have their own `--dialect` flag, but common syntax patterns from these engines (hierarchical queries, q-quoted strings, numbered parameters, INSERT OR, etc.) are recognized by the tokenizer and parser when using the `ansi` or `postgres` profile. Snowflake, ClickHouse, BigQuery, and others are handled similarly. See [SQL Dialect Support](#sql-dialect-support) for the current matrix.
 
 ## Documentation
 
@@ -555,11 +561,11 @@ bun run build
 
 ## Performance
 
-holywell has zero runtime dependencies and formats SQL through a single tokenize-parse-format pass. Typical throughput is ~23,000 statements per second on modern hardware. Input is bounded by default size limits to prevent excessive memory use on untrusted input.
+holywell has zero runtime dependencies and formats SQL through a single tokenize-parse-format pass. Throughput varies by statement complexity: ~6,000 simple statements/sec or ~5,500 complex statements/sec when formatting individually, and higher in batch mode. Input is bounded by default size limits to prevent excessive memory use on untrusted input.
 
 ## Limitations
 
-- Dialect coverage is broad but intentionally pragmatic, with strongest support for PostgreSQL-style syntax.
+- Four selectable dialect profiles are available (ansi, postgres, mysql, tsql). Other database engines are supported through these profiles, with vendor-specific syntax recognized by the tokenizer and parser but without dedicated dialect configurations.
 - Procedural SQL bodies and vendor scripting commands are mostly handled via block-aware pass-through, not full procedural AST rewriting.
 - Unknown/unmodeled constructs may still fall back to raw statement preservation.
 - Formatting style is opinionated and focused on faithfully implementing the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/) rather than per-project style configurability.

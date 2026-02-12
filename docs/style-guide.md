@@ -8,17 +8,19 @@ These rules are automatically applied by holywell on every format.
 
 | Rule | Description |
 |------|-------------|
-| Right-aligned keywords | Clause keywords (`SELECT`, `FROM`, `WHERE`, `AND`, `OR`, `JOIN`, etc.) are right-aligned to a per-statement river width |
-| Uppercase keywords | All SQL reserved words are uppercased (`SELECT`, `FROM`, `WHERE`, `INSERT`, etc.) |
+| Right-aligned keywords | Clause keywords (`SELECT`, `FROM`, `WHERE`, `AND`, `OR`, etc.) are right-aligned to a per-statement river derived from the widest aligned keyword in that statement |
+| Uppercase keywords | All SQL reserved words and function keywords are uppercased (`SELECT`, `FROM`, `WHERE`, `INSERT`, `COALESCE`, `NULLIF`, `EXTRACT`, `CAST`, `COUNT`, `SUM`, etc.) |
+| Boolean and NULL literals | `TRUE`, `FALSE`, and `NULL` are uppercased, treated as keywords |
 | Identifier normalization | ALL-CAPS unquoted identifiers are lowercased (e.g., `MYTABLE` becomes `mytable`); mixed-case identifiers like `MyColumn` are preserved; quoted identifiers are unchanged |
-| Trailing commas | Column lists use trailing commas with continuation lines indented past the river |
+| Trailing commas | When column lists wrap to multiple lines, commas are placed in trailing position (end of line) rather than leading position; continuation lines are aligned with the first item after the keyword |
 | No trailing whitespace | All trailing whitespace is stripped from every line |
-| Consistent indentation | Continuation lines, subexpressions, and nested blocks are indented predictably relative to the river |
-| JOIN alignment | `JOIN`, `INNER JOIN`, `LEFT JOIN`, etc. are right-aligned with `ON`/`USING` clauses properly indented |
-| Subquery indentation | Subqueries are indented with their own derived river width |
+| Consistent indentation | Continuation lines, subexpressions, and nested blocks are indented relative to the river |
+| JOIN formatting | Bare `JOIN` is right-aligned to the river alongside `FROM`; modified joins (`INNER JOIN`, `LEFT JOIN`, `CROSS JOIN`, etc.) are indented past the river; `ON` and `USING` clauses are indented under their join |
+| Subquery indentation | Subqueries are formatted with their own derived river width |
 | CTE formatting | `WITH` / `AS` blocks are formatted with aligned clause keywords inside each CTE body |
 | CASE expression formatting | `WHEN`/`THEN`/`ELSE`/`END` are consistently indented within CASE blocks |
-| Semicolon termination | Statements are terminated with semicolons |
+| Semicolon termination | Every statement is terminated with a semicolon; missing semicolons are added |
+| Deterministic and idempotent | Formatting the same input always produces the same output; formatting already-formatted output produces no changes |
 
 ## Partially Supported Rules
 
@@ -26,9 +28,9 @@ These rules are addressed but may not cover all edge cases.
 
 | Rule | Description | Notes |
 |------|-------------|-------|
-| Operator spacing | Spaces around comparison and arithmetic operators (`=`, `<>`, `+`, `-`, etc.) | Handled for most operators; some PostgreSQL-specific operators (e.g., `@>`, `?|`) are spaced but not configurable |
-| Line length | Long expressions are wrapped to multiple lines | Wrapping is guided by heuristics plus `maxLineLength`; very long single tokens may still exceed the configured width |
-| Alignment of VALUES | INSERT ... VALUES rows are formatted | Multi-row VALUES lists are formatted but column alignment across rows is not guaranteed |
+| Operator spacing | Spaces around comparison and arithmetic operators (`=`, `<>`, `+`, `-`, etc.) | Handled for most operators; some dialect-specific operators (e.g., PostgreSQL `@>`, `?|`) are spaced but not configurable |
+| Line length | Long expressions are wrapped to respect `maxLineLength` (default: 80) | Wrapping uses heuristics; very long single tokens may exceed the configured width |
+| Alignment of VALUES | `INSERT ... VALUES` rows are formatted with alignment | Multi-row VALUES lists are formatted but column alignment across rows is not guaranteed |
 
 ## Not Enforced
 
@@ -47,7 +49,6 @@ These guidelines from sqlstyle.guide are not enforced by holywell because they i
 holywell makes a small number of deliberate choices that differ from or extend sqlstyle.guide:
 
 | Deviation | holywell behavior | Rationale |
-|-----------|----------------|-----------|
+|-----------|-------------------|-----------|
 | River width is per-statement | Each statement derives its own river width from its longest aligned keyword rather than using a fixed column | Produces tighter output for simple queries while accommodating wide keywords like `RETURNING` in DML |
-| Keyword uppercasing scope | holywell uppercases all recognized SQL keywords, including function-like keywords (`COALESCE`, `NULLIF`, `EXTRACT`, etc.) | Consistent treatment of all reserved words |
-| Boolean literals | `TRUE`, `FALSE`, and `NULL` are uppercased | Treated as keywords for consistency, matching the guide's general uppercase-keywords rule |
+| Keyword uppercasing scope | holywell uppercases all recognized SQL keywords, including function-like keywords (`COALESCE`, `NULLIF`, `EXTRACT`, `CAST`, `COUNT`, etc.) and aggregate functions (`SUM`, `AVG`, `MAX`, `MIN`) | Consistent treatment of all reserved words |

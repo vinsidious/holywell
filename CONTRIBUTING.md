@@ -20,8 +20,8 @@ bun test
 # Run a specific test file
 bun test tests/formatter.test.ts
 
-# Run tests matching a pattern
-bun test --grep "window function"
+# Run tests matching a name pattern
+bun test -t "window function"
 
 # Type check (no emit)
 bun run check
@@ -41,7 +41,7 @@ bun run check && bun test && bun run build
 holywell processes SQL through three stages:
 
 1. **Tokenizer** (`src/tokenizer.ts`) -- Splits raw SQL text into a flat array of tokens: keywords, identifiers, literals, operators, comments, and whitespace.
-2. **Parser** (`src/parser/`) -- Consumes the token array and produces an AST (abstract syntax tree). Each SQL statement becomes a tree of typed nodes (`SelectStatement`, `JoinClause`, `CaseExpression`, etc.).
+2. **Parser** (`src/parser.ts`, with sub-modules in `src/parser/`) -- Consumes the token array and produces an AST (abstract syntax tree). Each SQL statement becomes a tree of typed nodes (`SelectStatement`, `JoinClause`, `CaseExpr`, etc.). Sub-modules handle specific grammar areas: `expressions.ts`, `dml.ts`, and `ddl.ts`.
 3. **Formatter** (`src/formatter.ts`) -- Walks the AST and emits formatted text. This stage derives the river width, right-aligns keywords, and handles indentation.
 
 When adding new features, changes typically flow through all three stages.
@@ -56,7 +56,7 @@ Define the new node type(s) in the AST type definitions (`src/ast.ts`). Each nod
 
 ### 2. Add parser rule(s)
 
-Add parsing logic in the parser (`src/parser/`). The parser consumes tokens and returns AST nodes. Follow the existing pattern of `parse*` functions (e.g., `parseSelectStatement`, `parseJoinClause`).
+Add parsing logic in the parser (`src/parser.ts` or the appropriate sub-module in `src/parser/`). The parser consumes tokens and returns AST nodes. Follow the existing pattern of `parse*` functions (e.g., `parseSelectStatement`, `parseJoinClause`).
 
 ### 3. Add formatter case(s)
 

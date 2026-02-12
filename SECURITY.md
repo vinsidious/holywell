@@ -43,7 +43,7 @@ When running `holywell` in CI/CD or multi-tenant automation:
 - Prefer `--strict` to fail on parse errors instead of recovery passthrough.
 - Use `--check` (or `--dry-run`) in validation steps; reserve `--write` for trusted repos/worktrees.
 - Keep formatting jobs inside an isolated workspace with least-privilege filesystem access.
-- Disable colorized output in machine logs unless explicitly needed (`--color=never`).
+- Disable colorized output in machine logs unless explicitly needed (`--color never`).
 
 ## CVE Assignment
 

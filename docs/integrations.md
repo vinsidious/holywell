@@ -92,7 +92,7 @@ Use the [Run on Save](https://marketplace.visualstudio.com/items?itemName=emeral
     "commands": [
       {
         "match": "\\.sql$",
-        "cmd": "npx holywell ${file}"
+        "cmd": "npx holywell --write ${file}"
       }
     ]
   }
@@ -114,14 +114,16 @@ Then use `gq` to format a selection, or `gggqG` to format the entire file.
 
 ```vim
 " In .vimrc or init.vim
+function! FormatWithHolywell(buffer) abort
+    return { 'command': 'npx holywell' }
+endfunction
+
+execute ale#fix#registry#Add('holywell', 'FormatWithHolywell', ['sql'], 'holywell formatter')
+
 let g:ale_fixers = {
 \   'sql': ['holywell'],
 \}
 let g:ale_fix_on_save = 1
-
-" Define the holywell fixer
-let g:ale_sql_holywell_executable = 'npx'
-let g:ale_sql_holywell_options = 'holywell'
 ```
 
 ### Neovim (conform.nvim)
@@ -149,7 +151,7 @@ Configure as an External Tool:
 2. Click **+** to add a new tool:
    - **Name**: holywell
    - **Program**: `npx`
-   - **Arguments**: `holywell $FilePath$`
+   - **Arguments**: `holywell --write $FilePath$`
    - **Working directory**: `$ProjectFileDir$`
 3. Optionally assign a keyboard shortcut under **Settings > Keymap > External Tools > holywell**
 

@@ -183,11 +183,11 @@ _No user-visible changes. Internal release for version alignment._
 - VS Code extension for holywell formatting with max input size limit and icon.
 - Documentation website and interactive playground.
 - EXPLAIN statement support.
-- Configurable line-length formatting with `lineWidth` option.
-- Project-level configuration file support (`.holywellrc`).
+- Configurable line-length formatting with `maxLineLength` option.
+- Project-level configuration file support (`.holywellrc.json`).
 - Dry-run mode (`--dry-run`) for CLI.
 - `--strict` flag to disable recovery mode for CI usage.
-- `--version`/`-v` CLI flag.
+- `--version`/`-V` CLI flag.
 - `--write`/`-w` and `--diff` CLI flags.
 - Intelligent wrapping for IN lists and array constructors.
 - CJK character width awareness in formatting.

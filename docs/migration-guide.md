@@ -6,7 +6,7 @@ Use this guide to roll out `holywell` across an existing codebase with minimal c
 
 `holywell` is intentionally opinionated:
 
-- Optional `.holywellrc.json` for operational settings (`maxLineLength`, `maxDepth`, `maxInputSize`, `strict`, `recover`)
+- Optional `.holywellrc.json` for operational settings (`maxLineLength`, `maxDepth`, `maxInputSize`, `maxTokenCount`, `dialect`, `strict`, `recover`)
 - No style toggles (indent/casing/alignment modes)
 - Deterministic output
 
@@ -71,7 +71,17 @@ vendor/**
 generated/**
 ```
 
-## 4) Batch-format in one commit
+## 4) Preview changes before writing
+
+Use `--dry-run` to see what would change without modifying any files:
+
+```bash
+npx holywell --dry-run "**/*.sql"
+```
+
+This implies `--check --diff`, showing a unified diff for each file that would be reformatted.
+
+## 5) Batch-format in one commit
 
 Create a dedicated formatting commit:
 
@@ -83,7 +93,7 @@ git commit -m "style: apply holywell"
 
 Keeping formatting separate from feature changes makes review and rollback easier.
 
-## 5) Enforce in CI
+## 6) Enforce in CI
 
 After baseline formatting, enforce check mode in CI:
 
@@ -97,7 +107,7 @@ Useful companion flag for PR logs:
 npx holywell --check --list-different "**/*.sql"
 ```
 
-## 6) Add pre-commit guard
+## 7) Add pre-commit guard
 
 Run only on staged SQL files:
 
@@ -112,7 +122,7 @@ npx holywell --write $(git diff --cached --name-only -- '*.sql')
 git add $(git diff --cached --name-only -- '*.sql')
 ```
 
-## 7) Monorepo rollout strategy
+## 8) Monorepo rollout strategy
 
 For large repos, migrate package-by-package:
 
@@ -121,7 +131,7 @@ For large repos, migrate package-by-package:
 3. Enable CI check for that scope.
 4. Repeat until full coverage.
 
-## 8) Handling unsupported syntax
+## 9) Handling unsupported syntax
 
 In CLI recovery mode (default for the CLI), statements that fail structural parsing are preserved as raw SQL where possible. The `formatSQL` API is strict by default.
 
