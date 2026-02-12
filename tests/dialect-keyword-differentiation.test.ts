@@ -329,6 +329,18 @@ describe('profile immutability', () => {
     expect(() => (POSTGRES_PROFILE.keywords as Set<string>).clear()).toThrow(TypeError);
   });
 
+  it('keyword Sets cannot be mutated via Set.prototype calls', () => {
+    const keywords = POSTGRES_PROFILE.keywords as unknown as Set<string>;
+    const originalSize = keywords.size;
+
+    expect(() => Set.prototype.add.call(keywords, 'FOOBAR')).toThrow(TypeError);
+    expect(() => Set.prototype.delete.call(keywords, 'SELECT')).toThrow(TypeError);
+
+    expect(keywords.size).toBe(originalSize);
+    expect(keywords.has('FOOBAR')).toBe(false);
+    expect(keywords.has('SELECT')).toBe(true);
+  });
+
   it('functionKeywords Sets are also frozen', () => {
     expect(() => (POSTGRES_PROFILE.functionKeywords as Set<string>).add('FOOBAR')).toThrow(TypeError);
     expect(() => (MYSQL_PROFILE.functionKeywords as Set<string>).add('FOOBAR')).toThrow(TypeError);

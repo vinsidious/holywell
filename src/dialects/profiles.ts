@@ -55,13 +55,24 @@ const TSQL_STATEMENT_HANDLERS: Readonly<Record<string, DialectStatementHandler>>
 };
 
 /**
- * Freeze a Set at runtime by overriding mutating methods and calling Object.freeze.
+ * Freeze a Set at runtime and prevent mutation through prototype calls.
  */
 function freezeSet<T>(set: Set<T>): ReadonlySet<T> {
-  const frozen = set as any;
-  frozen.add = () => { throw new TypeError('Cannot add to a frozen Set'); };
-  frozen.delete = () => { throw new TypeError('Cannot delete from a frozen Set'); };
-  frozen.clear = () => { throw new TypeError('Cannot clear a frozen Set'); };
+  const frozen = new Proxy(set, {
+    get(target, property) {
+      if (property === 'add') {
+        return () => { throw new TypeError('Cannot add to a frozen Set'); };
+      }
+      if (property === 'delete') {
+        return () => { throw new TypeError('Cannot delete from a frozen Set'); };
+      }
+      if (property === 'clear') {
+        return () => { throw new TypeError('Cannot clear a frozen Set'); };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
   Object.freeze(frozen);
   return frozen;
 }
