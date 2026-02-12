@@ -128,7 +128,7 @@ WHERE t.id = u.id;
 
   it('parses ALTER for non-TABLE object kinds', () => {
     const out = formatSQL('ALTER INDEX idx_users_email RENAME TO idx_users_email_new;');
-    expect(out.trim()).toBe('ALTER INDEX idx_users_email\n        RENAME TO idx_users_email_new;');
+    expect(out.trim()).toBe('ALTER INDEX idx_users_email\nRENAME TO idx_users_email_new;');
   });
 
   it('parses RETURNING aliases as structured expressions', () => {

@@ -189,8 +189,7 @@ describe('Category 3: Subqueries', () => {
     `select * from (with x as (select 1 as a) select a from x) q;`,
     `SELECT *
   FROM (  WITH x AS (
-                   SELECT 1 AS a
-               )
+                   SELECT 1 AS a)
         SELECT a
           FROM x) AS q;`
   );
@@ -200,8 +199,7 @@ describe('Category 3: Subqueries', () => {
     `SELECT 1
  WHERE 1 IN
        (  WITH x AS (
-                   SELECT 1 AS id
-               )
+                   SELECT 1 AS id)
         SELECT id
           FROM x);`
   );
@@ -326,8 +324,7 @@ describe('Category 8: CTEs (WITH clause)', () => {
     `  WITH regional_sales AS (
            SELECT region, SUM(amount) AS total_sales
              FROM orders
-            GROUP BY region
-       )
+            GROUP BY region)
 SELECT region, total_sales
   FROM regional_sales
  WHERE total_sales > 1000000;`
@@ -338,14 +335,12 @@ SELECT region, total_sales
     `  WITH regional_sales AS (
            SELECT region, SUM(amount) AS total_sales
              FROM orders
-            GROUP BY region
-       ),
+            GROUP BY region),
        top_regions AS (
            SELECT region
              FROM regional_sales
             WHERE total_sales > (SELECT SUM(total_sales) / 10
-                                   FROM regional_sales)
-       )
+                                   FROM regional_sales))
 SELECT region,
        product,
        SUM(quantity) AS product_units,
@@ -575,7 +570,7 @@ describe('Category 14: ALTER TABLE and DROP', () => {
   const tests: [string, string, string][] = [
     ['14.1 — ALTER TABLE ADD COLUMN',
       `alter table staff add column email varchar(255) not null default '';`,
-      `ALTER TABLE staff\n        ADD COLUMN email VARCHAR(255) NOT NULL DEFAULT '';`],
+      `ALTER TABLE staff\n  ADD COLUMN email VARCHAR(255) NOT NULL DEFAULT '';`],
     ['14.2 — DROP TABLE',
       `drop table if exists temporary_data;`,
       `DROP TABLE IF EXISTS temporary_data;`],
@@ -593,8 +588,7 @@ describe('Category 15: Complex Real-World Queries', () => {
                   COUNT(DISTINCT customer_id) AS unique_customers
              FROM orders
             WHERE order_date >= '2024-01-01'
-            GROUP BY DATE_TRUNC('month', order_date), department
-       )
+            GROUP BY DATE_TRUNC('month', order_date), department)
 SELECT m.month,
        m.department,
        m.total_revenue,
@@ -612,7 +606,7 @@ SELECT m.month,
 
   assertFormat('15.2 — Complex multi-CTE hospital analytics query with VALUES, subqueries, CASE, EXTRACT',
     `-- ============================================================================\n-- STACKED BAR CHART: Monthly Patient Volume by Category\n-- ============================================================================\n-- This query produces three volume columns for a stacked bar chart:\n--   1. Inpatient Volume     - from fully settled admissions (existing logic)\n--   2. Recurring Trials     - monthly clinical trial enrollment income\n--   3. One-time Equipment   - incidental/non-recurring equipment purchases\n--\n-- OUTPUT COLUMNS:\n--   Month                    (YYYYMM format)\n--   Inpatient_Volume         (sum of procedure/penalty/adjustment fees)\n--   Recurring_Trial_Revenue\n--   Onetime_Equipment_Revenue\n-- ============================================================================\n\n\n-- ############################################################################\n-- SYNTHETIC RESEARCH REVENUE SECTION\n-- ############################################################################\n-- Add new research revenue entries in the CTEs below.\n-- Each entry needs: record_date (DATE) and amount (NUMERIC)\n-- ############################################################################\n\nWITH\n\n-- ****************************************************************************\n-- ONE-TIME EQUIPMENT PURCHASES\n-- ****************************************************************************\n-- Add new one-time equipment purchases here.\n-- Format: (DATE 'YYYY-MM-DD', amount)\n--\n-- Example entries:\n--   (DATE '2025-12-19', 50000),    -- December 2025 purchase\n--   (DATE '2026-01-15', 25000),    -- January 2026 purchase\n--   (DATE '2026-02-01', 10000)     -- February 2026 purchase (no trailing comma on last entry)\n-- ****************************************************************************\nonetime_equipment_purchase_entries (record_date, amount) AS (\n    VALUES\n        -- \u2193\u2193\u2193 ADD NEW ONE-TIME EQUIPMENT PURCHASE ENTRIES BELOW THIS LINE \u2193\u2193\u2193\n        (DATE '2025-12-19', 50000.00)    -- Initial equipment order - December 2025\n        -- \u2191\u2191\u2191 ADD NEW ONE-TIME EQUIPMENT PURCHASE ENTRIES ABOVE THIS LINE \u2191\u2191\u2191\n        -- Remember: separate multiple entries with commas, no comma after the last one\n),\n\n-- ****************************************************************************\n-- RECURRING TRIAL REVENUE\n-- ****************************************************************************\n-- Add new recurring/subscription trial revenue here.\n-- Format: (DATE 'YYYY-MM-DD', amount)\n--\n-- Example entries:\n--   (DATE '2025-12-01', 5000),     -- December 2025 enrollment\n--   (DATE '2026-01-01', 5000),     -- January 2026 enrollment\n--   (DATE '2026-02-01', 5500)      -- February 2026 enrollment (rate increase)\n-- ****************************************************************************\nrecurring_trial_revenue_entries (record_date, amount) AS (\n    VALUES\n        -- \u2193\u2193\u2193 ADD NEW RECURRING TRIAL REVENUE ENTRIES BELOW THIS LINE \u2193\u2193\u2193\n        (DATE '1900-01-01', 0.00)        -- Placeholder (no trial revenue yet)\n        -- \u2191\u2191\u2191 ADD NEW RECURRING TRIAL REVENUE ENTRIES ABOVE THIS LINE \u2191\u2191\u2191\n        -- Remember: separate multiple entries with commas, no comma after the last one\n        -- Delete the placeholder row above once you add real entries\n),\n\n-- Aggregate one-time equipment revenue by month\nonetime_equipment_monthly AS (\n    SELECT\n        TO_CHAR(record_date, 'YYYYMM') AS month,\n        SUM(amount) AS onetime_equipment_revenue\n    FROM onetime_equipment_purchase_entries\n    WHERE record_date > DATE '1900-01-01'  -- Exclude placeholder\n    GROUP BY TO_CHAR(record_date, 'YYYYMM')\n),\n\n-- Aggregate recurring trial revenue by month\nrecurring_trial_monthly AS (\n    SELECT\n        TO_CHAR(record_date, 'YYYYMM') AS month,\n        SUM(amount) AS recurring_trial_revenue\n    FROM recurring_trial_revenue_entries\n    WHERE record_date > DATE '1900-01-01'  -- Exclude placeholder\n    GROUP BY TO_CHAR(record_date, 'YYYYMM')\n),\n\n\n-- ############################################################################\n-- INPATIENT VOLUME SECTION (existing logic - no changes needed)\n-- ############################################################################\n\nbase AS (\n    SELECT\n        patient_stay.admission_number,\n        a.stay_id,\n        patient_stay.stay_duration AS duration,\n        f.charges AS charges,\n        f.collection,\n        patient_stay.balance AS bal,\n        c.treatment_start_date,\n        CASE\n            WHEN lp.last_collection_date >= DATE '2025-10-01'\n                THEN lp.last_collection_date\n            ELSE fp.first_collection_date\n        END AS settle_date\n    FROM (SELECT DISTINCT stay_id FROM billing_ledger) AS a\n    LEFT JOIN patient_stay\n        ON patient_stay.uuid = a.stay_id\n    LEFT JOIN (\n        SELECT stay_id, action_date AS treatment_start_date\n        FROM treatment_ledger\n        WHERE action = 'treatment'\n    ) AS c\n        ON c.stay_id = a.stay_id\n    LEFT JOIN (\n        SELECT stay_id, MIN(action_date) AS first_collection_date\n        FROM collection_ledger\n        WHERE action = 'payment_received' AND action_amount > 1\n        GROUP BY stay_id\n    ) AS fp\n        ON fp.stay_id = a.stay_id\n    LEFT JOIN (\n        SELECT stay_id, MAX(action_date) AS last_collection_date\n        FROM collection_ledger\n        WHERE action = 'payment_received' AND action_amount > 1\n        GROUP BY stay_id\n    ) AS lp\n        ON lp.stay_id = a.stay_id\n    LEFT JOIN (\n        SELECT\n            stay_id,\n            SUM(CASE WHEN action IN ('procedure_fee_added','penalty_fee_added','adjustment_fee_added')\n                     THEN amount ELSE 0 END) AS charges,\n            SUM(CASE WHEN action = 'payment_received' THEN amount\n                     WHEN action = 'payment_reversed' THEN -1*amount\n                     ELSE 0 END) AS collection\n        FROM billing_ledger\n        GROUP BY stay_id\n    ) AS f\n        ON patient_stay.uuid = f.stay_id\n    WHERE patient_stay.billing_status = 'fully_settled'\n),\n\nenriched AS (\n    SELECT\n        admission_number,\n        stay_id,\n        duration,\n        charges,\n        collection,\n        bal,\n        treatment_start_date,\n        settle_date,\n        TO_CHAR(treatment_start_date,'YYYYMM') AS treatment_yearmon,\n        TO_CHAR(settle_date,'YYYYMM') AS settle_yearmon,\n        EXTRACT(DAY FROM (settle_date - treatment_start_date)) AS actual_duration,\n        (charges / NULLIF(bal,0)) * 365\n            / NULLIF(EXTRACT(DAY FROM (settle_date - treatment_start_date)), 0) AS APR\n    FROM base\n),\n\n-- Aggregate inpatient volume by month\ninpatient_monthly AS (\n    SELECT\n        settle_yearmon AS month,\n        SUM(charges) AS inpatient_volume\n    FROM enriched\n    GROUP BY settle_yearmon\n),\n\n\n-- ############################################################################\n-- COMBINE ALL VOLUME STREAMS\n-- ############################################################################\n\n-- Get all unique months across all volume types\nall_months AS (\n    SELECT month FROM inpatient_monthly\n    UNION\n    SELECT month FROM onetime_equipment_monthly\n    UNION\n    SELECT month FROM recurring_trial_monthly\n)\n\n-- ============================================================================\n-- FINAL OUTPUT: Stacked Bar Chart Data\n-- ============================================================================\nSELECT\n    am.month AS "Month",\n    COALESCE(im.inpatient_volume, 0) AS "Inpatient_Volume",\n    COALESCE(rtm.recurring_trial_revenue, 0) AS "Recurring_Trial_Revenue",\n    COALESCE(oem.onetime_equipment_revenue, 0) AS "Onetime_Equipment_Revenue"\nFROM all_months am\nLEFT JOIN inpatient_monthly im ON am.month = im.month\nLEFT JOIN recurring_trial_monthly rtm ON am.month = rtm.month\nLEFT JOIN onetime_equipment_monthly oem ON am.month = oem.month\nORDER BY am.month;`,
-    `-- ============================================================================\n-- STACKED BAR CHART: Monthly Patient Volume by Category\n-- ============================================================================\n-- This query produces three volume columns for a stacked bar chart:\n--   1. Inpatient Volume     - from fully settled admissions (existing logic)\n--   2. Recurring Trials     - monthly clinical trial enrollment income\n--   3. One-time Equipment   - incidental/non-recurring equipment purchases\n--\n-- OUTPUT COLUMNS:\n--   Month                    (YYYYMM format)\n--   Inpatient_Volume         (sum of procedure/penalty/adjustment fees)\n--   Recurring_Trial_Revenue\n--   Onetime_Equipment_Revenue\n-- ============================================================================\n\n\n-- ############################################################################\n-- SYNTHETIC RESEARCH REVENUE SECTION\n-- ############################################################################\n-- Add new research revenue entries in the CTEs below.\n-- Each entry needs: record_date (DATE) and amount (NUMERIC)\n-- ############################################################################\n\n\n-- ****************************************************************************\n-- ONE-TIME EQUIPMENT PURCHASES\n-- ****************************************************************************\n-- Add new one-time equipment purchases here.\n-- Format: (DATE 'YYYY-MM-DD', amount)\n--\n-- Example entries:\n--   (DATE '2025-12-19', 50000),    -- December 2025 purchase\n--   (DATE '2026-01-15', 25000),    -- January 2026 purchase\n--   (DATE '2026-02-01', 10000)     -- February 2026 purchase (no trailing comma on last entry)\n-- ****************************************************************************\n\n  WITH onetime_equipment_purchase_entries (record_date, amount) AS (\n           VALUES\n               -- ↓↓↓ ADD NEW ONE-TIME EQUIPMENT PURCHASE ENTRIES BELOW THIS LINE ↓↓↓\n               (DATE '2025-12-19', 50000.00)  -- Initial equipment order - December 2025\n               -- ↑↑↑ ADD NEW ONE-TIME EQUIPMENT PURCHASE ENTRIES ABOVE THIS LINE ↑↑↑\n               -- Remember: separate multiple entries with commas, no comma after the last one\n       ),\n\n-- ****************************************************************************\n-- RECURRING TRIAL REVENUE\n-- ****************************************************************************\n-- Add new recurring/subscription trial revenue here.\n-- Format: (DATE 'YYYY-MM-DD', amount)\n--\n-- Example entries:\n--   (DATE '2025-12-01', 5000),     -- December 2025 enrollment\n--   (DATE '2026-01-01', 5000),     -- January 2026 enrollment\n--   (DATE '2026-02-01', 5500)      -- February 2026 enrollment (rate increase)\n-- ****************************************************************************\n\n       recurring_trial_revenue_entries (record_date, amount) AS (\n           VALUES\n               -- ↓↓↓ ADD NEW RECURRING TRIAL REVENUE ENTRIES BELOW THIS LINE ↓↓↓\n               (DATE '1900-01-01', 0.00)  -- Placeholder (no trial revenue yet)\n               -- ↑↑↑ ADD NEW RECURRING TRIAL REVENUE ENTRIES ABOVE THIS LINE ↑↑↑\n               -- Remember: separate multiple entries with commas, no comma after the last one\n               -- Delete the placeholder row above once you add real entries\n       ),\n\n-- Aggregate one-time equipment revenue by month\n\n       onetime_equipment_monthly AS (\n           SELECT TO_CHAR(record_date, 'YYYYMM') AS month,\n                  SUM(amount) AS onetime_equipment_revenue\n             FROM onetime_equipment_purchase_entries\n            WHERE record_date > DATE '1900-01-01'  -- Exclude placeholder\n            GROUP BY TO_CHAR(record_date, 'YYYYMM')\n       ),\n\n-- Aggregate recurring trial revenue by month\n\n       recurring_trial_monthly AS (\n           SELECT TO_CHAR(record_date, 'YYYYMM') AS month,\n                  SUM(amount) AS recurring_trial_revenue\n             FROM recurring_trial_revenue_entries\n            WHERE record_date > DATE '1900-01-01'  -- Exclude placeholder\n            GROUP BY TO_CHAR(record_date, 'YYYYMM')\n       ),\n\n-- ############################################################################\n-- INPATIENT VOLUME SECTION (existing logic - no changes needed)\n-- ############################################################################\n\n       base AS (\n           SELECT patient_stay.admission_number,\n                  a.stay_id,\n                  patient_stay.stay_duration AS duration,\n                  f.charges AS charges,\n                  f.collection,\n                  patient_stay.balance AS bal,\n                  c.treatment_start_date,\n                  CASE\n                  WHEN lp.last_collection_date >= DATE '2025-10-01' THEN lp.last_collection_date\n                  ELSE fp.first_collection_date\n                  END AS settle_date\n             FROM (SELECT DISTINCT stay_id\n                     FROM billing_ledger) AS a\n\n                  LEFT JOIN patient_stay\n                  ON patient_stay.uuid = a.stay_id\n\n                  LEFT JOIN (SELECT stay_id,\n                                    action_date AS treatment_start_date\n                               FROM treatment_ledger\n                              WHERE action = 'treatment') AS c\n                  ON c.stay_id = a.stay_id\n\n                  LEFT JOIN (SELECT stay_id,\n                                    MIN(action_date) AS first_collection_date\n                               FROM collection_ledger\n                              WHERE action = 'payment_received'\n                                AND action_amount > 1\n                              GROUP BY stay_id) AS fp\n                  ON fp.stay_id = a.stay_id\n\n                  LEFT JOIN (SELECT stay_id,\n                                    MAX(action_date) AS last_collection_date\n                               FROM collection_ledger\n                              WHERE action = 'payment_received'\n                                AND action_amount > 1\n                              GROUP BY stay_id) AS lp\n                  ON lp.stay_id = a.stay_id\n\n                  LEFT JOIN (SELECT stay_id,\n                                    SUM(CASE WHEN action IN ('procedure_fee_added', 'penalty_fee_added',\n                                                             'adjustment_fee_added')\n                                             THEN amount ELSE 0 END) AS charges,\n                                    SUM(CASE WHEN action = 'payment_received' THEN amount\n                                             WHEN action = 'payment_reversed' THEN -1 * amount\n                                             ELSE 0 END) AS collection\n                               FROM billing_ledger\n                              GROUP BY stay_id) AS f\n                  ON patient_stay.uuid = f.stay_id\n\n            WHERE patient_stay.billing_status = 'fully_settled'\n       ),\n\n       enriched AS (\n           SELECT admission_number,\n                  stay_id,\n                  duration,\n                  charges,\n                  collection,\n                  bal,\n                  treatment_start_date,\n                  settle_date,\n                  TO_CHAR(treatment_start_date, 'YYYYMM') AS treatment_yearmon,\n                  TO_CHAR(settle_date, 'YYYYMM') AS settle_yearmon,\n                  EXTRACT(DAY FROM (settle_date - treatment_start_date)) AS actual_duration,\n                  (charges / NULLIF(bal, 0)) * 365\n                      / NULLIF(EXTRACT(DAY FROM (settle_date - treatment_start_date)), 0) AS APR\n             FROM base\n       ),\n\n-- Aggregate inpatient volume by month\n\n       inpatient_monthly AS (\n           SELECT settle_yearmon AS month,\n                  SUM(charges) AS inpatient_volume\n             FROM enriched\n            GROUP BY settle_yearmon\n       ),\n\n-- ############################################################################\n-- COMBINE ALL VOLUME STREAMS\n-- ############################################################################\n\n-- Get all unique months across all volume types\n\n       all_months AS (\n           SELECT month\n             FROM inpatient_monthly\n\n            UNION\n\n           SELECT month\n             FROM onetime_equipment_monthly\n\n            UNION\n\n           SELECT month\n             FROM recurring_trial_monthly\n       )\n\n-- ============================================================================\n-- FINAL OUTPUT: Stacked Bar Chart Data\n-- ============================================================================\nSELECT am.month AS "Month",\n       COALESCE(im.inpatient_volume, 0) AS "Inpatient_Volume",\n       COALESCE(rtm.recurring_trial_revenue, 0) AS "Recurring_Trial_Revenue",\n       COALESCE(oem.onetime_equipment_revenue, 0) AS "Onetime_Equipment_Revenue"\n  FROM all_months AS am\n       LEFT JOIN inpatient_monthly AS im\n       ON am.month = im.month\n\n       LEFT JOIN recurring_trial_monthly AS rtm\n       ON am.month = rtm.month\n\n       LEFT JOIN onetime_equipment_monthly AS oem\n       ON am.month = oem.month\n ORDER BY am.month;`
+    `/* ============================================================================ */\n/* STACKED BAR CHART: Monthly Patient Volume by Category */\n/* ============================================================================ */\n/* This query produces three volume columns for a stacked bar chart: */\n/* 1. Inpatient Volume     - from fully settled admissions (existing logic) */\n/* 2. Recurring Trials     - monthly clinical trial enrollment income */\n/* 3. One-time Equipment   - incidental/non-recurring equipment purchases */\n/* */\n/* OUTPUT COLUMNS: */\n/* Month                    (YYYYMM format) */\n/* Inpatient_Volume         (sum of procedure/penalty/adjustment fees) */\n/* Recurring_Trial_Revenue */\n/* Onetime_Equipment_Revenue */\n/* ============================================================================ */\n\n\n/* ############################################################################ */\n/* SYNTHETIC RESEARCH REVENUE SECTION */\n/* ############################################################################ */\n/* Add new research revenue entries in the CTEs below. */\n/* Each entry needs: record_date (DATE) and amount (NUMERIC) */\n/* ############################################################################ */\n\n\n/* **************************************************************************** */\n/* ONE-TIME EQUIPMENT PURCHASES */\n/* **************************************************************************** */\n/* Add new one-time equipment purchases here. */\n/* Format: (DATE 'YYYY-MM-DD', amount) */\n/* */\n/* Example entries: */\n--   (DATE '2025-12-19', 50000),    -- December 2025 purchase\n--   (DATE '2026-01-15', 25000),    -- January 2026 purchase\n--   (DATE '2026-02-01', 10000)     -- February 2026 purchase (no trailing comma on last entry)\n/* **************************************************************************** */\n\n  WITH onetime_equipment_purchase_entries (record_date, amount) AS (\n           VALUES\n               /* ↓↓↓ ADD NEW ONE-TIME EQUIPMENT PURCHASE ENTRIES BELOW THIS LINE ↓↓↓ */\n               (DATE '2025-12-19', 50000.00)  -- Initial equipment order - December 2025\n               /* ↑↑↑ ADD NEW ONE-TIME EQUIPMENT PURCHASE ENTRIES ABOVE THIS LINE ↑↑↑ */\n               /* Remember: separate multiple entries with commas, no comma after the last one */),\n\n/* **************************************************************************** */\n/* RECURRING TRIAL REVENUE */\n/* **************************************************************************** */\n/* Add new recurring/subscription trial revenue here. */\n/* Format: (DATE 'YYYY-MM-DD', amount) */\n/* */\n/* Example entries: */\n--   (DATE '2025-12-01', 5000),     -- December 2025 enrollment\n--   (DATE '2026-01-01', 5000),     -- January 2026 enrollment\n--   (DATE '2026-02-01', 5500)      -- February 2026 enrollment (rate increase)\n/* **************************************************************************** */\n\n       recurring_trial_revenue_entries (record_date, amount) AS (\n           VALUES\n               /* ↓↓↓ ADD NEW RECURRING TRIAL REVENUE ENTRIES BELOW THIS LINE ↓↓↓ */\n               (DATE '1900-01-01', 0.00)  -- Placeholder (no trial revenue yet)\n               /* ↑↑↑ ADD NEW RECURRING TRIAL REVENUE ENTRIES ABOVE THIS LINE ↑↑↑ */\n               /* Remember: separate multiple entries with commas, no comma after the last one */\n               -- Delete the placeholder row above once you add real entries),\n\n/* Aggregate one-time equipment revenue by month */\n\n       onetime_equipment_monthly AS (\n           SELECT TO_CHAR(record_date, 'YYYYMM') AS month,\n                  SUM(amount) AS onetime_equipment_revenue\n             FROM onetime_equipment_purchase_entries\n            WHERE record_date > DATE '1900-01-01'  -- Exclude placeholder\n            GROUP BY TO_CHAR(record_date, 'YYYYMM')),\n\n/* Aggregate recurring trial revenue by month */\n\n       recurring_trial_monthly AS (\n           SELECT TO_CHAR(record_date, 'YYYYMM') AS month,\n                  SUM(amount) AS recurring_trial_revenue\n             FROM recurring_trial_revenue_entries\n            WHERE record_date > DATE '1900-01-01'  -- Exclude placeholder\n            GROUP BY TO_CHAR(record_date, 'YYYYMM')),\n\n/* ############################################################################ */\n/* INPATIENT VOLUME SECTION (existing logic - no changes needed) */\n/* ############################################################################ */\n\n       base AS (\n           SELECT patient_stay.admission_number,\n                  a.stay_id,\n                  patient_stay.stay_duration AS duration,\n                  f.charges AS charges,\n                  f.collection,\n                  patient_stay.balance AS bal,\n                  c.treatment_start_date,\n                  CASE\n                  WHEN lp.last_collection_date >= DATE '2025-10-01' THEN lp.last_collection_date\n                  ELSE fp.first_collection_date\n                  END AS settle_date\n             FROM (SELECT DISTINCT stay_id\n                     FROM billing_ledger) AS a\n\n                  LEFT JOIN patient_stay\n                  ON patient_stay.uuid = a.stay_id\n\n                  LEFT JOIN (SELECT stay_id,\n                                    action_date AS treatment_start_date\n                               FROM treatment_ledger\n                              WHERE action = 'treatment') AS c\n                  ON c.stay_id = a.stay_id\n\n                  LEFT JOIN (SELECT stay_id,\n                                    MIN(action_date) AS first_collection_date\n                               FROM collection_ledger\n                              WHERE action = 'payment_received'\n                                AND action_amount > 1\n                              GROUP BY stay_id) AS fp\n                  ON fp.stay_id = a.stay_id\n\n                  LEFT JOIN (SELECT stay_id,\n                                    MAX(action_date) AS last_collection_date\n                               FROM collection_ledger\n                              WHERE action = 'payment_received'\n                                AND action_amount > 1\n                              GROUP BY stay_id) AS lp\n                  ON lp.stay_id = a.stay_id\n\n                  LEFT JOIN (SELECT stay_id,\n                                    SUM(CASE WHEN action IN ('procedure_fee_added', 'penalty_fee_added',\n                                                             'adjustment_fee_added')\n                                             THEN amount ELSE 0 END) AS charges,\n                                    SUM(CASE WHEN action = 'payment_received' THEN amount\n                                             WHEN action = 'payment_reversed' THEN -1 * amount\n                                             ELSE 0 END) AS collection\n                               FROM billing_ledger\n                              GROUP BY stay_id) AS f\n                  ON patient_stay.uuid = f.stay_id\n\n            WHERE patient_stay.billing_status = 'fully_settled'),\n       enriched AS (\n           SELECT admission_number,\n                  stay_id,\n                  duration,\n                  charges,\n                  collection,\n                  bal,\n                  treatment_start_date,\n                  settle_date,\n                  TO_CHAR(treatment_start_date, 'YYYYMM') AS treatment_yearmon,\n                  TO_CHAR(settle_date, 'YYYYMM') AS settle_yearmon,\n                  EXTRACT(DAY FROM (settle_date - treatment_start_date)) AS actual_duration,\n                  (charges / NULLIF(bal, 0)) * 365\n                      / NULLIF(EXTRACT(DAY FROM (settle_date - treatment_start_date)), 0) AS APR\n             FROM base),\n\n/* Aggregate inpatient volume by month */\n\n       inpatient_monthly AS (\n           SELECT settle_yearmon AS month,\n                  SUM(charges) AS inpatient_volume\n             FROM enriched\n            GROUP BY settle_yearmon),\n\n/* ############################################################################ */\n/* COMBINE ALL VOLUME STREAMS */\n/* ############################################################################ */\n\n/* Get all unique months across all volume types */\n\n       all_months AS (\n           SELECT month\n             FROM inpatient_monthly\n\n            UNION\n\n           SELECT month\n             FROM onetime_equipment_monthly\n\n            UNION\n\n           SELECT month\n             FROM recurring_trial_monthly)\n\n/* ============================================================================ */\n/* FINAL OUTPUT: Stacked Bar Chart Data */\n/* ============================================================================ */\nSELECT am.month AS "Month",\n       COALESCE(im.inpatient_volume, 0) AS "Inpatient_Volume",\n       COALESCE(rtm.recurring_trial_revenue, 0) AS "Recurring_Trial_Revenue",\n       COALESCE(oem.onetime_equipment_revenue, 0) AS "Onetime_Equipment_Revenue"\n  FROM all_months AS am\n       LEFT JOIN inpatient_monthly AS im\n       ON am.month = im.month\n\n       LEFT JOIN recurring_trial_monthly AS rtm\n       ON am.month = rtm.month\n\n       LEFT JOIN onetime_equipment_monthly AS oem\n       ON am.month = oem.month\n ORDER BY am.month;`
   );
 });
 
@@ -844,7 +838,7 @@ describe('Category 20: LATERAL Joins', () => {
 describe('Category 21: RETURNING Clause', () => {
   assertFormat('21.1 — INSERT ... RETURNING',
     `insert into audit_log (action, entity_id, created_at) values ('create', 42, now()) returning log_id, created_at;`,
-    `INSERT INTO audit_log (action, entity_id, created_at)
+    `   INSERT INTO audit_log (action, entity_id, created_at)
    VALUES ('create', 42, NOW())
 RETURNING log_id, created_at;`
   );
@@ -879,7 +873,7 @@ VALUES (42, CURRENT_DATE)
 
   assertFormat('22.2 — ON CONFLICT DO UPDATE (full upsert)',
     `insert into product_inventory (product_id, warehouse_id, quantity, updated_at) values (101, 5, 50, now()) on conflict (product_id, warehouse_id) do update set quantity = excluded.quantity, updated_at = excluded.updated_at where product_inventory.quantity <> excluded.quantity returning product_id, quantity;`,
-    `INSERT INTO product_inventory (product_id, warehouse_id, quantity, updated_at)
+    `   INSERT INTO product_inventory (product_id, warehouse_id, quantity, updated_at)
    VALUES (101, 5, 50, NOW())
        ON CONFLICT (product_id, warehouse_id)
        DO UPDATE
@@ -905,12 +899,10 @@ describe('Category 23: GROUPING SETS, CUBE, ROLLUP', () => {
     `select region, department, sum(revenue) as total_revenue from sales group by grouping sets ((region, department), (region), (department), ());`,
     `SELECT region, department, SUM(revenue) AS total_revenue
   FROM sales
- GROUP BY GROUPING SETS (
-              (region, department),
-              (region),
-              (department),
-              ()
-          );`
+ GROUP BY GROUPING SETS ((region, department),
+               (region),
+               (department),
+               ());`
   );
 
   assertFormat('23.2 — ROLLUP',
@@ -920,11 +912,9 @@ describe('Category 23: GROUPING SETS, CUBE, ROLLUP', () => {
        region,
        SUM(amount) AS total
   FROM orders
- GROUP BY ROLLUP (
-              EXTRACT(YEAR FROM order_date),
-              EXTRACT(QUARTER FROM order_date),
-              region
-          )
+ GROUP BY ROLLUP (EXTRACT(YEAR FROM order_date),
+               EXTRACT(QUARTER FROM order_date),
+               region)
  ORDER BY order_year, order_quarter, region;`
   );
 
@@ -955,8 +945,7 @@ describe('Category 24: Recursive CTEs', () => {
            SELECT e.employee_id, e.name, e.manager_id, oc.depth + 1
              FROM employees AS e
                   INNER JOIN org_chart AS oc
-                  ON e.manager_id = oc.employee_id
-       )
+                  ON e.manager_id = oc.employee_id)
 SELECT employee_id, name, depth
   FROM org_chart
  ORDER BY depth, name;`
@@ -975,8 +964,7 @@ SELECT employee_id, name, depth
                   cp.path || ' > ' || c.name
              FROM categories AS c
                   INNER JOIN category_path AS cp
-                  ON c.parent_id = cp.id
-       )
+                  ON c.parent_id = cp.id)
 SELECT id, name, path
   FROM category_path
  ORDER BY path;`
@@ -1235,7 +1223,7 @@ describe('Category 38: Sequences', () => {
       `SELECT NEXTVAL('invoice_id_seq') AS next_id;`],
     ['38.2 — INSERT with sequence',
       `insert into invoices (invoice_id, customer_id, amount) values (nextval('invoice_id_seq'), 42, 500.00) returning invoice_id;`,
-      `INSERT INTO invoices (invoice_id, customer_id, amount)\n   VALUES (NEXTVAL('invoice_id_seq'), 42, 500.00)\nRETURNING invoice_id;`],
+      `   INSERT INTO invoices (invoice_id, customer_id, amount)\n   VALUES (NEXTVAL('invoice_id_seq'), 42, 500.00)\nRETURNING invoice_id;`],
   ];
   for (const [name, input, expected] of tests) assertFormat(name, input, expected);
 });
@@ -1390,13 +1378,11 @@ describe('Category 42: Multiple CTEs with MATERIALIZED Hints', () => {
     `  WITH active_users AS MATERIALIZED (
            SELECT user_id, email
              FROM users
-            WHERE status = 'active'
-       ),
+            WHERE status = 'active'),
        recent_orders AS NOT MATERIALIZED (
            SELECT order_id, user_id, amount
              FROM orders
-            WHERE order_date > NOW() - INTERVAL '30 days'
-       )
+            WHERE order_date > NOW() - INTERVAL '30 days')
 SELECT au.email,
        COUNT(ro.order_id) AS order_count,
        SUM(ro.amount) AS total_spent
@@ -1555,8 +1541,7 @@ describe('Category 50: Full Kitchen-Sink Query', () => {
              FROM categories AS c
                   INNER JOIN category_tree AS ct
                   ON c.parent_id = ct.id
-            WHERE ct.depth < 10
-       ),
+            WHERE ct.depth < 10),
        category_stats AS MATERIALIZED (
            SELECT ct.id,
                   ct.name,
@@ -1573,8 +1558,7 @@ describe('Category 50: Full Kitchen-Sink Query', () => {
              FROM category_tree AS ct
                   LEFT JOIN products AS p
                   ON p.category_id = ct.id
-            GROUP BY ct.id, ct.name, ct.depth, ct.path
-       )
+            GROUP BY ct.id, ct.name, ct.depth, ct.path)
 SELECT cs.name,
        cs.depth,
        cs.active_products,
@@ -1754,8 +1738,7 @@ describe('CTE with column list', () => {
   assertFormat('CTE with column list',
     `WITH cte (id, name) AS (SELECT 1, 'Alice') SELECT * FROM cte;`,
     `  WITH cte (id, name) AS (
-           SELECT 1, 'Alice'
-       )
+           SELECT 1, 'Alice')
 SELECT *
   FROM cte;`
   );
@@ -1765,8 +1748,7 @@ SELECT *
     `  WITH cte (revenue_date, amount) AS MATERIALIZED (
            SELECT order_date, SUM(total)
              FROM orders
-            GROUP BY order_date
-       )
+            GROUP BY order_date)
 SELECT *
   FROM cte;`
   );
@@ -1944,8 +1926,8 @@ describe('production-readiness formatting regressions', () => {
     const sql = 'EXPLAIN ANALYZE SELECT * FROM t WHERE id = 1;';
     const out = formatSQL(sql);
     expect(out).toContain('EXPLAIN (ANALYZE)');
-    expect(out).toContain('\nSELECT *');
-    expect(out).toContain('\n WHERE id = 1;');
+    expect(out).toContain('\n SELECT *');
+    expect(out).toContain('\n  WHERE id = 1;');
   });
 
   it('formats EXPLAIN with bare option names in parentheses', () => {

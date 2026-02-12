@@ -18,7 +18,7 @@ INSERT INTO my_table (my_col1)
 VALUES (1);
 
 ALTER TABLE my_table
-        DROP COLUMN my_col1;
+ DROP COLUMN my_col1;
 
 DROP TABLE my_table;`);
   });

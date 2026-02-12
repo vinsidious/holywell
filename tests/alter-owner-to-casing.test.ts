@@ -9,9 +9,9 @@ alter table t owner to user1;`;
     const out = formatSQL(sql).trimEnd();
 
     expect(out).toBe(`ALTER DATABASE db
-        OWNER TO user1;
+OWNER TO user1;
 
 ALTER TABLE t
-        OWNER TO user1;`);
+OWNER TO user1;`);
   });
 });

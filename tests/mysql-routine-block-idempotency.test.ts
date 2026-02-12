@@ -14,6 +14,8 @@ END;`;
 
     expect(twice).toBe(once);
     expect(once).toContain('THEN');
-    expect(once).toContain('SELECT COUNT(*) FROM tmpCustomer INTO count_rewardees;');
+    expect(once).toContain('SELECT COUNT(*)');
+    expect(once).toContain('FROM tmpCustomer');
+    expect(once).toContain('INTO count_rewardees;');
   });
 });

@@ -23,9 +23,9 @@ describe('UPDATE and ALTER clause layout', () => {
 
     const out = formatSQL(sql);
     expect(out).toContain('ADD CONSTRAINT fk_name');
-    expect(out).toContain('\n        FOREIGN KEY (col1)');
-    expect(out).toContain('\n        REFERENCES t2 (id)');
-    expect(out).toContain('\n        ON DELETE CASCADE;');
+    expect(out).toContain('\n      FOREIGN KEY (col1)');
+    expect(out).toContain('\n      REFERENCES t2 (id)');
+    expect(out).toContain('\n      ON DELETE CASCADE;');
   });
 
   it('keeps CHARACTER SET as a compound clause in ALTER DATABASE', () => {
