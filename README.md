@@ -7,6 +7,7 @@
 
 An opinionated SQL formatter that implements [Simon Holywell's SQL Style Guide](https://www.sqlstyle.guide/). It faithfully applies the guide's formatting rules -- including river alignment, keyword uppercasing, and consistent indentation -- to produce deterministic, readable SQL with minimal configuration.
 
+
 **[Try it live in your browser at holywell.sh](https://holywell.sh)**
 
 ## Why?
@@ -28,8 +29,6 @@ SELECT e.name,
 ```
 
 > **Disclaimer:** This project is not officially associated with or endorsed by Simon Holywell or sqlstyle.guide. It is an independent, faithful implementation of the SQL formatting rules described in that style guide.
-
-> **Built with AI.** holywell was built entirely with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) -- every line of code, every test, every doc. This is not a disclaimer; it is a design choice. AI-generated code can be regenerated, refactored, and extended by future AI agents with minimal friction. The result is a codebase optimized for correctness, determinism, and maintainability over human aesthetics.
 
 ## Quick Start
 
@@ -268,7 +267,7 @@ For the full style guide, see [sqlstyle.guide](https://www.sqlstyle.guide/) or t
 
 ## Prior Art & Alternatives
 
-holywell is not the first SQL formatter. If river alignment and opinionated defaults are not what you need, these tools may be a better fit:
+If "river alignment" and opinionated defaults aren't your vibe, these tools might be a better fit:
 
 - **[sql-formatter](https://github.com/sql-formatter-org/sql-formatter)** — Configurable TypeScript/JavaScript formatter with indentation-based output and broad dialect support. Good choice when you need fine-grained control over style.
 - **[prettier-plugin-sql](https://github.com/JounQin/prettier-plugin-sql)** — SQL formatting via the Prettier ecosystem. Ideal if your team already uses Prettier and wants unified formatting tooling.
