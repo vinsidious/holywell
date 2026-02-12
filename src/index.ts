@@ -19,6 +19,8 @@ export type {
   InsertStatement,
   UpdateStatement,
   DeleteStatement,
+  SetStatement,
+  ShowStatement,
   MergeStatement,
   CTEStatement,
   CTESearchClause,

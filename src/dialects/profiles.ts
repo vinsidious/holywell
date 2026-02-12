@@ -173,7 +173,7 @@ export const MYSQL_PROFILE: DialectProfile = makeProfile('mysql', {
   statementHandlers: MYSQL_STATEMENT_HANDLERS,
   extraKeywords: ['DUPLICATE', 'REPLACE'],
   extraFunctionKeywords: [
-    'LOCATE', 'INSTR', 'LCASE', 'UCASE',
+    'LOCATE', 'INSTR', 'LCASE', 'UCASE', 'MATCH', 'VALUES',
   ],
   removeKeywords: [
     'BIGSERIAL', 'SERIAL', 'BYTEA', 'CIDR', 'INET', 'MACADDR', 'JSONB',

@@ -269,7 +269,7 @@ function deriveRiverWidth(node: AST.Node): number {
     case 'explain':
       return Math.max('EXPLAIN'.length, deriveRiverWidth(node.statement));
     case 'insert': {
-      let width = 'INSERT'.length;
+      let width = node.replace ? 'REPLACE'.length : 'INSERT'.length;
       if (node.values) width = Math.max(width, 'VALUES'.length);
       if (node.defaultValues) width = Math.max(width, 'DEFAULT'.length);
       if (node.onConflict) {
@@ -286,6 +286,10 @@ function deriveRiverWidth(node: AST.Node): number {
       }
       return width;
     }
+    case 'set':
+      return 'SET'.length;
+    case 'show':
+      return 'SHOW'.length;
     case 'update': {
       let width = Math.max('UPDATE'.length, 'SET'.length);
       if (node.joinSources && node.joinSources.length > 0) width = Math.max(width, 'JOIN'.length);
@@ -321,11 +325,9 @@ function deriveRiverWidth(node: AST.Node): number {
       return width;
     }
     case 'cte': {
-      let width = 'WITH'.length;
-      for (const cte of node.ctes) {
-        width = Math.max(width, deriveRiverWidth(cte.query as AST.Node));
-      }
-      width = Math.max(width, deriveRiverWidth(node.mainQuery));
+      let width = Math.max('WITH'.length, deriveRiverWidth(node.mainQuery));
+      if (node.search) width = Math.max(width, 'SEARCH'.length);
+      if (node.cycle) width = Math.max(width, 'CYCLE'.length);
       return width;
     }
     case 'merge': {
@@ -392,6 +394,8 @@ function formatNode(node: AST.Node, ctx: FormatContext): string {
     case 'insert': return formatInsert(node, ctx);
     case 'update': return formatUpdate(node, ctx);
     case 'delete': return formatDelete(node, ctx);
+    case 'set': return formatSet(node, ctx);
+    case 'show': return formatShow(node, ctx);
     case 'create_table': return formatCreateTable(node, ctx);
     case 'alter_table': return formatAlterTable(node, ctx);
     case 'drop_table': return formatDropTable(node, ctx);
@@ -869,13 +873,15 @@ function formatExplain(node: AST.ExplainStatement, ctx: FormatContext): string {
   }
   lines.push(header);
 
+  const innerRiverWidth = deriveRiverWidth(node.statement);
+  const explainOffset = Math.max(0, ctx.riverWidth - innerRiverWidth);
   const inner = formatNode(node.statement, {
     ...ctx,
-    riverWidth: deriveRiverWidth(node.statement),
+    riverWidth: innerRiverWidth,
     isSubquery: true,
     depth: ctx.depth + 1,
   });
-  lines.push(inner);
+  lines.push(indentMultiline(inner, explainOffset));
 
   let result = lines.join('\n');
   if (!ctx.isSubquery) result = appendStatementSemicolon(result);
@@ -909,7 +915,7 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
     lines.push(selectKw + distinctStr + topStr);
   }
 
-  if (node.into) {
+  if (node.into && node.intoPosition !== 'post_from') {
     lines.push(rightAlign('INTO', ctx) + ' ' + node.into);
   }
 
@@ -989,6 +995,10 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
       const comma = i < node.windowClause.length - 1 ? ',' : '';
       lines.push(contentPad(ctx) + def.name + ' AS (' + formatWindowSpec(def.spec, ctx.runtime) + ')' + comma);
     }
+  }
+
+  if (node.into && node.intoPosition === 'post_from') {
+    lines.push(rightAlign('INTO', ctx) + ' ' + node.into);
   }
 
   // ORDER BY
@@ -2067,25 +2077,32 @@ function formatGroupingSpec(
     }
   }
 
-  const itemIndent = ' '.repeat(contentCol(ctx) + 7);
-  const closeIndent = ' '.repeat(contentCol(ctx) + 3);
+  const itemIndent = ' '.repeat(contentCol(ctx) + 8);
 
-  const lines: string[] = [kind + ' ('];
-  for (let i = 0; i < spec.sets.length; i++) {
+  if (spec.sets.length === 0) {
+    return kind + ' ()';
+  }
+
+  const formatSet = (set: readonly AST.Expression[]): string => {
+    if (spec.type === 'grouping_sets') {
+      return set.length === 0 ? '()' : '(' + set.map(e => formatExpr(e, 0, ctx.runtime)).join(', ') + ')';
+    }
+    return set.length === 1 ? formatExpr(set[0], 0, ctx.runtime) : '(' + set.map(e => formatExpr(e, 0, ctx.runtime)).join(', ') + ')';
+  };
+
+  const first = formatSet(spec.sets[0]);
+  if (spec.sets.length === 1) {
+    return kind + ' (' + first + ')';
+  }
+
+  const lines: string[] = [kind + ' (' + first + ','];
+  for (let i = 1; i < spec.sets.length; i++) {
     const set = spec.sets[i];
     const isLast = i === spec.sets.length - 1;
     const comma = isLast ? '' : ',';
-    let text: string;
-
-    if (spec.type === 'grouping_sets') {
-      text = set.length === 0 ? '()' : '(' + set.map(e => formatExpr(e, 0, ctx.runtime)).join(', ') + ')';
-    } else {
-      if (set.length === 1) text = formatExpr(set[0], 0, ctx.runtime);
-      else text = '(' + set.map(e => formatExpr(e, 0, ctx.runtime)).join(', ') + ')';
-    }
-    lines.push(itemIndent + text + comma);
+    lines.push(itemIndent + formatSet(set) + comma);
   }
-  lines.push(closeIndent + ')');
+  lines[lines.length - 1] += ')';
   return lines.join('\n');
 }
 
@@ -2565,8 +2582,8 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
 
-  const insertHead = ' '.repeat(dmlCtx.indentOffset)
-    + 'INSERT'
+  const insertKeyword = node.replace ? 'REPLACE' : 'INSERT';
+  const insertHead = rightAlign(insertKeyword, dmlCtx)
     + (node.orConflictAction ? ` OR ${node.orConflictAction}` : node.ignore ? ' IGNORE' : '')
     + ' INTO '
     + lowerIdent(node.table)
@@ -2680,7 +2697,8 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
     }
   } else if (node.selectQuery) {
     const selectQuery = formatQueryExpressionForSubquery(node.selectQuery, dmlCtx.runtime, undefined, ctx.depth + 1);
-    lines.push(indentMultiline(selectQuery, dmlCtx.indentOffset));
+    const queryIndent = dmlCtx.indentOffset + Math.max(0, dmlCtx.riverWidth - insertKeyword.length);
+    lines.push(indentMultiline(selectQuery, queryIndent));
   }
 
   if (node.onConflict) {
@@ -2732,6 +2750,30 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   }
 
   if (appendReturningClause(lines, node.returning, dmlCtx, node.returningInto, !ctx.isSubquery)) return lines.join('\n');
+  if (ctx.isSubquery) return lines.join('\n');
+  return appendStatementSemicolon(lines.join('\n'));
+}
+
+function formatSet(node: AST.SetStatement, ctx: FormatContext): string {
+  const dmlCtx: FormatContext = {
+    ...ctx,
+    riverWidth: deriveRiverWidth(node),
+  };
+  const lines: string[] = [];
+  emitComments(node.leadingComments, lines);
+  lines.push(rightAlign('SET', dmlCtx) + ' ' + node.body.trim());
+  if (ctx.isSubquery) return lines.join('\n');
+  return appendStatementSemicolon(lines.join('\n'));
+}
+
+function formatShow(node: AST.ShowStatement, ctx: FormatContext): string {
+  const dmlCtx: FormatContext = {
+    ...ctx,
+    riverWidth: deriveRiverWidth(node),
+  };
+  const lines: string[] = [];
+  emitComments(node.leadingComments, lines);
+  lines.push(rightAlign('SHOW', dmlCtx) + ' ' + node.body.trim());
   if (ctx.isSubquery) return lines.join('\n');
   return appendStatementSemicolon(lines.join('\n'));
 }
@@ -3050,9 +3092,14 @@ function formatCreateView(node: AST.CreateViewStatement, ctx: FormatContext): st
   lines.push(queryStr);
 
   if (node.withData !== undefined) {
-    lines.push(node.withData ? '  WITH DATA;' : '  WITH NO DATA;');
+    lines.push((node.withData ? rightAlign('WITH', queryCtx) + ' DATA' : rightAlign('WITH', queryCtx) + ' NO DATA') + ';');
   } else if (node.withClause) {
-    lines.push('  ' + node.withClause + ';');
+    const withClause = node.withClause.trim();
+    if (/^WITH\b/i.test(withClause)) {
+      lines.push(rightAlign('WITH', queryCtx) + withClause.slice(4) + ';');
+    } else {
+      lines.push(contentPad(queryCtx) + withClause + ';');
+    }
   }
 
   return lines.join('\n');
@@ -3081,6 +3128,10 @@ function formatCreatePolicy(node: AST.CreatePolicyStatement, ctx: FormatContext)
 }
 
 function formatGrant(node: AST.GrantStatement, ctx: FormatContext): string {
+  const grantCtx: FormatContext = {
+    ...ctx,
+    riverWidth: deriveGrantRiverWidth(node),
+  };
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
   if (node.privileges.length === 0) {
@@ -3094,36 +3145,39 @@ function formatGrant(node: AST.GrantStatement, ctx: FormatContext): string {
   lines.push(head);
 
   const hasRecipients = node.recipients.length > 0;
-  if (node.kind === 'GRANT') {
-    if (node.object) {
-      lines.push(...formatGrantObjectLines(node.object, '   ON ', ctx.runtime.maxLineLength));
-    }
-    if (hasRecipients) {
-      lines.push('   TO ' + node.recipients.join(', '));
-    }
-  } else {
-    if (node.object) {
-      lines.push(...formatGrantObjectLines(node.object, '  ON ', ctx.runtime.maxLineLength));
-    }
-    if (hasRecipients) {
-      lines.push('FROM ' + node.recipients.join(', '));
-    }
+  if (node.object) {
+    lines.push(...formatGrantObjectLines(node.object, rightAlign('ON', grantCtx) + ' ', ctx.runtime.maxLineLength));
+  }
+  if (hasRecipients) {
+    lines.push(rightAlign(node.recipientKeyword, grantCtx) + ' ' + node.recipients.join(', '));
   }
 
   if (node.withGrantOption) {
-    lines.push('WITH GRANT OPTION');
+    lines.push(rightAlign('WITH', grantCtx) + ' GRANT OPTION');
   }
   if (node.grantedBy) {
-    lines.push('GRANTED BY ' + node.grantedBy);
+    lines.push(rightAlign('GRANTED', grantCtx) + ' BY ' + node.grantedBy);
   }
   if (node.cascade) {
-    lines.push('CASCADE');
+    lines.push(rightAlign('CASCADE', grantCtx));
   } else if (node.restrict) {
-    lines.push('RESTRICT');
+    lines.push(rightAlign('RESTRICT', grantCtx));
   }
 
   lines[lines.length - 1] += ';';
   return lines.join('\n');
+}
+
+function deriveGrantRiverWidth(node: AST.GrantStatement): number {
+  return Math.max(
+    node.kind.length,
+    'ON'.length,
+    node.recipientKeyword.length,
+    node.withGrantOption ? 'WITH'.length : 0,
+    node.grantedBy ? 'GRANTED'.length : 0,
+    node.cascade ? 'CASCADE'.length : 0,
+    node.restrict ? 'RESTRICT'.length : 0,
+  );
 }
 
 function formatGrantObjectLines(object: string, onPrefix: string, maxLineLength: number): string[] {
@@ -3140,12 +3194,13 @@ function formatGrantObjectLines(object: string, onPrefix: string, maxLineLength:
   const params = splitTopLevelCommaSegments(paramsRaw);
   if (params.length === 0) return [singleLine];
 
+  const continuationPad = ' '.repeat(stringDisplayWidth(onPrefix));
   const lines: string[] = [onPrefix + `FUNCTION ${functionName}(`];
   for (let i = 0; i < params.length; i++) {
     const comma = i < params.length - 1 ? ',' : '';
-    lines.push('      ' + params[i] + comma);
+    lines.push(continuationPad + params[i] + comma);
   }
-  lines.push('      )');
+  lines.push(continuationPad + ')');
   return lines;
 }
 
@@ -3370,7 +3425,8 @@ function formatColumnConstraintAtColumn(
     }
     case 'check': {
       const inline = prefix + 'CHECK(' + formatExpr(constraint.expr, 0, runtime) + ')';
-      if (colStart + stringDisplayWidth(inline) <= runtime.maxLineLength) {
+      const inlineWidth = colStart + stringDisplayWidth(inline);
+      if (inlineWidth <= runtime.maxLineLength || shouldKeepCompactCheckInListInline(constraint, inlineWidth, runtime)) {
         return inline;
       }
 
@@ -3424,7 +3480,14 @@ function formatWrappedCreateTableConstraintLines(
       ? `${headConstraintText} ${simpleConstraints[i]}`
       : simpleConstraints[i];
     const candidateLine = (headRaw + candidate).trimEnd();
-    if (stringDisplayWidth(candidateLine) > runtime.maxLineLength) break;
+    const candidateWidth = stringDisplayWidth(candidateLine);
+    if (
+      candidateWidth > runtime.maxLineLength
+      && !shouldKeepSingleDefaultConstraintInline(constraints, headConstraintText, i, candidateWidth, runtime)
+      && !shouldKeepSingleGeneratedConstraintInline(constraints, headConstraintText, i, candidateWidth, runtime)
+    ) {
+      break;
+    }
     headConstraintText = candidate;
     consumed = i + 1;
   }
@@ -3440,6 +3503,16 @@ function formatWrappedCreateTableConstraintLines(
     );
     const formattedLines = formatted.split('\n');
     if (formattedLines.length === 1) {
+      const inlineConstraintWidth = continuationIndentWidth + stringDisplayWidth(formattedLines[0]);
+      if (
+        inlineConstraintWidth <= runtime.maxLineLength
+        || shouldKeepCompactContinuationConstraintInline(constraints[i], inlineConstraintWidth, runtime)
+        || shouldKeepGeneratedConstraintInline(constraints[i], inlineConstraintWidth, runtime)
+      ) {
+        lines.push(continuationIndent + formattedLines[0]);
+        continue;
+      }
+
       const wrapped = wrapTextByWords(
         formattedLines[0],
         Math.max(20, runtime.maxLineLength - continuationIndentWidth),
@@ -3462,6 +3535,68 @@ function formatWrappedCreateTableConstraintLines(
 
 function normalizeRawColumnConstraint(text: string): string {
   return text.replace(/\bAS\(/gi, 'AS (');
+}
+
+function shouldKeepCompactCheckInListInline(
+  constraint: AST.ColumnConstraintCheck,
+  inlineWidth: number,
+  runtime: FormatterRuntime,
+): boolean {
+  if (constraint.expr.type !== 'in' || isInExprSubquery(constraint.expr)) return false;
+  const values = getInExprList(constraint.expr);
+  if (values.length === 0 || values.length > 4) return false;
+  return inlineWidth <= runtime.maxLineLength + 8;
+}
+
+function shouldKeepCompactContinuationConstraintInline(
+  constraint: AST.ColumnConstraint,
+  inlineWidth: number,
+  runtime: FormatterRuntime,
+): boolean {
+  if (constraint.type !== 'check') return false;
+  return shouldKeepCompactCheckInListInline(constraint, inlineWidth, runtime);
+}
+
+function shouldKeepGeneratedConstraintInline(
+  constraint: AST.ColumnConstraint,
+  inlineWidth: number,
+  runtime: FormatterRuntime,
+): boolean {
+  if (!isGeneratedColumnConstraint(constraint)) return false;
+  return inlineWidth <= runtime.maxLineLength + 20;
+}
+
+function shouldKeepSingleDefaultConstraintInline(
+  constraints: readonly AST.ColumnConstraint[],
+  headConstraintText: string,
+  constraintIndex: number,
+  candidateWidth: number,
+  runtime: FormatterRuntime,
+): boolean {
+  if (headConstraintText) return false;
+  if (constraintIndex !== 0 || constraints.length !== 1) return false;
+  const constraint = constraints[0];
+  if (constraint.type !== 'default') return false;
+
+  return candidateWidth <= runtime.maxLineLength + 10;
+}
+
+function shouldKeepSingleGeneratedConstraintInline(
+  constraints: readonly AST.ColumnConstraint[],
+  headConstraintText: string,
+  constraintIndex: number,
+  candidateWidth: number,
+  runtime: FormatterRuntime,
+): boolean {
+  if (headConstraintText) return false;
+  if (constraintIndex !== 0 || constraints.length !== 1) return false;
+  return shouldKeepGeneratedConstraintInline(constraints[0], candidateWidth, runtime);
+}
+
+function isGeneratedColumnConstraint(constraint: AST.ColumnConstraint): boolean {
+  if (constraint.type === 'generated_identity') return true;
+  if (constraint.type !== 'raw') return false;
+  return /^(?:CONSTRAINT\s+\S+\s+)?GENERATED\s+ALWAYS\s+AS\s*\(/i.test(constraint.text.trim());
 }
 
 function wrapTextByWords(text: string, maxWidth: number): string[] {
@@ -3658,11 +3793,29 @@ function normalizeIdentifierCall(name: string): string | null {
   return `IDENTIFIER(${match[1].trim()})`;
 }
 
-function createTableElementIndent(elem: AST.TableElement, tableConstraintIndent: string): string {
+function isMySqlDialect(dialect?: SQLDialect): boolean {
+  return dialect === 'mysql' || (typeof dialect === 'object' && dialect.name === 'mysql');
+}
+
+function createTableElementIndent(
+  elem: AST.TableElement,
+  tableConstraintIndent: string,
+  alignTableConstraintsToTypeColumn: boolean,
+): string {
+  if (
+    alignTableConstraintsToTypeColumn
+    && (elem.elementType === 'constraint' || elem.elementType === 'primary_key' || elem.elementType === 'foreign_key')
+  ) {
+    return tableConstraintIndent;
+  }
+
   // Named constraints use the wider indent so multi-line bodies align with data types.
   // Unnamed constraints (PRIMARY KEY, SPATIAL KEY, FULLTEXT KEY, etc.) use the
   // same base indent as column definitions to stay visually consistent.
   if (elem.elementType === 'constraint') {
+    if (!elem.constraintName && /^\s*UNIQUE\b/i.test(elem.constraintBody || elem.raw)) {
+      return tableConstraintIndent;
+    }
     return elem.constraintName ? tableConstraintIndent : '    ';
   }
   if (elem.elementType === 'foreign_key') {
@@ -3675,14 +3828,15 @@ function resolveCreateTableCommentIndent(
   elements: readonly AST.TableElement[],
   index: number,
   tableConstraintIndent: string,
+  alignTableConstraintsToTypeColumn: boolean,
 ): string {
   for (let i = index + 1; i < elements.length; i++) {
     if (elements[i].elementType === 'comment') continue;
-    return createTableElementIndent(elements[i], tableConstraintIndent);
+    return createTableElementIndent(elements[i], tableConstraintIndent, alignTableConstraintsToTypeColumn);
   }
   for (let i = index - 1; i >= 0; i--) {
     if (elements[i].elementType === 'comment') continue;
-    return createTableElementIndent(elements[i], tableConstraintIndent);
+    return createTableElementIndent(elements[i], tableConstraintIndent, alignTableConstraintsToTypeColumn);
   }
   return '    ';
 }
@@ -3757,6 +3911,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
   const typeColumnWidth = maxTypeLen > 0 ? maxTypeLen + typeConstraintGap : 0;
   const tableConstraintIndentWidth = maxNameLen > 0 ? 4 + maxNameLen + 1 : 4;
   const tableConstraintIndent = ' '.repeat(tableConstraintIndentWidth);
+  const alignTableConstraintsToTypeColumn = isMySqlDialect(ctx.runtime.dialect);
   const hasDataElementAfter = (index: number): boolean => {
     for (let j = index + 1; j < node.elements.length; j++) {
       if (node.elements[j].elementType !== 'comment') return true;
@@ -3772,13 +3927,23 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       : '';
 
     if (elem.elementType === 'comment') {
-      const commentIndent = resolveCreateTableCommentIndent(node.elements, i, tableConstraintIndent);
+      const commentIndent = resolveCreateTableCommentIndent(
+        node.elements,
+        i,
+        tableConstraintIndent,
+        alignTableConstraintsToTypeColumn,
+      );
       lines.push(commentIndent + normalizeCreateTableElementComment(elem));
       continue;
     }
 
     if (elem.elementType === 'primary_key') {
-      lines.push('    ' + normalizeConstraintIdentifierCase(elem.raw) + comma);
+      const primaryKeyIndent = createTableElementIndent(
+        elem,
+        tableConstraintIndent,
+        alignTableConstraintsToTypeColumn,
+      );
+      lines.push(primaryKeyIndent + normalizeConstraintIdentifierCase(elem.raw) + comma);
     } else if (elem.elementType === 'column') {
       const loweredName = elem.name ? lowerIdent(elem.name) : '';
       const name = loweredName.padEnd(maxNameLen);
@@ -3853,7 +4018,11 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
         lines.push(continuationIndent + wrapped[j] + maybeComment + (isLastWrapped ? comma : ''));
       }
     } else if (elem.elementType === 'constraint') {
-      const constraintIndent = createTableElementIndent(elem, tableConstraintIndent);
+      const constraintIndent = createTableElementIndent(
+        elem,
+        tableConstraintIndent,
+        alignTableConstraintsToTypeColumn,
+      );
       if (elem.constraintName) {
         lines.push(constraintIndent + 'CONSTRAINT ' + elem.constraintName);
         if (elem.constraintType === 'check' && elem.checkExpr) {
@@ -3876,8 +4045,12 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       }
       if (comma) lines[lines.length - 1] += comma;
     } else if (elem.elementType === 'foreign_key') {
-      const foreignKeyIndent = elem.constraintName ? tableConstraintIndent : '    ';
-      const foreignKeyBodyIndent = elem.constraintName ? tableConstraintIndent : '    ';
+      const foreignKeyIndent = createTableElementIndent(
+        elem,
+        tableConstraintIndent,
+        alignTableConstraintsToTypeColumn,
+      );
+      const foreignKeyBodyIndent = foreignKeyIndent;
       if (elem.constraintName) {
         lines.push(foreignKeyIndent + 'CONSTRAINT ' + elem.constraintName);
         lines.push(foreignKeyBodyIndent + normalizeConstraintIdentifierCase('FOREIGN KEY (' + elem.fkColumns + ')'));
@@ -3951,14 +4124,115 @@ function formatCreateTableOptions(options: string): string {
   const firstBreak = matches[0].index;
   const head = normalized.slice(0, firstBreak).trimEnd();
   const tail = normalized.slice(firstBreak).trim();
-  const tailLines = tail
+  const rawTailLines = tail
     .replace(/\s+(PARTITION\s+BY|ORDER\s+BY|PRIMARY\s+KEY|SAMPLE\s+BY|SETTINGS)\b/gi, '\n$1')
     .split('\n')
     .map(line => line.trim())
-    .filter(Boolean)
-    .map(line => '  ' + line);
+    .filter(Boolean);
 
-  return ' ' + head + '\n' + tailLines.join('\n');
+  const tailLines: string[] = [];
+  for (const line of rawTailLines) {
+    const formattedPartitionClause = formatPartitionByClauseWithPartitionList(line);
+    if (formattedPartitionClause) {
+      tailLines.push(...formattedPartitionClause);
+      continue;
+    }
+    tailLines.push(line);
+  }
+
+  return ' ' + head + '\n' + tailLines.map(line => '  ' + line).join('\n');
+}
+
+function formatPartitionByClauseWithPartitionList(clause: string): string[] | null {
+  if (!/^PARTITION\s+BY\b/i.test(clause)) return null;
+
+  const listStartMatch = /\(\s*PARTITION\b/i.exec(clause);
+  if (!listStartMatch) return null;
+  const listStart = listStartMatch.index;
+  const listEnd = findMatchingParenIndex(clause, listStart);
+  if (listEnd < 0) return null;
+
+  const head = normalizePartitionClauseSpacing(clause.slice(0, listStart).trimEnd());
+  const listBody = clause.slice(listStart + 1, listEnd).trim();
+  const tail = clause.slice(listEnd + 1).trim();
+  const entries = splitTopLevelCommaSegments(listBody);
+  if (entries.length === 0) return null;
+
+  const lines: string[] = [`${head} (`];
+  for (let i = 0; i < entries.length; i++) {
+    const comma = i < entries.length - 1 ? ',' : '';
+    lines.push('    ' + normalizePartitionClauseSpacing(entries[i]) + comma);
+  }
+
+  let closeLine = ')';
+  if (tail) closeLine += ' ' + normalizePartitionClauseSpacing(tail);
+  lines.push(closeLine);
+  return lines;
+}
+
+function findMatchingParenIndex(text: string, openIndex: number): number {
+  let depth = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+
+  for (let i = openIndex; i < text.length; i++) {
+    const ch = text[i];
+    const next = i + 1 < text.length ? text[i + 1] : '';
+
+    if (inSingle) {
+      if (ch === "'" && next === "'") {
+        i++;
+        continue;
+      }
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === '"' && next === '"') {
+        i++;
+        continue;
+      }
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (inBacktick) {
+      if (ch === '`' && next === '`') {
+        i++;
+        continue;
+      }
+      if (ch === '`') inBacktick = false;
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+    if (ch === '`') {
+      inBacktick = true;
+      continue;
+    }
+
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+
+  return -1;
+}
+
+function normalizePartitionClauseSpacing(text: string): string {
+  return text
+    .replace(/\b(RANGE|LIST)\s+COLUMNS\s*\(/gi, '$1 COLUMNS (')
+    .replace(/\b(RANGE|LIST|HASH|KEY)\s*\(/gi, '$1 (')
+    .replace(/\bLESS\s+THAN\s*\(/gi, 'LESS THAN (');
 }
 
 // ─── ALTER TABLE ─────────────────────────────────────────────────────
@@ -3971,7 +4245,7 @@ function formatAlterTable(node: AST.AlterTableStatement, ctx: FormatContext): st
   const header = `ALTER ${objectType} ${lowerMaybeQualifiedNameWithIfExists(node.objectName)}`;
 
   const actions = node.actions && node.actions.length > 0
-    ? node.actions.map(formatAlterAction)
+    ? node.actions.map(formatAlterActionLines)
     : [];
   if (actions.length === 0) {
     lines.push(header + ';');
@@ -3980,18 +4254,20 @@ function formatAlterTable(node: AST.AlterTableStatement, ctx: FormatContext): st
   lines.push(header);
   for (let i = 0; i < actions.length; i++) {
     const comma = i < actions.length - 1 ? ',' : ';';
-    const actionLines = normalizeAlterActionContinuationIndent(actions[i]);
-    lines.push(' '.repeat(8) + actionLines[0]);
-    for (let j = 1; j < actionLines.length; j++) {
-      lines.push(' '.repeat(8) + actionLines[j]);
-    }
+    const actionLines = renderAlterActionLines(actions[i], deriveAlterActionRiverWidth(actions[i]));
+    lines.push(...actionLines);
     lines[lines.length - 1] += comma;
   }
 
   return lines.join('\n');
 }
 
-function formatAlterAction(action: AST.AlterAction): string {
+type AlterActionLine = {
+  readonly kind: 'keyword' | 'continuation';
+  readonly text: string;
+};
+
+function formatAlterActionLines(action: AST.AlterAction): AlterActionLine[] {
   switch (action.type) {
     case 'add_column': {
       let out = 'ADD ';
@@ -4001,36 +4277,55 @@ function formatAlterAction(action: AST.AlterAction): string {
       if (action.ifNotExists) out += 'IF NOT EXISTS ';
       out += lowerIdent(action.columnName);
       if (action.definition) out += ' ' + action.definition;
-      return out;
+      return [{ kind: 'keyword', text: out }];
     }
     case 'drop_column': {
       let out = 'DROP COLUMN ';
       if (action.ifExists) out += 'IF EXISTS ';
       out += lowerIdent(action.columnName);
       if (action.behavior) out += ' ' + action.behavior;
-      return out;
+      return [{ kind: 'keyword', text: out }];
     }
     case 'drop_constraint': {
       let out = 'DROP CONSTRAINT ';
       if (action.ifExists) out += 'IF EXISTS ';
       out += action.constraintName;
       if (action.behavior) out += ' ' + action.behavior;
-      return out;
+      return [{ kind: 'keyword', text: out }];
     }
-    case 'alter_column':
-      return `ALTER COLUMN ${lowerIdent(action.columnName)} ${action.operation}`;
+    case 'alter_column': {
+      const lines: AlterActionLine[] = [{
+        kind: 'keyword',
+        text: `ALTER COLUMN ${lowerIdent(action.columnName)}`,
+      }];
+      const clauses = splitAlterColumnOperationClauses(action.operation);
+      for (const clause of clauses) {
+        lines.push({ kind: 'keyword', text: clause });
+      }
+      return lines;
+    }
     case 'owner_to':
-      return `OWNER TO ${lowerIdent(action.owner)}`;
+      return [{ kind: 'keyword', text: `OWNER TO ${lowerIdent(action.owner)}` }];
     case 'rename_to':
-      return `RENAME TO ${lowerIdent(action.newName)}`;
+      return [{ kind: 'keyword', text: `RENAME TO ${lowerIdent(action.newName)}` }];
     case 'rename_column':
-      return `RENAME COLUMN ${lowerIdent(action.columnName)} TO ${lowerIdent(action.newName)}`;
+      return [{ kind: 'keyword', text: `RENAME COLUMN ${lowerIdent(action.columnName)} TO ${lowerIdent(action.newName)}` }];
     case 'set_schema':
-      return `SET SCHEMA ${lowerIdent(action.schema)}`;
+      return [{ kind: 'keyword', text: `SET SCHEMA ${lowerIdent(action.schema)}` }];
     case 'set_tablespace':
-      return `SET TABLESPACE ${lowerIdent(action.tablespace)}`;
-    case 'raw':
-      return formatRawAlterAction(action.text);
+      return [{ kind: 'keyword', text: `SET TABLESPACE ${lowerIdent(action.tablespace)}` }];
+    case 'raw': {
+      const rawText = formatRawAlterAction(action.text);
+      const rawLines = rawText
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean);
+      if (rawLines.length === 0) return [{ kind: 'keyword', text: rawText.trim() }];
+      return rawLines.map((line, idx) => ({
+        kind: idx === 0 ? 'keyword' : 'continuation',
+        text: line,
+      }));
+    }
     default: {
       const _exhaustive: never = action;
       throw new Error(`Unknown alter action type: ${(_exhaustive as { type?: string }).type}`);
@@ -4038,30 +4333,156 @@ function formatAlterAction(action: AST.AlterAction): string {
   }
 }
 
-function normalizeAlterActionContinuationIndent(actionText: string): string[] {
-  const lines = actionText.split('\n');
-  if (lines.length < 2) return lines;
+const ALTER_ACTION_MIN_RIVER_WIDTH = 5;
 
-  let continuationMinIndent: number | null = null;
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim()) continue;
-    const leadingSpaces = line.match(/^ */)?.[0].length ?? 0;
-    continuationMinIndent = continuationMinIndent === null
-      ? leadingSpaces
-      : Math.min(continuationMinIndent, leadingSpaces);
-    if (continuationMinIndent === 0) break;
+function deriveAlterActionRiverWidth(lines: readonly AlterActionLine[]): number {
+  let width = ALTER_ACTION_MIN_RIVER_WIDTH;
+  for (const line of lines) {
+    if (line.kind !== 'keyword') continue;
+    const word = getLeadingWord(line.text);
+    if (!word) continue;
+    width = Math.max(width, word.length);
   }
+  return width;
+}
 
-  if (!continuationMinIndent || continuationMinIndent <= 0) return lines;
-  const stripPrefix = ' '.repeat(continuationMinIndent);
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i].startsWith(stripPrefix)) {
-      lines[i] = lines[i].slice(continuationMinIndent);
+function renderAlterActionLines(lines: readonly AlterActionLine[], riverWidth: number): string[] {
+  const rendered: string[] = [];
+  const continuationPad = ' '.repeat(riverWidth + 1);
+  for (const line of lines) {
+    const text = line.text.trim();
+    if (!text) continue;
+
+    if (line.kind === 'continuation') {
+      rendered.push(continuationPad + text);
+      continue;
     }
+
+    const word = getLeadingWord(text);
+    if (!word) {
+      rendered.push(continuationPad + text);
+      continue;
+    }
+    const rest = text.slice(word.length);
+    rendered.push(' '.repeat(Math.max(0, riverWidth - word.length)) + word + rest);
+  }
+  return rendered;
+}
+
+const ALTER_COLUMN_OPERATION_BREAK_KEYWORDS = ['USING', 'SET', 'DROP', 'RESTART', 'ADD', 'RENAME', 'VALIDATE'];
+
+function splitAlterColumnOperationClauses(operation: string): string[] {
+  const text = operation.trim();
+  if (!text) return [];
+
+  const clauses: string[] = [];
+  let start = 0;
+  let depthParen = 0;
+  let depthBracket = 0;
+  let depthBrace = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = i + 1 < text.length ? text[i + 1] : '';
+
+    if (inLineComment) {
+      if (ch === '\n' || ch === '\r') inLineComment = false;
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+
+    if (inSingle) {
+      if (ch === "'" && next === "'") {
+        i++;
+        continue;
+      }
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === '"' && next === '"') {
+        i++;
+        continue;
+      }
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (inBacktick) {
+      if (ch === '`') inBacktick = false;
+      continue;
+    }
+
+    if (ch === '-' && next === '-') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      inBlockComment = true;
+      i++;
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+    if (ch === '`') {
+      inBacktick = true;
+      continue;
+    }
+
+    if (ch === '(') depthParen++;
+    else if (ch === ')') depthParen = Math.max(0, depthParen - 1);
+    else if (ch === '[') depthBracket++;
+    else if (ch === ']') depthBracket = Math.max(0, depthBracket - 1);
+    else if (ch === '{') depthBrace++;
+    else if (ch === '}') depthBrace = Math.max(0, depthBrace - 1);
+
+    if (depthParen !== 0 || depthBracket !== 0 || depthBrace !== 0) continue;
+    if (i <= start) continue;
+    if (!isWordBoundary(text, i - 1) || !isWordBoundary(text, i)) continue;
+
+    const keyword = ALTER_COLUMN_OPERATION_BREAK_KEYWORDS.find(
+      candidate =>
+        text.slice(i, i + candidate.length).toUpperCase() === candidate
+        && isWordBoundary(text, i + candidate.length),
+    );
+    if (!keyword) continue;
+
+    const clause = text.slice(start, i).trim();
+    if (clause) clauses.push(clause);
+    start = i;
   }
 
-  return lines;
+  const tail = text.slice(start).trim();
+  if (tail) clauses.push(tail);
+  return clauses;
+}
+
+function isWordBoundary(text: string, index: number): boolean {
+  if (index < 0 || index >= text.length) return true;
+  return !/[A-Za-z0-9_]/.test(text[index]);
+}
+
+function getLeadingWord(text: string): string {
+  const match = /^\s*([A-Za-z_]+)/.exec(text);
+  return match ? match[1] : '';
 }
 
 function formatRawAlterAction(text: string): string {
@@ -4090,6 +4511,14 @@ function formatRawAlterAction(text: string): string {
       }
     }
     return lines.join('\n');
+  }
+
+  const addConstraintMatch = normalizedIdentifiers.match(/^ADD\s+CONSTRAINT\s+(\S+)\s+(.+)$/i);
+  if (addConstraintMatch) {
+    const [, name, body] = addConstraintMatch;
+    if (!/^FOREIGN\s+KEY\b/i.test(body)) {
+      return `ADD CONSTRAINT ${name}\n${body.trim()}`;
+    }
   }
 
   return normalizedIdentifiers;
@@ -4271,8 +4700,6 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
   }
 
   const withKw = rightAlign('WITH', ctx);
-  const cteBodyIndent = contentCol(ctx) + 4; // align CTE body SELECT inside parens
-
   for (let i = 0; i < node.ctes.length; i++) {
     const cte = node.ctes[i];
     const isFirst = i === 0;
@@ -4281,15 +4708,13 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
     // Emit leading comments for this CTE (comments between CTEs)
     if (cte.leadingComments && cte.leadingComments.length > 0) {
       emitCTELeadingComments(cte.leadingComments, lines, contentCol(ctx));
-    } else if (!isFirst && !cte.materialized) {
-      const bodyIdx = lines.length - 2;
-      if (bodyIdx >= 0) {
-        const bodyLineCount = (lines[bodyIdx].match(/\n/g) || []).length + 1;
-        if (bodyLineCount > 4) {
-          lines.push('');
-        }
-      }
     }
+
+    const isDataModifyingBody =
+      cte.query.type === 'insert'
+      || cte.query.type === 'update'
+      || cte.query.type === 'delete'
+      || cte.query.type === 'merge';
 
     const firstPrefix = node.recursive ? withKw + ' RECURSIVE ' : withKw + ' ';
     const prefix = isFirst ? firstPrefix : contentPad(ctx);
@@ -4300,6 +4725,7 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
       : '';
     lines.push(prefix + cte.name + colList + ' AS' + materialized + ' (');
 
+    const cteBodyIndent = contentCol(ctx) + (isDataModifyingBody ? 1 : 4);
     // CTE body
     const bodyCtx: FormatContext = {
       indentOffset: cteBodyIndent,
@@ -4309,28 +4735,30 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
       runtime: ctx.runtime,
     };
 
+    let body = '';
     if (cte.query.type === 'values') {
-      lines.push(formatValuesClause(cte.query, bodyCtx));
+      body = formatValuesClause(cte.query, bodyCtx);
     } else if (cte.query.type === 'union') {
-      lines.push(formatUnion(cte.query, bodyCtx));
+      body = formatUnion(cte.query, bodyCtx);
     } else if (cte.query.type === 'cte') {
-      lines.push(formatCTE(cte.query, bodyCtx));
+      body = formatCTE(cte.query, bodyCtx);
     } else if (cte.query.type === 'select') {
-      lines.push(formatSelect(cte.query, bodyCtx));
+      body = formatSelect(cte.query, bodyCtx);
     } else if (
       cte.query.type === 'insert'
       || cte.query.type === 'update'
       || cte.query.type === 'delete'
       || cte.query.type === 'merge'
     ) {
-      lines.push(formatNode({ ...cte.query, leadingComments: [] }, bodyCtx));
+      body = formatNode({ ...cte.query, leadingComments: [] }, bodyCtx);
     } else {
-      lines.push(formatSelect(cte.query as AST.SelectStatement, bodyCtx));
+      body = formatSelect(cte.query as AST.SelectStatement, bodyCtx);
     }
 
-    // Closing ) — aligned to content column
-    const closeIndent = ' '.repeat(contentCol(ctx));
-    lines.push(closeIndent + ')' + (isLast ? '' : ','));
+    const bodyLines = body.split('\n');
+    const close = isLast ? ')' : '),';
+    bodyLines[bodyLines.length - 1] += close;
+    lines.push(...bodyLines);
   }
 
   if (node.search) {

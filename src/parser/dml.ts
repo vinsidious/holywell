@@ -32,19 +32,25 @@ const SQLITE_INSERT_OR_ACTIONS = new Set<NonNullable<AST.InsertStatement['orConf
 
 export function parseInsertStatement(
   ctx: DmlParser,
-  comments: AST.CommentNode[]
+  comments: AST.CommentNode[],
+  options: { replace?: boolean } = {},
 ): AST.InsertStatement {
-  ctx.expect('INSERT');
+  const replace = options.replace ?? false;
+  if (replace) {
+    ctx.expect('REPLACE');
+  } else {
+    ctx.expect('INSERT');
+  }
   let ignore = false;
   let orConflictAction: AST.InsertStatement['orConflictAction'];
-  if (ctx.peekUpper() === 'OR') {
+  if (!replace && ctx.peekUpper() === 'OR') {
     ctx.advance();
     const action = ctx.peekUpper() as NonNullable<AST.InsertStatement['orConflictAction']>;
     if (!SQLITE_INSERT_OR_ACTIONS.has(action)) {
       ctx.expect('IGNORE');
     }
     orConflictAction = ctx.advance().upper as NonNullable<AST.InsertStatement['orConflictAction']>;
-  } else if (ctx.peekUpper() === 'IGNORE') {
+  } else if (!replace && ctx.peekUpper() === 'IGNORE') {
     ctx.advance();
     ignore = true;
   }
@@ -187,6 +193,7 @@ export function parseInsertStatement(
 
   return {
     type: 'insert',
+    replace: replace || undefined,
     ignore: ignore || undefined,
     orConflictAction,
     table,

@@ -46,6 +46,19 @@ const SELECT_PROJECTION_BOUNDARY_KEYWORDS = new Set([
   'OFFSET', 'FETCH', 'FOR', 'OPTION', 'UNION', 'INTERSECT', 'EXCEPT',
 ]);
 
+const MYSQL_SELECT_MODIFIERS = new Set([
+  'HIGH_PRIORITY',
+  'STRAIGHT_JOIN',
+  'SQL_SMALL_RESULT',
+  'SQL_BIG_RESULT',
+  'SQL_BUFFER_RESULT',
+  'SQL_NO_CACHE',
+  'SQL_CALC_FOUND_ROWS',
+]);
+
+const POSTGRES_EXPLAIN_FORMATS = new Set(['TEXT', 'XML', 'JSON', 'YAML']);
+const MYSQL_EXPLAIN_FORMATS = new Set(['TRADITIONAL', 'JSON', 'TREE']);
+
 // Lookup table for multi-word SQL type names.
 // Key = last consumed word, value = set of valid next words.
 const TYPE_CONTINUATIONS: Record<string, Set<string>> = {
@@ -601,6 +614,9 @@ export class Parser {
       }
       return this.parseInsert(comments);
     }
+    if (kw === 'REPLACE' && this.isMySQLDialect()) {
+      return this.parseReplace(comments);
+    }
     if (kw === 'UPDATE') return this.parseUpdate(comments);
     if (kw === 'DELETE') return this.parseDelete(comments);
     if (kw === 'CREATE' && this.looksLikeCreateTypeBodyStatement()) {
@@ -652,6 +668,9 @@ export class Parser {
     if (kw === 'ACCEPT' || kw === 'DESCRIBE' || kw === 'REM' || kw === 'DEFINE' || kw === 'PROMPT') {
       return this.parseSingleLineStatement(comments, 'unsupported');
     }
+    if (kw === 'SHOW' && this.isMySQLDialect()) {
+      return this.parseShow(comments);
+    }
     if (kw === 'SHOW') {
       return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
     }
@@ -676,6 +695,9 @@ export class Parser {
       return this.parseStatementUntilEndBlock(comments, 'unsupported', { allowPreBeginSemicolons: true });
     }
 
+    if (kw === 'SET' && this.isMySQLDialect()) {
+      return this.parseSet(comments);
+    }
     if (kw === 'USE' || kw === 'SET') {
       return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
     }
@@ -1650,6 +1672,10 @@ export class Parser {
     return { limit: { count: first } };
   }
 
+  private isMySQLDialect(): boolean {
+    return this.profile.name === 'mysql';
+  }
+
   private parseQueryExpression(comments: AST.CommentNode[] = []): AST.QueryExpression {
     return this.withDepth(() => {
       if (this.peekUpper() === 'WITH') {
@@ -1735,6 +1761,7 @@ export class Parser {
 
     let distinct = false;
     let distinctOn: AST.Expression[] | undefined;
+    const mysqlSelectModifiers: string[] = [];
     if (this.peekUpper() === 'DISTINCT') {
       this.advance();
       distinct = true;
@@ -1746,6 +1773,9 @@ export class Parser {
       }
     } else if (this.peekUpper() === 'UNIQUE') {
       // Oracle synonym: SELECT UNIQUE ...
+      this.advance();
+      distinct = true;
+    } else if (this.isMySQLDialect() && this.peekUpper() === 'DISTINCTROW') {
       this.advance();
       distinct = true;
     } else if (this.peekUpper() === 'ALL') {
@@ -1781,8 +1811,18 @@ export class Parser {
       top = this.tokensToSql(topTokens);
     }
 
+    if (this.isMySQLDialect()) {
+      while (MYSQL_SELECT_MODIFIERS.has(this.peekUpper())) {
+        mysqlSelectModifiers.push(this.advance().upper);
+      }
+    }
+    if (mysqlSelectModifiers.length > 0) {
+      top = top ? `${top} ${mysqlSelectModifiers.join(' ')}` : mysqlSelectModifiers.join(' ');
+    }
+
     const columns = this.isSelectListBoundary() ? [] : this.parseColumnList();
     let into: string | undefined;
+    let intoPosition: AST.SelectStatement['intoPosition'];
     if (this.peekUpper() === 'INTO') {
       this.advance();
       const intoTokens = this.collectTokensUntilTopLevelKeyword(new Set([
@@ -1793,6 +1833,7 @@ export class Parser {
       if (!into) {
         throw new ParseError('INTO target', this.peek());
       }
+      intoPosition = 'pre_from';
     }
     let from: AST.FromClause | undefined;
     let additionalFromItems: AST.FromClause[] | undefined;
@@ -1937,6 +1978,18 @@ export class Parser {
       windowClause = this.parseWindowClause();
     }
 
+    if (!into && this.peekUpper() === 'INTO') {
+      this.advance();
+      const intoTokens = this.collectTokensUntilTopLevelKeyword(new Set([
+        'ORDER', 'LIMIT', 'OFFSET', 'FETCH', 'FOR', 'UNION', 'INTERSECT', 'EXCEPT',
+      ]));
+      into = this.tokensToSql(intoTokens);
+      if (!into) {
+        throw new ParseError('INTO target', this.peek());
+      }
+      intoPosition = 'post_from';
+    }
+
     if (this.peekUpper() === 'ORDER' && this.peekUpperSkippingComments(1) === 'BY') {
       this.advance(); this.consumeComments(); this.advance();
       orderBy = { items: this.parseOrderByItems() };
@@ -1983,6 +2036,7 @@ export class Parser {
       distinctOn,
       top,
       into,
+      intoPosition,
       columns,
       from,
       additionalFromItems,
@@ -3011,7 +3065,7 @@ export class Parser {
   }
 
   private parseComparison(): AST.Expression {
-    return parseComparisonExpression({
+    let expression = parseComparisonExpression({
       parseAddSub: () => this.parseAddSub(),
       peekUpper: () => this.peekUpper(),
       peekUpperAt: (offset: number) => this.peekUpperAt(offset),
@@ -3024,6 +3078,65 @@ export class Parser {
       getPos: () => this.pos,
       setPos: (pos: number) => { this.pos = pos; },
     });
+
+    if (this.isMySQLDialect()) {
+      expression = this.parseMySQLMatchAgainst(expression);
+    }
+
+    return expression;
+  }
+
+  private parseMySQLMatchAgainst(left: AST.Expression): AST.Expression {
+    if (!this.isMatchFunctionCall(left)) {
+      return left;
+    }
+
+    this.consumeCommentsIfFollowedByKeyword('AGAINST');
+    if (this.peekUpper() !== 'AGAINST') {
+      return left;
+    }
+
+    this.advance(); // AGAINST
+    this.consumeComments();
+
+    const againstOperand = this.parseParenthesizedRawOperand();
+    return {
+      type: 'binary',
+      left,
+      operator: 'AGAINST',
+      right: againstOperand,
+    };
+  }
+
+  private isMatchFunctionCall(expr: AST.Expression): expr is AST.FunctionCallExpr {
+    if (expr.type !== 'function_call') return false;
+    const simpleName = expr.name.split('.').pop() ?? expr.name;
+    return simpleName.toUpperCase() === 'MATCH';
+  }
+
+  private parseParenthesizedRawOperand(): AST.RawExpression {
+    if (!this.check('(')) {
+      throw new ParseError('(', this.peek());
+    }
+
+    const tokens: Token[] = [];
+    let depth = 0;
+    do {
+      const token = this.advance();
+      tokens.push(token);
+      if (this.isOpenGroupToken(token)) depth++;
+      else if (this.isCloseGroupToken(token)) depth--;
+    } while (!this.isAtEnd() && depth > 0);
+
+    if (depth !== 0) {
+      throw new ParseError(')', this.peek());
+    }
+
+    return {
+      type: 'raw',
+      text: this.tokensToSqlPreserveCase(tokens),
+      reason: 'verbatim',
+    };
   }
 
   private isRegexOperator(): boolean {
@@ -3403,8 +3516,12 @@ export class Parser {
     }
 
     // Function call
+    const allowDialectSpecificFunction =
+      this.isMySQLDialect() && (name.upper === 'VALUES');
     const canParseAsFunction =
-      !this.clauseKeywords.has(name.upper) || FUNCTION_KEYWORD_OVERRIDES.has(name.upper);
+      !this.clauseKeywords.has(name.upper)
+      || FUNCTION_KEYWORD_OVERRIDES.has(name.upper)
+      || allowDialectSpecificFunction;
     if (this.check('(') && canParseAsFunction) {
       this.advance(); // consume (
       const upperName = fullName.toUpperCase();
@@ -3872,6 +3989,10 @@ export class Parser {
     let settings: boolean | undefined;
     let wal: boolean | undefined;
     let format: AST.ExplainStatement['format'];
+    const explainFormats = this.isMySQLDialect() ? MYSQL_EXPLAIN_FORMATS : POSTGRES_EXPLAIN_FORMATS;
+    const explainExpectedFormats = this.isMySQLDialect()
+      ? 'TRADITIONAL, JSON, or TREE'
+      : 'TEXT, XML, JSON, or YAML';
 
     const parseExplainBoolean = (): boolean => {
       const value = this.peekUpper();
@@ -3948,11 +4069,14 @@ export class Parser {
       }
       if (kw === 'FORMAT') {
         this.advance();
-        const fmt = this.advance().upper;
-        if (fmt !== 'TEXT' && fmt !== 'XML' && fmt !== 'JSON' && fmt !== 'YAML') {
-          throw new ParseError('TEXT, XML, JSON, or YAML', this.peekAt(-1));
+        if (this.isMySQLDialect() && this.check('=')) {
+          this.advance();
         }
-        format = fmt;
+        const fmt = this.advance().upper;
+        if (!explainFormats.has(fmt)) {
+          throw new ParseError(explainExpectedFormats, this.peekAt(-1));
+        }
+        format = fmt as AST.ExplainStatement['format'];
         return true;
       }
       return false;
@@ -4067,6 +4191,10 @@ export class Parser {
     return parseInsertStatement(this.createDmlContext(), comments);
   }
 
+  private parseReplace(comments: AST.CommentNode[]): AST.InsertStatement {
+    return parseInsertStatement(this.createDmlContext(), comments, { replace: true });
+  }
+
   // UPDATE table SET col = val, ... [FROM ...] WHERE ...
   private parseUpdate(comments: AST.CommentNode[]): AST.UpdateStatement {
     return parseUpdateStatement(this.createDmlContext(), comments);
@@ -4079,6 +4207,28 @@ export class Parser {
   // DELETE FROM table WHERE ...
   private parseDelete(comments: AST.CommentNode[]): AST.DeleteStatement {
     return parseDeleteStatement(this.createDmlContext(), comments);
+  }
+
+  private parseSet(comments: AST.CommentNode[]): AST.SetStatement {
+    this.expect('SET');
+    const body = this.consumeStatementBodySql();
+    if (!body) throw new ParseError('SET body', this.peek());
+    return {
+      type: 'set',
+      body,
+      leadingComments: comments,
+    };
+  }
+
+  private parseShow(comments: AST.CommentNode[]): AST.ShowStatement {
+    this.expect('SHOW');
+    const body = this.consumeStatementBodySql({ normalizeKeywords: true });
+    if (!body) throw new ParseError('SHOW body', this.peek());
+    return {
+      type: 'show',
+      body,
+      leadingComments: comments,
+    };
   }
 
   // CREATE TABLE | CREATE INDEX | CREATE VIEW
@@ -5518,6 +5668,24 @@ export class Parser {
       }
     }
     return typeName;
+  }
+
+  private consumeStatementBodySql(options: { normalizeKeywords?: boolean } = {}): string {
+    const tokens: Token[] = [];
+    let depth = 0;
+
+    while (!this.isAtEnd() && !this.check(';')) {
+      if (depth === 0 && tokens.length > 0 && this.hasImplicitStatementBoundary()) break;
+      const token = this.advance();
+      tokens.push(token);
+      if (this.isOpenGroupToken(token)) depth++;
+      else if (this.isCloseGroupToken(token)) depth = Math.max(0, depth - 1);
+    }
+
+    if (options.normalizeKeywords) {
+      return this.tokensToSql(tokens);
+    }
+    return this.tokensToSqlPreserveCase(tokens);
   }
 
   private collectTokensUntilTopLevelKeyword(stopKeywords: Set<string>): Token[] {

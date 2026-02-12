@@ -6,6 +6,8 @@ export type Statement =
   | InsertStatement
   | UpdateStatement
   | DeleteStatement
+  | SetStatement
+  | ShowStatement
   | ExplainStatement
   | CreateTableStatement
   | AlterTableStatement
@@ -93,6 +95,7 @@ export interface SelectStatement {
   readonly distinctOn?: readonly Expression[];
   readonly top?: string;
   readonly into?: string;
+  readonly intoPosition?: 'pre_from' | 'post_from';
   readonly columns: readonly ColumnExpr[];
   readonly from?: FromClause;
   readonly additionalFromItems?: readonly FromClause[];
@@ -118,6 +121,7 @@ export interface SelectStatement {
 
 export interface InsertStatement {
   readonly type: 'insert';
+  readonly replace?: boolean;
   readonly ignore?: boolean;
   readonly orConflictAction?: 'ROLLBACK' | 'ABORT' | 'FAIL' | 'IGNORE' | 'REPLACE';
   readonly table: string;
@@ -178,6 +182,18 @@ export interface DeleteStatement {
   readonly where?: WhereClause;
   readonly currentOf?: string;
   readonly returning?: readonly Expression[];
+  readonly leadingComments: readonly CommentNode[];
+}
+
+export interface SetStatement {
+  readonly type: 'set';
+  readonly body: string;
+  readonly leadingComments: readonly CommentNode[];
+}
+
+export interface ShowStatement {
+  readonly type: 'show';
+  readonly body: string;
   readonly leadingComments: readonly CommentNode[];
 }
 
@@ -357,7 +373,7 @@ export interface ExplainStatement {
   readonly summary?: boolean;
   readonly settings?: boolean;
   readonly wal?: boolean;
-  readonly format?: 'TEXT' | 'XML' | 'JSON' | 'YAML';
+  readonly format?: string;
   readonly statement: QueryExpression | InsertStatement | UpdateStatement | DeleteStatement;
   readonly leadingComments: readonly CommentNode[];
 }
