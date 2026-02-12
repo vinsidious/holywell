@@ -256,9 +256,7 @@ export class Parser {
     }
     this.tokens = tokens.filter(t => t.type !== 'whitespace');
     this.source = source;
-    this.profile = (options.dialect && typeof options.dialect === 'object' && options.dialect.keywords instanceof Set)
-      ? options.dialect as DialectProfile
-      : resolveDialectProfile(options.dialect);
+    this.profile = resolveDialectProfile(options.dialect);
     this.recover = options.recover ?? true;
     this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
     this.onRecover = options.onRecover;

@@ -343,9 +343,32 @@ describe('parser/code-quality safety checks', () => {
     expect(() => parser.expect('BAR')).toThrow();
   });
 
-  it('formatter falls back safely on unknown node type', () => {
-    const out = formatStatements([{ type: 'mystery' } as any]);
+  it('formatter throws on unknown node types by default', () => {
+    expect(() => formatStatements([{ type: 'mystery' } as any])).toThrow('Unknown node type');
+  });
+
+  it('formatter fallback for unknown node types is opt-in', () => {
+    const out = formatStatements([{ type: 'mystery' } as any], { fallbackOnError: true });
     expect(out).toContain('formatter fallback');
+  });
+
+  it('normalizes custom dialect profiles in Parser constructor', () => {
+    const customDialect = {
+      name: 'ansi',
+      keywords: new Set(['select', 'from']),
+      functionKeywords: new Set<string>(),
+      clauseKeywords: new Set(['from']),
+      statementStarters: new Set(['select']),
+    } as const;
+
+    const sql = 'SELECT value FROM items;';
+    const fromParse = parse(sql, { dialect: customDialect, recover: false });
+    const parser = new Parser(tokenize(sql, { dialect: customDialect }), {
+      dialect: customDialect,
+      recover: false,
+    });
+
+    expect(parser.parseStatements()).toEqual(fromParse);
   });
 
   it('enforces maximum nesting depth', () => {

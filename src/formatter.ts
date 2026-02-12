@@ -128,6 +128,7 @@ interface FormatterRuntime {
   maxDepth: number;
   maxTokenCount?: number;
   functionKeywords: ReadonlySet<string>;
+  fallbackOnError: boolean;
 }
 
 interface FormatContext {
@@ -145,6 +146,7 @@ export interface FormatterOptions {
   maxDepth?: number;
   maxTokenCount?: number;
   functionKeywords?: ReadonlySet<string>;
+  fallbackOnError?: boolean;
 }
 
 export class FormatterError extends Error {
@@ -164,6 +166,7 @@ function runtimeToFormatterOptions(runtime: FormatterRuntime): FormatterOptions 
     maxDepth: runtime.maxDepth,
     maxTokenCount: runtime.maxTokenCount,
     functionKeywords: runtime.functionKeywords,
+    fallbackOnError: runtime.fallbackOnError,
   };
 }
 
@@ -176,6 +179,7 @@ export function formatStatements(nodes: AST.Node[], options: FormatterOptions = 
     maxDepth: options.maxDepth ?? DEFAULT_MAX_DEPTH,
     maxTokenCount: options.maxTokenCount,
     functionKeywords: options.functionKeywords ?? FUNCTION_KEYWORDS,
+    fallbackOnError: options.fallbackOnError ?? false,
   };
   // Set module-level function keywords for use by formatFunctionName in all call paths
   activeFunctionKeywords = runtime.functionKeywords;
@@ -209,6 +213,7 @@ export function formatStatements(nodes: AST.Node[], options: FormatterOptions = 
       }));
     } catch (err) {
       if (err instanceof FormatterError) {
+        if (!runtime.fallbackOnError) throw err;
         parts.push(formatFormatterFallback(node));
         continue;
       }
@@ -4437,6 +4442,7 @@ function formatSubquerySimple(expr: AST.SubqueryExpr): string {
     layoutPolicy: buildLayoutPolicy(TERMINAL_WIDTH),
     maxDepth: DEFAULT_MAX_DEPTH,
     functionKeywords: activeFunctionKeywords,
+    fallbackOnError: false,
   });
   return '(' + inner + ')';
 }
