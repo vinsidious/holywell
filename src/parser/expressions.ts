@@ -271,6 +271,8 @@ export interface PrimaryExpressionParser {
   parseOverlayExpr(): AST.Expression;
   parseTrimExpr(): AST.Expression;
   parseIdentifierOrFunction(): AST.Expression;
+  isRecoverEnabled(): boolean;
+  parseError(expected: string, token: Token): Error;
   consumeComments?: () => AST.CommentNode[];
 }
 
@@ -738,6 +740,9 @@ function tryParseIdentifierPrimary(ctx: PrimaryExpressionParser, token: Token): 
 }
 
 function parseFallbackPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression {
+  if (!ctx.isRecoverEnabled()) {
+    throw ctx.parseError('expression', token);
+  }
   ctx.advance();
   return { type: 'raw', text: token.value, reason: 'unsupported' };
 }

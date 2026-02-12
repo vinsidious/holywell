@@ -804,6 +804,23 @@ describe('parser recovery metadata', () => {
     expect(commentOnly[0].reason).toBe('comment_only');
   });
 
+  it('keeps malformed statements classified as parse_error even when raw text contains @', () => {
+    const recovered: string[] = [];
+    let passthroughCount = 0;
+    const nodes = parse("SELECT ( FROM t WHERE email = 'a@b.com';", {
+      recover: true,
+      onRecover: (error) => recovered.push(error.message),
+      onPassthrough: () => { passthroughCount++; },
+    });
+
+    expect(recovered).toHaveLength(1);
+    expect(passthroughCount).toBe(0);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].type).toBe('raw');
+    if (nodes[0].type !== 'raw') return;
+    expect(nodes[0].reason).toBe('parse_error');
+  });
+
   it('passes statement index context to onRecover callbacks', () => {
     const contexts: Array<{ statementIndex: number; totalStatements: number }> = [];
     parse('SELECT 1; SELECT (; SELECT 2;', {

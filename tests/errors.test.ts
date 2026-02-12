@@ -19,6 +19,12 @@ describe('malformed SQL and error paths', () => {
     expect(() => parse('INSERT INTO t VALUES (1,', { recover: false })).toThrow(ParseError);
   });
 
+  it('throws ParseError in strict mode for malformed boolean predicates', () => {
+    expect(() => parse('SELECT * FROM t WHERE a = 1 AND ;', { recover: false })).toThrow(ParseError);
+    expect(() => parse('SELECT * FROM t WHERE a = 1 OR ;', { recover: false })).toThrow(ParseError);
+    expect(() => parse('SELECT * FROM t WHERE NOT ;', { recover: false })).toThrow(ParseError);
+  });
+
   it('handles empty statements gracefully in recovery mode', () => {
     expect(parse(';;;', { recover: true })).toEqual([]);
     expect(formatSQL('   \n\t  ')).toBe('');
@@ -153,6 +159,17 @@ describe('error line/column accuracy for multi-line SQL', () => {
       const pe = err as ParseError;
       // The error should be on line 4 where FROM is found instead of ')'
       expect(pe.line).toBe(4);
+    }
+  });
+
+  it('formatSQL preserves original line numbers when input starts with blank lines', () => {
+    try {
+      formatSQL('\n\nSELECT (1;', { recover: false });
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ParseError);
+      const pe = err as ParseError;
+      expect(pe.line).toBe(3);
     }
   });
 

@@ -95,7 +95,7 @@ export interface FormatOptions {
 
   /**
    * Callback invoked when a statement is passed through as raw text because
-   * it uses unsupported syntax (e.g. MERGE, SET, USE, DBCC).
+   * it uses unsupported syntax (e.g. SET, USE, DBCC, CALL).
    *
    * Unlike `onRecover`, this fires for statements the parser intentionally
    * does not format, not for parse errors.
@@ -150,10 +150,9 @@ export function formatSQL(input: string, options: FormatOptions = {}): string {
     );
   }
 
-  const trimmed = input.trim();
-  if (!trimmed) return '';
+  if (!input.trim()) return '';
 
-  const statements = parse(trimmed, {
+  const statements = parse(input, {
     recover: options.recover ?? false,
     maxDepth: options.maxDepth,
     maxTokenCount: options.maxTokenCount,

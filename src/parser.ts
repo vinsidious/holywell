@@ -114,7 +114,7 @@ export interface ParseOptions {
 
   /**
    * Optional callback invoked when a statement is passed through as raw text
-   * because it uses unsupported syntax (e.g. MERGE, SET, USE, DBCC, etc.).
+   * because it uses unsupported syntax (e.g. SET, USE, DBCC, CALL, etc.).
    *
    * Unlike `onRecover`, this is not triggered by parse errors -- it fires for
    * statements that the parser intentionally does not format because the syntax
@@ -413,22 +413,12 @@ export class Parser {
         if (err instanceof MaxDepthError) throw err;
         // Recovery: rewind and consume as raw text until next semicolon
         this.pos = stmtStart;
-        const recovered = this.parseRawStatement('parse_error');
-        const dialectUnsupported = recovered ? this.looksLikeSqlServerStatement(recovered.text) : false;
-        const raw = dialectUnsupported
-          ? ({ ...recovered, reason: 'unsupported' } as AST.RawExpression)
-          : recovered;
-        if (!dialectUnsupported) {
-          this.onRecover?.(err, raw, recoveryContext);
-        } else if (raw) {
-          this.onPassthrough?.(raw, recoveryContext);
-        }
+        const raw = this.parseRawStatement('parse_error');
         if (raw) {
+          this.onRecover?.(err, raw, recoveryContext);
           stmts.push(raw);
         } else {
-          if (!dialectUnsupported) {
-            this.onRecover?.(err, null, recoveryContext);
-          }
+          this.onRecover?.(err, null, recoveryContext);
           if (this.onDropStatement) {
             this.onDropStatement(err, recoveryContext);
           } else {
@@ -439,15 +429,6 @@ export class Parser {
       this.skipSemicolons();
     }
     return stmts;
-  }
-
-  private looksLikeSqlServerStatement(text: string): boolean {
-    if (/\{\s*fn\b/i.test(text)) return true;
-    if (/(^|\n)\s*GO\s*(\n|$)/i.test(text)) return true;
-    if (/@[A-Za-z_][A-Za-z0-9_]*/.test(text)) return true;
-    const hasBracketIdentifier = /\[[A-Za-z_][^\]\r\n]*\]/.test(text);
-    const hasSqlKeyword = /\b(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|USE|EXEC|MERGE)\b/i.test(text);
-    return hasBracketIdentifier && hasSqlKeyword;
   }
 
   private isStatementStarterToken(token: Token | undefined): boolean {
@@ -3386,6 +3367,8 @@ export class Parser {
       parseOverlayExpr: () => this.parseOverlayExpr(),
       parseTrimExpr: () => this.parseTrimExpr(),
       parseIdentifierOrFunction: () => this.parseIdentifierOrFunction(),
+      isRecoverEnabled: () => this.recover,
+      parseError: (expected: string, token: Token) => new ParseError(expected, token),
       consumeComments: () => this.consumeComments(),
     });
   }

@@ -826,4 +826,13 @@ describe('recovery warnings on stderr', () => {
     // The important thing is that --quiet does NOT suppress recovery warnings
     expect(res.code).toBe(0);
   });
+
+  it('returns parse-error exit code for malformed statements even when text contains @', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-recover-'));
+    writeFileSync(join(dir, 'recover.sql'), "SELECT ( FROM t WHERE email = 'a@b.com';", 'utf8');
+
+    const res = runCli(['recover.sql'], dir);
+    expect(res.code).toBe(2);
+    expect(res.err).toContain('could not be parsed');
+  });
 });
