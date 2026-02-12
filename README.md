@@ -7,8 +7,8 @@
 
 An opinionated SQL formatter that implements [Simon Holywell's SQL Style Guide](https://www.sqlstyle.guide/). It faithfully applies the guide's formatting rules -- including river alignment, keyword uppercasing, and consistent indentation -- to produce deterministic, readable SQL with minimal configuration.
 
-
 **[Try it live in your browser at holywell.sh](https://holywell.sh)**
+
 
 ## Why?
 
