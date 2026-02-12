@@ -42,7 +42,6 @@
     "postgres",
     "database",
     "cli",
-    "linter",
     "style",
     "sqlstyle",
     "pretty-print"
