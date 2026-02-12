@@ -1244,7 +1244,7 @@ export class Parser {
 
     const startPos = this.peek().position;
     const startSearch = Math.max(0, startPos);
-    const delimPos = this.source.indexOf(this.activeDelimiter, startSearch);
+    const delimPos = this.findCustomDelimiterPosition(startSearch);
 
     if (delimPos < 0) {
       while (!this.isAtEnd()) this.advance();
@@ -1260,6 +1260,151 @@ export class Parser {
     }
 
     return this.buildRawFromSourceSlice(comments, startPos, endPos, 'unsupported');
+  }
+
+  private findCustomDelimiterPosition(startSearch: number): number {
+    if (this.source === undefined) return -1;
+
+    const source = this.source;
+    const delimiter = this.activeDelimiter;
+    const length = source.length;
+    let pos = Math.max(0, startSearch);
+
+    let inSingle = false;
+    let inDouble = false;
+    let inBacktick = false;
+    let inBracket = false;
+    let inLineComment = false;
+    let inBlockComment = false;
+
+    while (pos < length) {
+      const ch = source[pos];
+      const next = pos + 1 < length ? source[pos + 1] : '';
+
+      if (!inSingle && !inDouble && !inBacktick && !inBracket && !inLineComment && !inBlockComment) {
+        if (source.startsWith(delimiter, pos)) {
+          return pos;
+        }
+      }
+
+      if (inLineComment) {
+        if (ch === '\n' || ch === '\r') {
+          inLineComment = false;
+        }
+        pos++;
+        continue;
+      }
+
+      if (inBlockComment) {
+        if (ch === '*' && next === '/') {
+          inBlockComment = false;
+          pos += 2;
+          continue;
+        }
+        pos++;
+        continue;
+      }
+
+      if (inSingle) {
+        if (ch === '\\') {
+          pos += Math.min(2, length - pos);
+          continue;
+        }
+        if (ch === '\'' && next === '\'') {
+          pos += 2;
+          continue;
+        }
+        if (ch === '\'') {
+          inSingle = false;
+        }
+        pos++;
+        continue;
+      }
+
+      if (inDouble) {
+        if (ch === '\\') {
+          pos += Math.min(2, length - pos);
+          continue;
+        }
+        if (ch === '"' && next === '"') {
+          pos += 2;
+          continue;
+        }
+        if (ch === '"') {
+          inDouble = false;
+        }
+        pos++;
+        continue;
+      }
+
+      if (inBacktick) {
+        if (ch === '\\') {
+          pos += Math.min(2, length - pos);
+          continue;
+        }
+        if (ch === '`' && next === '`') {
+          pos += 2;
+          continue;
+        }
+        if (ch === '`') {
+          inBacktick = false;
+        }
+        pos++;
+        continue;
+      }
+
+      if (inBracket) {
+        if (ch === ']' && next === ']') {
+          pos += 2;
+          continue;
+        }
+        if (ch === ']') {
+          inBracket = false;
+        }
+        pos++;
+        continue;
+      }
+
+      if (ch === '-' && next === '-') {
+        inLineComment = true;
+        pos += 2;
+        continue;
+      }
+      if (ch === '#') {
+        inLineComment = true;
+        pos++;
+        continue;
+      }
+      if (ch === '/' && next === '*') {
+        inBlockComment = true;
+        pos += 2;
+        continue;
+      }
+      if (ch === '\'') {
+        inSingle = true;
+        pos++;
+        continue;
+      }
+      if (ch === '"') {
+        inDouble = true;
+        pos++;
+        continue;
+      }
+      if (ch === '`') {
+        inBacktick = true;
+        pos++;
+        continue;
+      }
+      if (ch === '[') {
+        inBracket = true;
+        pos++;
+        continue;
+      }
+
+      pos++;
+    }
+
+    return -1;
   }
 
   private commentsToRaw(comments: AST.CommentNode[]): AST.RawExpression {
@@ -4983,10 +5128,10 @@ export class Parser {
 
     const ctes: AST.CTEDefinition[] = [];
 
-    ctes.push(this.parseCTEDefinition());
+    ctes.push(this.parseCTEDefinition({ allowDml: !options.queryOnly }));
     while (this.check(',')) {
       this.advance();
-      ctes.push(this.parseCTEDefinition());
+      ctes.push(this.parseCTEDefinition({ allowDml: !options.queryOnly }));
     }
 
     let search: AST.CTESearchClause | undefined;
@@ -5196,7 +5341,7 @@ export class Parser {
     return false;
   }
 
-  private parseCTEDefinition(): AST.CTEDefinition {
+  private parseCTEDefinition(options: { allowDml?: boolean } = {}): AST.CTEDefinition {
     const leadingComments = this.consumeComments();
     const name = this.advance().value;
 
@@ -5234,10 +5379,33 @@ export class Parser {
     this.expect('(');
 
     const queryComments = [...postAsComments, ...postHintComments, ...this.consumeComments()];
-    const query = this.parseQueryExpression(queryComments);
+    const query = this.parseCTEBodyStatement(queryComments, options);
 
     this.expect(')');
     return { name, columnList, materialized: materializedHint, query, leadingComments };
+  }
+
+  private parseCTEBodyStatement(
+    comments: AST.CommentNode[],
+    options: { allowDml?: boolean } = {}
+  ): AST.CTEDefinition['query'] {
+    const queryExpr = this.tryParseQueryExpressionAtCurrent(comments);
+    if (queryExpr) return queryExpr;
+
+    if (options.allowDml) {
+      const kw = this.peekUpper();
+      if (kw === 'INSERT') return this.parseInsert(comments);
+      if (kw === 'UPDATE') return this.parseUpdate(comments);
+      if (kw === 'DELETE') return this.parseDelete(comments);
+      if (kw === 'MERGE') return this.parseMerge(comments);
+    }
+
+    throw new ParseError(
+      options.allowDml
+        ? 'query expression, INSERT, UPDATE, DELETE, or MERGE'
+        : 'query expression',
+      this.peek(),
+    );
   }
 
   private looksLikeCTEBodyStart(): boolean {

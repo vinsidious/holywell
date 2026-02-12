@@ -32,6 +32,14 @@ export type CTEMainStatement =
   | DeleteStatement
   | MergeStatement;
 
+/** Statements that can appear inside individual WITH ... AS (...) CTE bodies. */
+export type CTEBodyStatement =
+  | QueryExpression
+  | InsertStatement
+  | UpdateStatement
+  | DeleteStatement
+  | MergeStatement;
+
 /** Any top-level node emitted by `parse()`. */
 export type Node =
   | Statement
@@ -316,7 +324,7 @@ export interface CTEDefinition {
   readonly name: string;
   readonly columnList?: readonly string[];   // e.g., (revenue_date, amount)
   readonly materialized?: 'materialized' | 'not_materialized';
-  readonly query: QueryExpression;
+  readonly query: CTEBodyStatement;
   readonly leadingComments?: readonly CommentNode[];  // comments before this CTE definition
 }
 
