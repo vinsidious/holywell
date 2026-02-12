@@ -513,6 +513,9 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
   const maxTokenCount = options.maxTokenCount ?? MAX_TOKEN_COUNT;
   const dialect = resolveDialectProfile(options.dialect);
   const keywords = dialect.keywords;
+  // PostgreSQL-specific "$" syntax collides with MySQL DELIMITER $$ scripts.
+  // Restrict these forms to postgres so dialect-specific scripts tokenize safely.
+  const allowPostgresDollarSyntax = dialect.name === 'postgres';
 
   function lc(p: number) {
     const { line, column } = posToLineCol(lineOffsets, p);
@@ -722,9 +725,10 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       }
     }
 
-    // Dollar-quoted strings ($$...$$ or $tag$...$tag$) and positional parameters ($1, $2)
+    // Dollar-quoted strings ($$...$$ or $tag$...$tag$) and positional
+    // parameters ($1, $2) are PostgreSQL-specific.
     if (ch === '$') {
-      if (isDigit(input[pos + 1])) {
+      if (allowPostgresDollarSyntax && isDigit(input[pos + 1])) {
         pos++;
         while (pos < len && isDigit(input[pos])) pos++;
         const val = input.slice(start, pos);
@@ -732,25 +736,27 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
         continue;
       }
 
-      const delim = readDollarDelimiter(input, pos);
-      if (delim) {
-        let close = -1;
-        // Scan for the next matching delimiter.
-        // This keeps delimiter matching explicit and avoids accidental partial
-        // matches when tags are adjacent to other dollar-prefixed tokens.
-        const bodyStart = pos + delim.length;
-        for (let i = bodyStart; i <= len - delim.length; i++) {
-          if (input[i] !== '$') continue;
-          if (input.startsWith(delim, i)) {
-            close = i;
-            break;
+      if (allowPostgresDollarSyntax) {
+        const delim = readDollarDelimiter(input, pos);
+        if (delim) {
+          let close = -1;
+          // Scan for the next matching delimiter.
+          // This keeps delimiter matching explicit and avoids accidental partial
+          // matches when tags are adjacent to other dollar-prefixed tokens.
+          const bodyStart = pos + delim.length;
+          for (let i = bodyStart; i <= len - delim.length; i++) {
+            if (input[i] !== '$') continue;
+            if (input.startsWith(delim, i)) {
+              close = i;
+              break;
+            }
           }
-        }
-        if (close >= 0) {
-          pos = close + delim.length;
-          const val = input.slice(start, pos);
-          emit('string', val, val, start);
-          continue;
+          if (close >= 0) {
+            pos = close + delim.length;
+            const val = input.slice(start, pos);
+            emit('string', val, val, start);
+            continue;
+          }
         }
       }
 
