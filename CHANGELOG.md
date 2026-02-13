@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [1.8.10] - 2026-02-13
+
+### Changed
+
+- Window function formatting now keeps the closing parenthesis of block-layout `OVER (...)` clauses on the same line as the final frame/exclusion clause.
+
+## [1.8.9] - 2026-02-13
+
+_No user-visible changes. Documentation-only release._
+
 ## [1.8.8] - 2026-02-13
 
 ### Added
