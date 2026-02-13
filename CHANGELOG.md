@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [1.8.7] - 2026-02-12
+
+### Added
+
+- Automated Open Graph image generation with Playwright-based rendering pipeline.
+- Social preview metadata and Open Graph/Twitter card image support for the website.
+- Markdown link resolution in the documentation viewer, mapping relative README links to internal site routes and opening external links in new tabs.
+- CLI reference and API details in the project manual.
+
+### Changed
+
+- Standardized JOIN alignment logic in the formatter, removing special-case handling for `FULL OUTER JOIN` in favor of consistent indentation across all join types.
+
 ## [1.8.6] - 2026-02-12
 
 ### Added
@@ -299,7 +312,8 @@ _No user-visible changes. Internal release for version alignment._
 - `.holywellignore` file support.
 - Zero runtime dependencies.
 
-[Unreleased]: https://github.com/vinsidious/holywell/compare/v1.8.6...HEAD
+[Unreleased]: https://github.com/vinsidious/holywell/compare/v1.8.7...HEAD
+[1.8.7]: https://github.com/vinsidious/holywell/compare/v1.8.6...v1.8.7
 [1.8.6]: https://github.com/vinsidious/holywell/compare/v1.8.5...v1.8.6
 [1.8.5]: https://github.com/vinsidious/holywell/compare/v1.8.4...v1.8.5
 [1.8.4]: https://github.com/vinsidious/holywell/compare/v1.8.3...v1.8.4
