@@ -20,6 +20,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://holywell.sh'),
   title: 'holywell — SQL Formatter',
   description:
     'Zero-config SQL formatter with river alignment. Format SQL in your browser.',
@@ -28,12 +29,21 @@ export const metadata: Metadata = {
     description:
       'Zero-config SQL formatter with river alignment. Format SQL in your browser.',
     type: 'website',
+    images: [
+      {
+        url: '/og.png',
+        width: 1200,
+        height: 630,
+        alt: 'holywell — Zero-config SQL formatter with river alignment',
+      },
+    ],
   },
   twitter: {
     card: 'summary_large_image',
     title: 'holywell — SQL Formatter',
     description:
       'Zero-config SQL formatter with river alignment. Format SQL in your browser.',
+    images: ['/og.png'],
   },
 };
 
