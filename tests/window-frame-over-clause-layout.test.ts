@@ -18,20 +18,17 @@ describe('Window frame OVER clause layout', () => {
        SUM(o.total) OVER (
            ORDER BY o.placed_at
            RANGE BETWEEN INTERVAL '7 days' PRECEDING
-                     AND CURRENT ROW
-       ) AS week_rolling_sum,
+                     AND CURRENT ROW) AS week_rolling_sum,
        COUNT(*) OVER (
            ORDER BY o.placed_at
            RANGE BETWEEN INTERVAL '7 days' PRECEDING
                      AND CURRENT ROW
-         EXCLUDE CURRENT ROW
-       ) AS week_orders_excl_current,
+         EXCLUDE CURRENT ROW) AS week_orders_excl_current,
        SUM(o.total) OVER (
            ORDER BY o.placed_at
             ROWS BETWEEN UNBOUNDED PRECEDING
                      AND CURRENT ROW
-         EXCLUDE TIES
-       ) AS cumulative_excl_ties
+         EXCLUDE TIES) AS cumulative_excl_ties
   FROM orders AS o
  WHERE o.status = 'delivered';`;
 

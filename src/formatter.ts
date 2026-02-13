@@ -2465,7 +2465,6 @@ function formatWindowFunctionAtColumn(
 
   if (useBlockLayout) {
     const innerPad = ' '.repeat(overBlockInnerCol);
-    const closePad = ' '.repeat(col);
     let result = funcWithNullTreatment + ' OVER (';
     for (const part of overParts) {
       let extraPad: string;
@@ -2478,7 +2477,7 @@ function formatWindowFunctionAtColumn(
       }
       result += '\n' + innerPad + extraPad + part.text;
     }
-    result += '\n' + closePad + ')';
+    result += ')';
     return result;
   }
 

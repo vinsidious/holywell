@@ -105,8 +105,7 @@ describe('SQL regression behaviors', () => {
     expect(out).toContain(`OVER (
            w
            RANGE BETWEEN UNBOUNDED PRECEDING
-                     AND CURRENT ROW
-       )`);
+                     AND CURRENT ROW)`);
     expect(out).toContain('WINDOW w AS (ORDER BY y)');
   });
 
