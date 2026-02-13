@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [1.8.8] - 2026-02-13
+
+### Added
+
+- T-SQL parsing support for OUTPUT clauses in INSERT, DELETE, and MERGE statements.
+- T-SQL query options for `FOR JSON` and `FOR XML` statements.
+- T-SQL parsing support for `OPENJSON ... WITH (...)` schema definitions.
+- T-SQL MERGE parsing support for `NOT MATCHED BY TARGET` and `NOT MATCHED BY SOURCE` variants.
+
+### Changed
+
+- T-SQL formatting improvements for OUTPUT and OPENJSON clause layout.
+- Improved column list alignment in T-SQL subqueries and JSON/XML SELECT statements.
+- Specialized type casing for OPENJSON schema definitions.
+
+### Fixed
+
+- CREATE INDEX river alignment when using INCLUDE clauses.
+- Indentation and alignment for T-SQL UPDATE table hints.
+
 ## [1.8.7] - 2026-02-12
 
 ### Added
@@ -312,7 +332,8 @@ _No user-visible changes. Internal release for version alignment._
 - `.holywellignore` file support.
 - Zero runtime dependencies.
 
-[Unreleased]: https://github.com/vinsidious/holywell/compare/v1.8.7...HEAD
+[Unreleased]: https://github.com/vinsidious/holywell/compare/v1.8.8...HEAD
+[1.8.8]: https://github.com/vinsidious/holywell/compare/v1.8.7...v1.8.8
 [1.8.7]: https://github.com/vinsidious/holywell/compare/v1.8.6...v1.8.7
 [1.8.6]: https://github.com/vinsidious/holywell/compare/v1.8.5...v1.8.6
 [1.8.5]: https://github.com/vinsidious/holywell/compare/v1.8.4...v1.8.5
